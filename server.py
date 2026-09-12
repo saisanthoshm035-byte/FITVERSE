@@ -1440,8 +1440,12 @@ class FitverseHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     initialize_database()
-    server = ThreadingHTTPServer(("127.0.0.1", 4173), FitverseHandler)
-    print("FITVERSE is live at http://127.0.0.1:4173")
+    host = os.environ.get("HOST", "0.0.0.0")   # 0.0.0.0 so cloud hosts like Render can reach it
+    try: port = int(os.environ.get("PORT", "4173"))
+    except (TypeError, ValueError): port = 0
+    if port <= 0: port = 4173                  # some shells export PORT=0; fall back to the default
+    server = ThreadingHTTPServer((host, port), FitverseHandler)
+    print("FITVERSE is live at http://127.0.0.1:" + str(port) if host in ("127.0.0.1", "localhost") else f"FITVERSE is live on port {port}", flush=True)
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally: server.server_close()

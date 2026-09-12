@@ -1,0 +1,9 @@
+# Render.com blueprint — "New +" > "Blueprint" on the GitHub repo picks this up automatically
+services:
+  - type: web
+    name: fitverse
+    runtime: python
+    plan: free
+    buildCommand: ""          # stdlib only — nothing to install
+    startCommand: python server.py
+    healthCheckPath: /api/health
