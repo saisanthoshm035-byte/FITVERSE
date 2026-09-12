@@ -1,0 +1,1447 @@
+"""FITVERSE MVP backend — stdlib-only HTTP API + SQLite persistence.
+
+Run: python server.py
+Then open: http://127.0.0.1:4173
+"""
+from __future__ import annotations
+
+import hashlib
+import threading
+import time
+import urllib.request
+import json
+import mimetypes
+import os
+import secrets
+import sqlite3
+from datetime import datetime, timezone
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+ROOT = Path(__file__).parent.resolve()
+DATABASE = ROOT / "fitverse.db"
+SESSIONS: dict[str, int] = {}
+TYPING: dict[int, tuple] = {}  # conversation_id -> (last typing timestamp, user_id)
+DEMO_USER_ID = 1
+
+
+def schedule_auto_reply(cid: int, mate: int) -> None:
+    """Insert a canned reply ~2.2s later on a worker thread so the client sees a typing indicator first."""
+    canned = ["Let's do it! 💪", "Just finished my warm-up — see you there.", "Nice! I'll bring the extra ball 🏀",
+              "What time works for you tomorrow?", "Great session today. Same time next week?", "Count me in 🔥",
+              "On my way — save me a spot!", "That pace was insane today 🔥", "Bringing snacks, you bring the energy 😄",
+              "Can we push it 30 minutes later?", "New PR today! 42.5 kg 💪", "Rest day tomorrow? My legs disagree 😅"]
+    def _later() -> None:
+        time.sleep(0.9)
+        TYPING[cid] = (time.time(), mate)  # partner is "composing" — client shows the typing dots
+        time.sleep(1.3)
+        try:
+            with connect() as db:
+                count = db.execute("SELECT count(*) FROM messages WHERE conversation_id=?", (cid,)).fetchone()[0]
+                db.execute("INSERT INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)", (cid, mate, canned[count % len(canned)], now()))
+        except Exception:
+            pass
+    threading.Thread(target=_later, daemon=True).start()
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def connect() -> sqlite3.Connection:
+    db = sqlite3.connect(DATABASE)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    return db
+
+
+def hash_password(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 120_000).hex()
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL,
+  city TEXT NOT NULL DEFAULT 'Chennai', fitness_level TEXT NOT NULL DEFAULT 'Intermediate',
+  fitness_goal TEXT NOT NULL DEFAULT 'General fitness', favorite_activity TEXT NOT NULL DEFAULT 'Basketball',
+  preferred_time TEXT NOT NULL DEFAULT '5–7 PM', created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_game_state (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  xp INTEGER NOT NULL DEFAULT 0, streak INTEGER NOT NULL DEFAULT 0, activities INTEGER NOT NULL DEFAULT 0,
+  is_friend_with_rahul INTEGER NOT NULL DEFAULT 0, joined_activity INTEGER NOT NULL DEFAULT 0,
+  challenge_status TEXT NOT NULL DEFAULT 'pending', booked_event INTEGER NOT NULL DEFAULT 0,
+  liked_featured_post INTEGER NOT NULL DEFAULT 0, comments INTEGER NOT NULL DEFAULT 12,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS friendships (
+  id INTEGER PRIMARY KEY, requester_id INTEGER NOT NULL REFERENCES users(id), addressee_id INTEGER NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL CHECK(status IN ('pending','accepted','rejected','blocked')), created_at TEXT NOT NULL,
+  UNIQUE(requester_id, addressee_id)
+);
+CREATE TABLE IF NOT EXISTS activities (
+  id INTEGER PRIMARY KEY, title TEXT NOT NULL, sport TEXT NOT NULL, starts_at TEXT NOT NULL,
+  location_label TEXT NOT NULL, max_participants INTEGER NOT NULL, fitness_level TEXT NOT NULL,
+  intensity TEXT NOT NULL, description TEXT, host_id INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS activity_participants (
+  activity_id INTEGER NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, joined_at TEXT NOT NULL,
+  PRIMARY KEY(activity_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS challenges (
+  id INTEGER PRIMARY KEY, title TEXT NOT NULL, challenge_type TEXT NOT NULL, target_value REAL,
+  challenger_id INTEGER NOT NULL REFERENCES users(id), opponent_id INTEGER NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL CHECK(status IN ('pending','active','completed')), winner_id INTEGER REFERENCES users(id),
+  starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS communities (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL, activity TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS community_members (
+  community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL DEFAULT 'member', joined_at TEXT NOT NULL,
+  PRIMARY KEY(community_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, starts_at TEXT NOT NULL,
+  location_label TEXT NOT NULL, price_inr INTEGER NOT NULL, capacity INTEGER NOT NULL, organizer TEXT NOT NULL,
+  description TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bookings (
+  id INTEGER PRIMARY KEY, booking_code TEXT NOT NULL UNIQUE, user_id INTEGER NOT NULL REFERENCES users(id),
+  event_id INTEGER NOT NULL REFERENCES events(id), quantity INTEGER NOT NULL, status TEXT NOT NULL,
+  qr_payload TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS posts (
+  id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'fitness_update', created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS post_likes (
+  post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL, PRIMARY KEY(post_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS comments (
+  id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  author_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS conversations (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  sender_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, is_read INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS businesses (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, location_label TEXT NOT NULL,
+  description TEXT NOT NULL, rating REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reports (
+  id INTEGER PRIMARY KEY, reporter_id INTEGER NOT NULL REFERENCES users(id), target_type TEXT NOT NULL,
+  target_id INTEGER NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS profiles (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, bio TEXT NOT NULL DEFAULT '',
+  college_or_company TEXT, availability TEXT NOT NULL DEFAULT 'Weekdays', workout_intensity TEXT NOT NULL DEFAULT 'Moderate',
+  preferred_location TEXT NOT NULL DEFAULT 'Campus', avatar_url TEXT, onboarding_completed INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS saved_posts (
+  post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL, PRIMARY KEY(post_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS challenge_participants (
+  challenge_id INTEGER NOT NULL REFERENCES challenges(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  progress REAL NOT NULL DEFAULT 0, completed_at TEXT, PRIMARY KEY(challenge_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS activity_completions (
+  activity_id INTEGER NOT NULL REFERENCES activities(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  completed_at TEXT NOT NULL, PRIMARY KEY(activity_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS xp_transactions (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, amount INTEGER NOT NULL,
+  reason TEXT NOT NULL, source_type TEXT NOT NULL, source_id TEXT NOT NULL, created_at TEXT NOT NULL,
+  UNIQUE(user_id,source_type,source_id)
+);
+CREATE TABLE IF NOT EXISTS achievements (
+  id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT NOT NULL, icon TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_achievements (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, achievement_id INTEGER NOT NULL REFERENCES achievements(id) ON DELETE CASCADE,
+  unlocked_at TEXT NOT NULL, PRIMARY KEY(user_id,achievement_id)
+);
+CREATE TABLE IF NOT EXISTS community_posts (
+  id INTEGER PRIMARY KEY, community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+  post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TEXT NOT NULL, UNIQUE(community_id,post_id)
+);
+CREATE TABLE IF NOT EXISTS business_events (
+  business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  PRIMARY KEY(business_id,event_id)
+);
+CREATE TABLE IF NOT EXISTS reviews (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), business_id INTEGER REFERENCES businesses(id),
+  event_id INTEGER REFERENCES events(id), rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5), body TEXT NOT NULL, created_at TEXT NOT NULL,
+  CHECK (business_id IS NOT NULL OR event_id IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read, created_at);
+CREATE INDEX IF NOT EXISTS idx_xp_transactions_user ON xp_transactions(user_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_activity_participants_user ON activity_participants(user_id);
+
+-- ===== FITVERSE 2.0: social graph, training, nutrition, progress, AI =====
+CREATE TABLE IF NOT EXISTS follows (
+  follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  followee_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL, PRIMARY KEY(follower_id, followee_id)
+);
+CREATE TABLE IF NOT EXISTS exercises (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, muscle TEXT NOT NULL, equipment TEXT NOT NULL,
+  difficulty TEXT NOT NULL DEFAULT 'Intermediate', instructions TEXT NOT NULL DEFAULT '',
+  mistakes TEXT NOT NULL DEFAULT '', met REAL NOT NULL DEFAULT 5.0
+);
+CREATE TABLE IF NOT EXISTS workout_sessions (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL,
+  ended_at TEXT, duration_min INTEGER NOT NULL DEFAULT 0, total_volume REAL NOT NULL DEFAULT 0,
+  est_kcal INTEGER NOT NULL DEFAULT 0, pr_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workout_logs (
+  id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES workout_sessions(id) ON DELETE CASCADE,
+  exercise_id INTEGER NOT NULL REFERENCES exercises(id), sets INTEGER NOT NULL DEFAULT 3,
+  reps INTEGER NOT NULL DEFAULT 10, weight REAL NOT NULL DEFAULT 0, duration_min REAL NOT NULL DEFAULT 0,
+  distance_km REAL NOT NULL DEFAULT 0, rpe INTEGER, is_pr INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workout_logs_session ON workout_logs(session_id);
+CREATE INDEX IF NOT EXISTS idx_workout_sessions_user ON workout_sessions(user_id, created_at);
+CREATE TABLE IF NOT EXISTS nutrition_logs (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  meal TEXT NOT NULL DEFAULT 'breakfast', name TEXT NOT NULL, kcal INTEGER NOT NULL DEFAULT 0,
+  protein_g REAL NOT NULL DEFAULT 0, carbs_g REAL NOT NULL DEFAULT 0, fat_g REAL NOT NULL DEFAULT 0,
+  fiber_g REAL NOT NULL DEFAULT 0, qty REAL NOT NULL DEFAULT 1, logged_on TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nutrition_user_day ON nutrition_logs(user_id, logged_on);
+CREATE TABLE IF NOT EXISTS foods (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, kcal_per_100g INTEGER NOT NULL,
+  protein_g REAL NOT NULL DEFAULT 0, carbs_g REAL NOT NULL DEFAULT 0, fat_g REAL NOT NULL DEFAULT 0, fiber_g REAL NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS water_logs (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  ml INTEGER NOT NULL, logged_on TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_water_user_day ON water_logs(user_id, logged_on);
+CREATE TABLE IF NOT EXISTS progress_entries (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  weight_kg REAL, body_fat REAL, chest_cm REAL, waist_cm REAL, hips_cm REAL, arm_cm REAL,
+  photo_path TEXT, note TEXT NOT NULL DEFAULT '', entry_date TEXT NOT NULL, created_at TEXT NOT NULL,
+  is_public INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS user_settings (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  age INTEGER, sex TEXT, height_cm REAL, weight_kg REAL, activity_level TEXT NOT NULL DEFAULT 'moderate',
+  goal TEXT NOT NULL DEFAULT 'maintain', diet_pref TEXT NOT NULL DEFAULT 'balanced',
+  days_per_week INTEGER NOT NULL DEFAULT 4, session_minutes INTEGER NOT NULL DEFAULT 45,
+  equipment TEXT NOT NULL DEFAULT 'Full gym', kcal_target INTEGER, protein_target INTEGER,
+  water_target_ml INTEGER NOT NULL DEFAULT 2500, is_private INTEGER NOT NULL DEFAULT 0,
+  discoverable INTEGER NOT NULL DEFAULT 1, onboarded INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_conversations (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL DEFAULT 'Coach chat', created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+  role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS saved_workouts (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL, plan_json TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS blocks (
+  blocker_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'block', created_at TEXT NOT NULL, PRIMARY KEY(blocker_id, blocked_id)
+);
+CREATE INDEX IF NOT EXISTS idx_follows_followee ON follows(followee_id);
+CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id, created_at);
+"""
+
+
+def initialize_database() -> None:
+    with connect() as db:
+        db.executescript(SCHEMA)
+        stamp = now()
+        db.executemany("INSERT OR IGNORE INTO achievements (id,code,name,description,icon) VALUES (?,?,?,?,?)", [
+            (1,"first_activity","First Activity","Complete your first activity.","⚡"),
+            (2,"challenge_champion","Challenge Champion","Win a fitness challenge.","🏆"),
+            (3,"goal_crusher","Goal Crusher","Complete four activities in a week.","🎯"),
+            (4,"seven_day_streak","7 Day Streak","Maintain a seven-day streak.","🔥"),
+            (5,"event_participant","Event Participant","Book your first fitness event.","🎟️"),
+        ])
+        exists = db.execute("SELECT 1 FROM users WHERE id = ?", (DEMO_USER_ID,)).fetchone()
+        if not exists:
+            created = now()
+            demo_salt = "fitverse-demo-salt"
+            users = [
+                (1, "Sai Kumar", "saikumar", "sai@fitverse.demo", "Chennai", "Intermediate", "General fitness", "Basketball", "5–7 PM"),
+                (2, "Rahul Menon", "rahulmenon", "rahul@fitverse.demo", "Chennai", "Intermediate", "Sports performance", "Basketball", "5–6 PM"),
+                (3, "Ananya Iyer", "ananyaiyer", "ananya@fitverse.demo", "Chennai", "Advanced", "Endurance", "Running", "6–7 AM"),
+                (4, "Arjun Raj", "arjunraj", "arjun@fitverse.demo", "Chennai", "Intermediate", "General fitness", "Cycling", "6–8 AM"),
+            ]
+            for u in users:
+                db.execute("""INSERT INTO users (id,name,username,email,password_salt,password_hash,city,fitness_level,fitness_goal,favorite_activity,preferred_time,created_at)
+                              VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           (u[0], u[1], u[2], u[3], demo_salt, hash_password("demo1234", demo_salt), *u[4:], created))
+            db.executemany("INSERT INTO profiles (user_id,bio,availability,workout_intensity,preferred_location,updated_at) VALUES (?,?,?,?,?,?)", [
+                (1,"Building a better relationship with consistency. Basketball after class.","Weekdays","Moderate","Campus",created),
+                (2,"Courts, community and a little healthy competition.","Weekdays","Moderate","Campus",created),
+                (3,"One more kilometre, one more story.","Mornings","High","Track",created),
+                (4,"Chasing sunrise and long roads.","Weekends","Moderate","ECR",created),
+            ])
+            db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                       (1, 1080, 6, 3, 0, 0, "pending", 0, 0, 12, created))
+            for user_id, xp, streak, activities in [(2, 1240, 9, 7), (3, 1170, 12, 8), (4, 950, 5, 5)]:
+                db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                           (user_id, xp, streak, activities, 0, 0, "pending", 0, 0, 12, created))
+            db.executemany("""INSERT INTO activities (id,title,sport,starts_at,location_label,max_participants,fitness_level,intensity,description,host_id,created_at)
+                              VALUES (?,?,?,?,?,?,?,?,?,?,?)""", [
+                (1, "Sunset basketball", "Basketball", "2026-09-10T17:30:00+05:30", "Campus Sports Ground", 8, "Intermediate", "Moderate", "A friendly post-class game.", 2, created),
+                (2, "Campus loop run", "Running", "2026-09-10T18:00:00+05:30", "Campus Track", 12, "Beginner", "Moderate", "An easy social 5K.", 3, created),
+                (3, "Weekend cycling crew", "Cycling", "2026-09-13T06:30:00+05:30", "ECR Checkpoint", 15, "Intermediate", "Moderate", "Coastal morning ride.", 4, created),
+            ])
+            db.executemany("INSERT INTO activity_participants VALUES (?,?,?)", [(1,2,created),(1,3,created),(1,4,created),(2,2,created),(2,3,created)])
+            db.execute("""INSERT INTO challenges (id,title,challenge_type,target_value,challenger_id,opponent_id,status,winner_id,starts_at,ends_at,created_at)
+                          VALUES (1,'Rahul 5K Challenge','running_distance',5,2,1,'pending',NULL,?,?,?)""",
+                       ("2026-09-10T00:00:00+05:30", "2026-09-17T23:59:00+05:30", created))
+            db.executemany("INSERT INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,?)", [(1,1,3.8),(1,2,4.2)])
+            db.executemany("INSERT INTO communities (id,name,description,activity,created_at) VALUES (?,?,?,?,?)", [
+                (1,"Basketball Community","Courts, crews and competition.","Basketball",created),
+                (2,"Chennai Runners","Run the city together.","Running",created),
+                (3,"Gym Beginners","Small wins. Strong habits.","Gym",created),
+                (4,"Cycling Club","Sunday miles and chai stops.","Cycling",created),
+            ])
+            db.execute("INSERT INTO community_members VALUES (?,?,?,?)", (1,1,"member",created))
+            db.executemany("""INSERT INTO events (id,name,category,starts_at,location_label,price_inr,capacity,organizer,description,created_at)
+                              VALUES (?,?,?,?,?,?,?,?,?,?)""", [
+                (1,"Chennai Night Run 2026","Running","2026-09-20T19:00:00+05:30","Marina Beach",499,2400,"Chennai Running Collective","6K under city lights, music, medals and your fastest self.",created),
+                (2,"Campus 3v3 Tournament","Basketball","2026-09-15T16:00:00+05:30","Campus Sports Ground",199,120,"FITVERSE Campus","A fast, friendly campus tournament.",created),
+                (3,"Sunrise Yoga at Besant","Yoga","2026-09-18T06:00:00+05:30","Besant Nagar Beach",0,100,"Yoga Chennai","A gentle community flow by the sea.",created),
+            ])
+            db.execute("INSERT INTO posts (id,author_id,body,kind,created_at) VALUES (1,3,?,'activity',?)", ("Finished my first 5K today! The last kilometre was all heart. 🏃", created))
+            db.execute("INSERT INTO conversations (id,kind,title,created_at) VALUES (1,'direct','Rahul Menon',?)", (created,))
+            db.executemany("INSERT INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)", [(1,2,"Hey Sai! You joining basketball later?",created),(1,1,"Absolutely. Bringing an extra ball!",created)])
+            db.executemany("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,?,?)", [(1,"activity","Rahul invited you","Sunset basketball starts in 42 minutes.",0,created),(1,"challenge","Challenge reminder","Your 5K challenge is waiting.",0,created)])
+            db.executemany("INSERT INTO businesses (name,category,location_label,description,rating,created_at) VALUES (?,?,?,?,?,?)", [("Pulse Fitness","Gym","Adyar","Community-first strength training.",4.7,created),("Courtside Academy","Sports academy","Guindy","Basketball coaching and court time.",4.5,created)])
+
+
+        # --- extended demo universe (idempotent, runs on every boot) ---
+        # -- a living world: 8 athletes, 8 communities, 8 events, 7 activities --
+        extra_users = [
+            (5,  "Meera Krishnan",  "meerak",    "meera@fitverse.demo",  "Chennai", "Advanced",     "Endurance",          "Running",    "6–7 AM"),
+            (6,  "Karthik Verma",    "karthikv",  "karthik@fitverse.demo","Chennai", "Beginner",     "General fitness",    "Gym",        "7–8 PM"),
+            (7,  "Divya Rao",        "divyarao",  "divya@fitverse.demo",  "Chennai", "Intermediate",  "Flexibility",        "Yoga",       "6–7 AM"),
+            (8,  "Aditya Menon",     "adityam",   "aditya@fitverse.demo", "Chennai", "Advanced",     "Sports performance", "Cycling",    "5–7 AM"),
+        ]
+        for u in extra_users:
+            if not db.execute("SELECT 1 FROM users WHERE id=?", (u[0],)).fetchone():
+                db.execute("""INSERT INTO users (id,name,username,email,password_salt,password_hash,city,fitness_level,fitness_goal,favorite_activity,preferred_time,created_at)
+                              VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           (u[0], u[1], u[2], u[3], "fitverse-demo-salt", hash_password("demo1234", "fitverse-demo-salt"), *u[4:], stamp))
+                db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)", (u[0], 300 + u[0] * 137, 2 + u[0] % 7, 1 + u[0] % 5, 0, 0, "pending", 0, 0, 6, stamp))
+                db.execute("INSERT OR IGNORE INTO profiles (user_id,bio,updated_at) VALUES (?,?,?)", (u[0], f"{u[7]} enthusiast chasing consistency.", stamp))
+        extra_communities = [
+            (5, "Sunrise Yogis",        "Breathe, stretch, repeat.",                 "Yoga",      "yoga.jpg"),
+            (6, "Iron Addicts Chennai", "Strength is a skill. Practice it.",        "Gym",       "gym.jpg"),
+            (7, "Coastal Cyclists",     "Sea breeze and sunrise miles.",            "Cycling",   "cycling.jpg"),
+            (8, "Marathon Dreamers",    "42.195 km starts with one step.",          "Running",   "running.jpg"),
+        ]
+        for cid_, name, desc, act, photo in extra_communities:
+            db.execute("INSERT OR IGNORE INTO communities (id,name,description,activity,created_at) VALUES (?,?,?,?,?)", (cid_, name, desc, act, stamp))
+            try: db.execute("ALTER TABLE communities ADD COLUMN photo TEXT")
+            except sqlite3.OperationalError: pass
+            db.execute("UPDATE communities SET photo=? WHERE id=?", (photo, cid_))
+        extra_events = [
+            (4, "East Coast Ride",        "Cycling",   "2026-09-22T06:00:00+05:30", "East Coast Road",      299, 200,  "Chennai Cycling Club",   "A scenic group ride down the coast with chai stops.", "cycling.jpg"),
+            (5, "Beach Yoga Festival",    "Yoga",      "2026-09-19T06:30:00+05:30", "Elliot's Beach",       149, 300,  "Yoga Chennai",            "Sunrise flows, breathwork and a beach breakfast.",    "yoga.jpg"),
+            (6, "Iron Cup Strength Meet", "Gym",       "2026-09-26T17:00:00+05:30", "Pulse Fitness, Adyar", 399, 80,   "Pulse Fitness",           "Squat, bench, deadlift — community strength meet.",   "gym.jpg"),
+            (7, "Monsoon Trail Half",     "Running",   "2026-10-04T05:45:00+05:30", "Chembarambakkam Trail",799, 500,  "Trail Runners Chennai",   "21.1K of forest trails, mist and single-track fun.", "running.jpg"),
+            (8, "Hoops Winter League",    "Basketball","2026-10-11T16:00:00+05:30", "Nehru Stadium Courts", 249, 160,  "TN Basketball Assn",      "Team registrations open for the winter season.",     "basketball.jpg"),
+        ]
+        for eid, name, cat, when, loc, price, cap, org, desc, photo in extra_events:
+            db.execute("INSERT OR IGNORE INTO events (id,name,category,starts_at,location_label,price_inr,capacity,organizer,description,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (eid, name, cat, when, loc, int(price), cap, org, desc, stamp))
+        extra_activities = [
+            (4, "Dawn patrol run",      "Running",    "2026-09-14T06:00:00+05:30", "Besant Nagar Beach", 10, "Intermediate", "Moderate", "Easy coastal 5K before the city wakes.", 5),
+            (5, "Strength fundamentals","Gym",        "2026-09-14T19:00:00+05:30", "Pulse Fitness, Adyar",6, "Beginner",     "Moderate", "Squat and hinge technique session.",     6),
+            (6, "Sunrise yoga flow",    "Yoga",       "2026-09-15T06:15:00+05:30", "Elliot's Beach",      20, "All levels",   "Light",    "Breath-led flow to open the day.",        7),
+            (7, "ECR weekend ride",     "Cycling",    "2026-09-16T06:30:00+05:30", "East Coast Road",     12, "Intermediate",  "Moderate", "40K coastal spin with a chai stop.",      8),
+        ]
+        for aid_, title, sport, when, loc, cap, lvl, inten, desc, host in extra_activities:
+            db.execute("INSERT OR IGNORE INTO activities (id,title,sport,starts_at,location_label,max_participants,fitness_level,intensity,description,host_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (aid_, title, sport, when, loc, cap, lvl, inten, desc, host, stamp))
+            db.execute("INSERT OR IGNORE INTO activity_participants VALUES (?,?,?)", (aid_, host, stamp))
+        db.executemany("INSERT OR IGNORE INTO community_members (community_id,user_id,role,joined_at) VALUES (?,?,?,?)", [
+            (5,7,"owner",stamp),(5,3,"member",stamp),(6,6,"owner",stamp),(6,2,"member",stamp),
+            (7,8,"owner",stamp),(7,4,"member",stamp),(8,5,"owner",stamp),(8,3,"member",stamp),
+            (2,6,"member",stamp),(2,7,"member",stamp),(3,5,"member",stamp),(4,8,"member",stamp),
+        ])
+        # -- Reels: short vertical workout clips as photo posts --
+        if not db.execute("SELECT 1 FROM posts WHERE kind='reel' LIMIT 1").fetchone():
+            reels = [
+                (3, "5AM run. Nobody clapping, still showing up. 🌅", "5K done before the city woke. Negative split!", "reel"),
+                (5, "PB day at the platform 💪 100kg x 3", "Squat PR after 8 weeks of tempo blocks.", "reel"),
+                (7, "Sunrise flow by the waves 🧘‍♀️", "30 minutes of breathwork changes everything.", "reel"),
+                (8, "Coastal century ride 🚴 100km done", "Headwinds taught me patience today.", "reel"),
+                (2, "Ankle-breaker crossover — game winner 🏀", "Streetball never misses.", "reel"),
+                (4, "Rest day recovery routine 🧊", "Ice bath + mobility = fresh legs.", "reel"),
+            ]
+            for author, title, body, kind in reels:
+                cur = db.execute("INSERT INTO posts (author_id,body,kind,created_at) VALUES (?,?,?,?)", (author, f"{title}\\n\\n{body}", kind, now()))
+        db.executemany("INSERT OR IGNORE INTO conversations (id,kind,title,created_at) VALUES (?,?,?,?)", [
+            (2, "community", "Basketball Community", stamp),
+            (3, "direct", "Ananya Iyer", stamp),
+            (4, "group", "Weekend Run Crew", stamp),
+        ])
+        db.executemany("INSERT OR IGNORE INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)", [
+            (2, 2, "Court 3 is booked for Saturday, 6 PM. Who is in?", stamp),
+            (3, 3, "Morning run tomorrow? Easy pace, 5K around the loop.", stamp),
+            (4, 4, "Weekend ride plan is up — ECR, Sunday 6:30 AM.", stamp),
+        ])
+        db.execute("INSERT OR IGNORE INTO events (id,name,category,starts_at,location_label,price_inr,capacity,organizer,description,created_at) "
+                   "SELECT 4,'East Coast Ride','Cycling','2026-09-22T06:00:00+05:30','East Coast Road',299,200,'Chennai Cycling Club','A scenic group ride down the coast with chai stops.',? "
+                   "WHERE NOT EXISTS (SELECT 1 FROM events WHERE id=4)", (stamp,))
+        db.executemany("INSERT OR IGNORE INTO community_members (community_id,user_id,role,joined_at) VALUES (?,?,?,?)", [
+            (1,2,"member",stamp),(1,3,"member",stamp),(1,4,"member",stamp),
+            (2,2,"member",stamp),(2,3,"member",stamp),(4,1,"member",stamp),(4,4,"owner",stamp),
+        ])
+
+        # ===== FITVERSE 2.0: exercise library + food database =====
+        db.executemany("INSERT OR IGNORE INTO exercises (id,name,muscle,equipment,difficulty,instructions,mistakes,met) VALUES (?,?,?,?,?,?,?,?)", [
+            (1,"Barbell Bench Press","Chest","Barbell","Intermediate","Lie on the bench, grip just outside shoulder width. Lower the bar to mid-chest with control, then press up and slightly back.","Bouncing the bar off the chest; flaring elbows to 90 degrees.",6.0),
+            (2,"Incline Dumbbell Press","Chest","Dumbbell","Intermediate","Set the bench to 30 degrees. Press the dumbbells up and slightly together, keeping wrists stacked over elbows.","Setting the angle too steep, turning it into a shoulder press.",5.5),
+            (3,"Push-Up","Chest","Bodyweight","Beginner","Hands under shoulders, body in one line. Lower until chest is a fist off the floor, press up.","Sagging hips; half range of motion.",4.5),
+            (4,"Cable Fly","Chest","Cable","Beginner","Set pulleys at chest height. With a soft elbow bend, sweep hands together in a wide arc and squeeze.","Turning it into a press by bending elbows during the rep.",4.0),
+            (5,"Barbell Squat","Legs","Barbell","Intermediate","Bar on upper traps, brace hard, sit down between your hips until thighs hit parallel, drive up through mid-foot.","Knees caving in; losing bracing at the bottom.",7.0),
+            (6,"Romanian Deadlift","Legs","Barbell","Intermediate","Soft knees, push hips back and slide the bar down your thighs until you feel a deep hamstring stretch, then stand tall.","Rounding the lower back; turning it into a squat.",6.5),
+            (7,"Walking Lunge","Legs","Bodyweight","Beginner","Step forward and lower until both knees are at 90 degrees, then drive through the front heel into the next step.","Short steps that stress the front knee.",5.0),
+            (8,"Leg Press","Legs","Machine","Beginner","Feet shoulder-width on the platform. Lower until knees reach 90 degrees without lifting your hips, then press.","Locking knees hard at the top; hands on knees.",5.5),
+            (9,"Pull-Up","Back","Bodyweight","Intermediate","Hang with an overhand grip just outside shoulders. Pull your chest toward the bar, lower with control.","Kipping without purpose; cutting range short at the bottom.",6.0),
+            (10,"Barbell Row","Back","Barbell","Intermediate","Hinge to about 45 degrees, row the bar to your lower ribs, squeeze shoulder blades, lower under control.","Jerking with the hips; shrugging instead of rowing.",6.0),
+            (11,"Lat Pulldown","Back","Cable","Beginner","Grip wide, lean back 10 degrees, pull the bar to your collarbone while driving elbows down.","Pulling behind the neck; using momentum swings.",5.0),
+            (12,"Seated Cable Row","Back","Cable","Beginner","Chest proud, pull the handle to your stomach, pause and squeeze, then let arms extend fully.","Rocking the torso for momentum.",5.0),
+            (13,"Overhead Press","Shoulders","Barbell","Intermediate","Bar at collarbone, brace glutes and core, press straight up and finish with biceps by your ears.","Leaning back into a standing incline press.",5.5),
+            (14,"Lateral Raise","Shoulders","Dumbbell","Beginner","Lead with elbows, raise out to shoulder height, pause, lower slowly. Lighter than you think.","Going too heavy and swinging.",4.0),
+            (15,"Face Pull","Shoulders","Cable","Beginner","Set the rope at eye level, pull toward your forehead and rotate knuckles back.","Too much weight so it becomes a row.",4.0),
+            (16,"Barbell Curl","Arms","Barbell","Beginner","Elbows pinned to your sides, curl the bar to shoulder height, lower over two seconds.","Swinging the hips to start the rep.",3.5),
+            (17,"Hammer Curl","Arms","Dumbbell","Beginner","Neutral grip, curl both dumbbells keeping wrists locked, control the way down.","Half reps at the top only.",3.5),
+            (18,"Triceps Rope Pushdown","Arms","Cable","Beginner","Elbows locked at your sides, push the rope down and split it at the bottom.","Leaning your bodyweight into the stack.",3.5),
+            (19,"Plank","Core","Bodyweight","Beginner","Forearms down, one straight line from head to heels, squeeze glutes and brace.","Hips too high or sagging; holding your breath.",3.0),
+            (20,"Hanging Knee Raise","Core","Bodyweight","Intermediate","Hang tall, raise knees to hip height without swinging, lower slowly.","Using momentum from a swing.",4.5),
+            (21,"Easy Run","Cardio","Bodyweight","Beginner","Conversational pace where you could speak in full sentences.","Starting too fast and fading.",8.0),
+            (22,"Interval Sprints","Cardio","Bodyweight","Advanced","After a warm-up: 30 seconds hard, 90 seconds easy. Repeat 6-10 times.","Skipping the warm-up; sprinting at 100% from rep one.",10.0),
+            (23,"Cycling Moderate","Cardio","Machine","Beginner","Steady cadence 80-95 rpm at a resistance where breathing is elevated but controlled.","Saddle too low, knees tracking inward.",7.0),
+            (24,"Burpee","Full Body","Bodyweight","Intermediate","Squat, kick to a plank, optional push-up, jump feet in and explode up.","Piking the hips on the plank kick-back.",8.5),
+            (25,"Kettlebell Swing","Full Body","Dumbbell","Intermediate","Hinge, hike the bell back, snap hips forward and let the bell float to chest height.","Squatting the swing; lifting with the arms.",9.0),
+            (26,"Glute Bridge","Glutes","Bodyweight","Beginner","Feet flat, drive hips up until knees-hips-shoulders align, squeeze at the top for a beat.","Overarching the lower back at the top.",3.5),
+            (27,"Hip Thrust","Glutes","Barbell","Intermediate","Upper back on a bench, bar over hips, drive to full extension and pause.","Feet too far from the body, turning it into a hamstring move.",5.5),
+            (28,"Downward Dog","Full Body","Bodyweight","Beginner","From a plank, lift hips up and back into an inverted V, press heels toward the floor.","Rounding the back to reach the heels down.",3.0),
+        ])
+        db.executemany("INSERT OR IGNORE INTO foods (id,name,kcal_per_100g,protein_g,carbs_g,fat_g,fiber_g) VALUES (?,?,?,?,?,?,?)", [
+            (1,"Chicken Breast (grilled)",165,31,0,3.6,0),
+            (2,"White Rice (cooked)",130,2.7,28,0.3,0.4),
+            (3,"Brown Rice (cooked)",112,2.6,24,0.9,1.8),
+            (4,"Whole Eggs",155,13,1.1,11,0),
+            (5,"Oats (dry)",389,17,66,7,10),
+            (6,"Banana",89,1.1,23,0.3,2.6),
+            (7,"Greek Yogurt",59,10,3.6,0.4,0),
+            (8,"Paneer",265,18,1.2,21,0),
+            (9,"Dal (cooked)",116,9,20,0.4,8),
+            (10,"Chapati",297,11,46,7.5,4.9),
+            (11,"Idli",132,4.2,28,0.7,1),
+            (12,"Dosa",168,3.9,30,3.7,1.1),
+            (13,"Almonds",579,21,22,50,12),
+            (14,"Peanut Butter",588,25,20,50,6),
+            (15,"Milk (toned)",49,3.2,4.9,1.7,0),
+            (16,"Whey Scoop (30g)",120,24,3,1.5,0),
+            (17,"Salmon Fillet",208,20,0,13,0),
+            (18,"Sweet Potato",86,1.6,20,0.1,3),
+            (19,"Broccoli",34,2.8,7,0.4,2.6),
+            (20,"Olive Oil",884,0,0,100,0),
+            (21,"Chicken Biryani",290,9,40,9,1.5),
+            (22,"Masala Dosa",218,4.7,33,7,1.6),
+            (23,"Pasta (cooked)",158,5.8,31,0.9,1.8),
+            (24,"Curd Rice",98,3.5,15,2.4,0.3),
+            (25,"Protein Bar",380,30,35,10,5),
+        ])
+        db.execute("INSERT OR IGNORE INTO user_settings (user_id,age,sex,height_cm,weight_kg,activity_level,goal,kcal_target,protein_target,onboarded,updated_at) VALUES (1,21,'male',178,72,'moderate','build muscle',2500,150,1,?)", (stamp,))
+
+        if exists:
+            db.execute("""INSERT OR IGNORE INTO profiles (user_id,bio,availability,workout_intensity,preferred_location,updated_at)
+                          SELECT id,'Fitness is better together.','Weekdays','Moderate','Campus',? FROM users""", (stamp,))
+            db.execute("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id) VALUES (1,1)")
+            db.execute("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id) VALUES (1,2)")
+
+
+def user_state(db: sqlite3.Connection, user_id: int) -> dict:
+    row = db.execute("SELECT * FROM user_game_state WHERE user_id=?", (user_id,)).fetchone()
+    return dict(row)
+
+
+def ics_for_event(event: dict) -> str:
+    """Build a valid RFC 5545 calendar invite for an event."""
+    import re as _re
+    def _utc(ts):
+        from datetime import datetime as _dt
+        try: return _dt.fromisoformat(ts).strftime("%Y%m%dT%H%M%SZ") if "+" in ts else ts.replace("-", "").replace(":", "") + "00"
+        except Exception: return "20260920T130000Z"
+    return ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//FITVERSE//EN\r\n" +
+            f"BEGIN:VEVENT\r\nUID:fitverse-event-{event['id']}@fitverse.demo\r\n" +
+            f"DTSTAMP:{_utc(now())}\r\n" +
+            f"DTSTART:{_utc(event['starts_at'])}\r\n" +
+            f"SUMMARY:{_re.sub(r'[\\,;]', ' ', event['name'])}\r\n" +
+            f"LOCATION:{_re.sub(r'[\\,;]', ' ', event['location_label'])}\r\n" +
+            f"DESCRIPTION:{_re.sub(r'[\\,;]', ' ', str(event.get('description', '')))}\r\n" +
+            "END:VEVENT\r\nEND:VCALENDAR\r\n")
+
+
+def read_bootstrap(user_id: int) -> dict:
+    with connect() as db:
+        user = dict(db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,p.avatar_url,p.onboarding_completed FROM users u JOIN profiles p ON p.user_id=u.id WHERE u.id=?", (user_id,)).fetchone())
+        game = user_state(db, user_id)
+        leaderboard = [dict(r) for r in db.execute("""SELECT u.name, g.xp, g.streak, g.activities
+          FROM user_game_state g JOIN users u ON u.id=g.user_id ORDER BY g.xp DESC LIMIT 10""")]
+        counts = {
+            "friends": db.execute("SELECT count(*) FROM friendships WHERE status='accepted' AND (requester_id=? OR addressee_id=?)", (user_id,user_id)).fetchone()[0],
+            "activities": db.execute("SELECT count(*) FROM activities").fetchone()[0],
+            "communities": db.execute("SELECT count(*) FROM communities").fetchone()[0],
+            "events": db.execute("SELECT count(*) FROM events").fetchone()[0],
+        }
+    return {"user": user, "state": game, "leaderboard": leaderboard, "counts": counts}
+
+
+def award_xp(db: sqlite3.Connection, user_id: int, amount: int, reason: str, source_type: str, source_id: str) -> bool:
+    """Records an immutable award first, then updates the projection used by the UI."""
+    try:
+        db.execute("INSERT INTO xp_transactions (user_id,amount,reason,source_type,source_id,created_at) VALUES (?,?,?,?,?,?)", (user_id,amount,reason,source_type,source_id,now()))
+    except sqlite3.IntegrityError:
+        return False
+    db.execute("UPDATE user_game_state SET xp=xp+? WHERE user_id=?", (amount,user_id))
+    return True
+
+
+def check_achievements(db: sqlite3.Connection, user_id: int) -> list[str]:
+    game = user_state(db,user_id); unlocked=[]
+    thresholds = [
+        (1, game["activities"] >= 1),
+        (2, db.execute("SELECT 1 FROM challenges WHERE winner_id=? LIMIT 1",(user_id,)).fetchone() is not None),
+        (3, game["activities"] >= 4),
+        (4, game["streak"] >= 7),
+        (5, game["booked_event"] == 1),
+    ]
+    for achievement_id, eligible in thresholds:
+        if eligible:
+            cursor=db.execute("INSERT OR IGNORE INTO user_achievements (user_id,achievement_id,unlocked_at) VALUES (?,?,?)",(user_id,achievement_id,now()))
+            if cursor.rowcount:
+                name=db.execute("SELECT name FROM achievements WHERE id=?",(achievement_id,)).fetchone()[0]
+                unlocked.append(name)
+                db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(user_id,"achievement","Achievement unlocked",name,now()))
+    return unlocked
+
+
+def recommendations(user_id: int) -> list[dict]:
+    with connect() as db:
+        mine=dict(db.execute("SELECT u.*,p.workout_intensity,p.preferred_location FROM users u JOIN profiles p ON p.user_id=u.id WHERE u.id=?",(user_id,)).fetchone())
+        others=[dict(r) for r in db.execute("SELECT u.*,p.workout_intensity,p.preferred_location FROM users u JOIN profiles p ON p.user_id=u.id WHERE u.id<>?",(user_id,))]
+    results=[]
+    for person in others:
+        activity=30 if person["favorite_activity"] == mine["favorite_activity"] else 0
+        schedule=20 if person["preferred_time"] == mine["preferred_time"] or person["preferred_time"].startswith("5") and mine["preferred_time"].startswith("5") else 0
+        level=15 if person["fitness_level"] == mine["fitness_level"] else 7
+        goal=9 if person["fitness_goal"] != mine["fitness_goal"] else 15
+        location=10 if person["city"] == mine["city"] else 0
+        intensity=10 if person["workout_intensity"] == mine["workout_intensity"] else 4
+        score=min(100,activity+schedule+level+goal+location+intensity)
+        reasons=[]
+        if activity: reasons.append("Same preferred activity")
+        if level>=15: reasons.append("Similar fitness level")
+        if schedule: reasons.append("Matching availability")
+        if location: reasons.append("Nearby activity location")
+        results.append({"id":person["id"],"name":person["name"],"username":person["username"],"activity":person["favorite_activity"],"fitnessLevel":person["fitness_level"],"preferredTime":person["preferred_time"],"score":score,"reasons":reasons})
+    return sorted(results,key=lambda p:p["score"],reverse=True)
+
+
+def list_feed(user_id: int) -> list[dict]:
+    with connect() as db:
+        try: db.execute("ALTER TABLE posts ADD COLUMN photo TEXT")
+        except sqlite3.OperationalError: pass
+        rows=db.execute("""SELECT p.id,p.body,p.kind,p.photo,p.created_at,u.name,u.username,
+          (SELECT count(*) FROM post_likes l WHERE l.post_id=p.id) AS likes,
+          EXISTS(SELECT 1 FROM post_likes l WHERE l.post_id=p.id AND l.user_id=?) AS liked,
+          EXISTS(SELECT 1 FROM saved_posts s WHERE s.post_id=p.id AND s.user_id=?) AS saved,
+          (SELECT count(*) FROM comments c WHERE c.post_id=p.id) AS comments
+          FROM posts p JOIN users u ON u.id=p.author_id ORDER BY p.id DESC""",(user_id,user_id)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def coach_reply(user_id: int, prompt: str) -> dict:
+    q=prompt.lower(); data=read_bootstrap(user_id); matches=recommendations(user_id)
+    if any(word in q for word in ("basketball","people","match","compatible")):
+        top=matches[0] if matches else None
+        text=f"Your best current match is {top['name']} at {top['score']}%. You both enjoy {top['activity']} and share a weekday training window." if top else "Complete onboarding details to improve your matches."
+    elif any(word in q for word in ("event","weekend")):
+        text="Chennai Night Run is coming up at Marina Beach. It is a great social 6K option for your current activity level."
+    elif any(word in q for word in ("challenge","compete")):
+        text="Try a 5K distance challenge with Rahul. It is active, measurable, and awards XP only when the result is recorded."
+    else:
+        remaining=max(0,4-data["state"]["activities"])
+        text=f"You are {remaining} activity{'ies' if remaining != 1 else 'y'} from your weekly goal. Join Sunset basketball or log a completed activity to keep your streak moving."
+    return {"reply":text,"source":"deterministic profile and FITVERSE activity data"}
+
+
+def perform_action(user_id: int, action: str, client_state: dict) -> dict:
+    """Apply a domain operation transactionally; client state is not trusted for awards."""
+    with connect() as db:
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            timestamp = now()
+            game = user_state(db, user_id)
+            if action == "friend":
+                db.execute("INSERT OR IGNORE INTO friendships (requester_id,addressee_id,status,created_at) VALUES (?,?,?,?)", (user_id,2,"accepted",timestamp))
+                db.execute("UPDATE user_game_state SET is_friend_with_rahul=1 WHERE user_id=?", (user_id,))
+                db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)", (user_id,"friend","Rahul joined your fitness circle","You can now challenge or message Rahul.",timestamp))
+            elif action == "join":
+                existing = db.execute("SELECT 1 FROM activity_participants WHERE activity_id=1 AND user_id=?", (user_id,)).fetchone()
+                if existing:
+                    db.execute("DELETE FROM activity_participants WHERE activity_id=1 AND user_id=?", (user_id,))
+                    db.execute("UPDATE user_game_state SET joined_activity=0 WHERE user_id=?", (user_id,))
+                else:
+                    full = db.execute("SELECT count(*) FROM activity_participants WHERE activity_id=1", ()).fetchone()[0] >= 8
+                    if full: raise ValueError("Sunset basketball is full")
+                    db.execute("INSERT INTO activity_participants VALUES (?,?,?)", (1,user_id,timestamp))
+                    db.execute("UPDATE user_game_state SET joined_activity=1 WHERE user_id=?", (user_id,))
+            elif action == "like":
+                liked = db.execute("SELECT 1 FROM post_likes WHERE post_id=1 AND user_id=?", (user_id,)).fetchone()
+                if liked:
+                    db.execute("DELETE FROM post_likes WHERE post_id=1 AND user_id=?", (user_id,))
+                    db.execute("UPDATE user_game_state SET liked_featured_post=0 WHERE user_id=?", (user_id,))
+                else:
+                    db.execute("INSERT INTO post_likes VALUES (?,?,?)", (1,user_id,timestamp))
+                    db.execute("UPDATE user_game_state SET liked_featured_post=1 WHERE user_id=?", (user_id,))
+            elif action == "comment":
+                db.execute("INSERT INTO comments (post_id,author_id,body,created_at) VALUES (?,?,?,?)", (1,user_id,"Cheering you on! 🔥",timestamp))
+                db.execute("UPDATE user_game_state SET comments=comments+1 WHERE user_id=?", (user_id,))
+            elif action == "accept":
+                db.execute("UPDATE challenges SET status='active' WHERE id=1 AND opponent_id=? AND status='pending'", (user_id,))
+                db.execute("UPDATE user_game_state SET challenge_status='accepted' WHERE user_id=?", (user_id,))
+            elif action == "challenge":
+                db.execute("UPDATE challenges SET status='pending', winner_id=NULL WHERE id=1", ())
+                db.execute("UPDATE user_game_state SET challenge_status='pending' WHERE user_id=?", (user_id,))
+            elif action in ("win", "complete"):
+                if action == "win":
+                    challenge=db.execute("SELECT status FROM challenges WHERE id=1").fetchone()
+                    if not challenge or challenge["status"] == "completed": raise ValueError("This challenge has already been completed")
+                    db.execute("UPDATE challenges SET status='completed', winner_id=? WHERE id=1", (user_id,))
+                    db.execute("UPDATE user_game_state SET challenge_status='won' WHERE user_id=?", (user_id,))
+                    if not award_xp(db,user_id,120,"Won the Rahul 5K Challenge","challenge","1"): raise ValueError("Challenge XP was already awarded")
+                    award=120
+                else:
+                    if not db.execute("SELECT 1 FROM activity_participants WHERE activity_id=1 AND user_id=?",(user_id,)).fetchone(): raise ValueError("Join the activity before completing it")
+                    try: db.execute("INSERT INTO activity_completions VALUES (?,?,?)",(1,user_id,timestamp))
+                    except sqlite3.IntegrityError: raise ValueError("This activity was already completed")
+                    db.execute("UPDATE user_game_state SET activities=activities+1 WHERE user_id=?", (user_id,))
+                    award_xp(db,user_id,80,"Completed Sunset basketball","activity","1")
+                    award=80
+                unlocked=check_achievements(db,user_id)
+                suffix=f" Achievement unlocked: {', '.join(unlocked)}." if unlocked else ""
+                db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)", (user_id,"xp","XP awarded",f"You earned +{award} XP.{suffix}",timestamp))
+            elif action == "community":
+                db.execute("INSERT OR IGNORE INTO community_members VALUES (?,?,?,?)", (2,user_id,"member",timestamp))
+            elif action == "book":
+                already = db.execute("SELECT 1 FROM bookings WHERE user_id=? AND event_id=1 AND status='confirmed'", (user_id,)).fetchone()
+                if not already:
+                    code = f"FV-2026-{secrets.randbelow(9000)+1000}"
+                    db.execute("INSERT INTO bookings (booking_code,user_id,event_id,quantity,status,qr_payload,created_at) VALUES (?,?,?,?,?,?,?)", (code,user_id,1,1,"confirmed",f"fitverse://booking/{code}",timestamp))
+                db.execute("UPDATE user_game_state SET booked_event=1 WHERE user_id=?", (user_id,))
+                award_xp(db,user_id,75,"Booked Chennai Night Run 2026","event","1")
+                check_achievements(db,user_id)
+            elif action == "createActivity":
+                db.execute("INSERT INTO activities (title,sport,starts_at,location_label,max_participants,fitness_level,intensity,description,host_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)", ("New basketball session","Basketball","2026-09-12T17:30:00+05:30","Campus Sports Ground",8,"Intermediate","Moderate","Created from FITVERSE.",user_id,timestamp))
+            elif action not in ("sync", "close", "notifications", "create", "edit"):
+                raise ValueError("Unsupported action")
+            db.execute("UPDATE user_game_state SET updated_at=? WHERE user_id=?", (timestamp,user_id))
+            db.commit()
+            return {"ok": True, "state": user_state(db,user_id)}
+        except Exception:
+            db.rollback()
+            raise
+
+
+class FitverseHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "FITVERSE/1.0"
+
+    def log_message(self, format: str, *args) -> None:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {format % args}")
+
+    def send_json(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers(); self.wfile.write(body)
+
+    def body(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length > 40_000_000: raise ValueError("Request body is too large")
+        raw = self.rfile.read(length) if length else b"{}"
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict): raise ValueError("JSON object required")
+        return value
+
+    def current_user(self) -> int:
+        token = self.headers.get("X-Session", "")
+        return SESSIONS.get(token, DEMO_USER_ID)
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        query = urlparse(self.path).query
+        if path == "/api/health": return self.send_json(200,{"ok":True,"database":"sqlite","time":now()})
+        if path == "/api/bootstrap": return self.send_json(200, read_bootstrap(self.current_user()))
+        if path == "/api/leaderboard": return self.send_json(200,{"items":read_bootstrap(self.current_user())["leaderboard"]})
+        if path == "/api/recommendations": return self.send_json(200,{"items":recommendations(self.current_user()),"model":"deterministic compatibility service"})
+        if path == "/api/coach":
+            from urllib.parse import parse_qs
+            return self.send_json(200,coach_reply(self.current_user(),parse_qs(query).get("q",[""])[0]))
+        if path == "/api/feed": return self.send_json(200,{"items":list_feed(self.current_user())})
+        if path == "/api/profile":
+            with connect() as db:
+                row=db.execute("""SELECT u.id,u.name,u.username,u.email,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,
+                p.bio,p.college_or_company,p.availability,p.workout_intensity,p.preferred_location,p.avatar_url,p.onboarding_completed,g.xp,g.streak,g.activities
+                FROM users u JOIN profiles p ON p.user_id=u.id JOIN user_game_state g ON g.user_id=u.id WHERE u.id=?""",(self.current_user(),)).fetchone()
+            return self.send_json(200,{"profile":dict(row)})
+        if path == "/api/activities":
+            with connect() as db:
+                rows=db.execute("""SELECT a.*,count(ap.user_id) AS participant_count,
+                  EXISTS(SELECT 1 FROM activity_participants mine WHERE mine.activity_id=a.id AND mine.user_id=?) AS joined
+                  FROM activities a LEFT JOIN activity_participants ap ON ap.activity_id=a.id GROUP BY a.id ORDER BY a.starts_at""",(self.current_user(),)).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/communities":
+            with connect() as db:
+                rows=db.execute("""SELECT c.*,count(cm.user_id) AS member_count,
+                  EXISTS(SELECT 1 FROM community_members mine WHERE mine.community_id=c.id AND mine.user_id=?) AS joined
+                  FROM communities c LEFT JOIN community_members cm ON cm.community_id=c.id GROUP BY c.id ORDER BY member_count DESC""",(self.current_user(),)).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/events":
+            with connect() as db:
+                try: db.execute("ALTER TABLE events ADD COLUMN photo TEXT")
+                except sqlite3.OperationalError: pass
+                db.execute("UPDATE events SET photo='cycling.jpg' WHERE id=4 AND (photo IS NULL OR photo='')")
+                db.execute("UPDATE events SET photo='yoga.jpg' WHERE id=5 AND (photo IS NULL OR photo='')")
+                db.execute("UPDATE events SET photo='gym.jpg' WHERE id=6 AND (photo IS NULL OR photo='')")
+                db.execute("UPDATE events SET photo='running.jpg' WHERE id=7 AND (photo IS NULL OR photo='')")
+                db.execute("UPDATE events SET photo='basketball.jpg' WHERE id=8 AND (photo IS NULL OR photo='')")
+                rows=db.execute("""SELECT e.*,COALESCE(sum(b.quantity),0) AS booked_count,
+                  EXISTS(SELECT 1 FROM bookings mine WHERE mine.event_id=e.id AND mine.user_id=? AND mine.status='confirmed') AS booked
+                  FROM events e LEFT JOIN bookings b ON b.event_id=e.id AND b.status='confirmed' GROUP BY e.id ORDER BY e.starts_at""",(self.current_user(),)).fetchall()
+            items=[]
+            for r in rows:
+                d=dict(r)
+                if not d.get("photo"): d["photo"]={"Running":"running.jpg","Basketball":"basketball.jpg","Yoga":"yoga.jpg","Cycling":"cycling.jpg","Gym":"gym.jpg"}.get(d["category"], "workout.jpg")
+                items.append(d)
+            return self.send_json(200,{"items":items})
+        if path.endswith("/calendar.ics"):
+            eid=int(path.split("/")[3])
+            with connect() as db:
+                ev=db.execute("SELECT * FROM events WHERE id=?",(eid,)).fetchone()
+                if not ev: return self.send_json(404,{"error":"Event not found"})
+                body=ics_for_event(dict(ev)); self.send_response(200)
+                self.send_header("Content-Type","text/calendar; charset=utf-8")
+                self.send_header("Content-Disposition",f"attachment; filename=fitverse-event-{eid}.ics")
+                self.send_header("Content-Length",str(len(body.encode()))); self.end_headers(); self.wfile.write(body.encode()); return
+        if path == "/api/notifications":
+            with connect() as db: rows=db.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC",(self.current_user(),)).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/messages":
+            with connect() as db: rows=db.execute("SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=1 ORDER BY m.id",()).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/reports":
+            with connect() as db: rows=db.execute("SELECT * FROM reports ORDER BY id DESC LIMIT 50").fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/search":
+            qstr='%'+urlparse(self.path).query.split("q=")[-1][:40].replace('+',' ').lower()+'%'
+            uid=self.current_user(); results={"users":[],"activities":[],"communities":[],"events":[]}
+            with connect() as db:
+                results["users"]=[dict(r) for r in db.execute("SELECT u.id,u.name,u.username,u.favorite_activity,u.fitness_level,g.xp FROM users u JOIN user_game_state g ON g.user_id=u.id WHERE lower(u.name) LIKE ? OR lower(u.username) LIKE ? LIMIT 6",(qstr,qstr))]
+                results["activities"]=[dict(r) for r in db.execute("SELECT id,title,sport,starts_at,location_label FROM activities WHERE lower(title) LIKE ? OR lower(sport) LIKE ? LIMIT 6",(qstr,qstr))]
+                results["communities"]=[dict(r) for r in db.execute("SELECT id,name,description FROM communities WHERE lower(name) LIKE ? OR lower(description) LIKE ? LIMIT 6",(qstr,qstr))]
+                results["events"]=[dict(r) for r in db.execute("SELECT id,name,category,starts_at,price_inr FROM events WHERE lower(name) LIKE ? OR lower(category) LIKE ? LIMIT 6",(qstr,qstr))]
+            return self.send_json(200,{"items":results})
+        if path == "/api/stream":
+            """Server-Sent Events stream: instant chat + notification push."""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            uid = self.current_user(); last_msg = 0; last_notif = int(urlparse(self.path).query.split("since=")[-1].split("&")[0] or 0)
+            try:
+                with connect() as db:
+                    row = db.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE conversation_id=?", (1,)).fetchone()
+                last_msg = row[0] if row else 0
+                self.wfile.write(b"retry: 3000\n\n"); self.wfile.flush()
+                while True:
+                    with connect() as db:
+                        new = db.execute("SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id>? ORDER BY m.id", (last_msg,)).fetchall()
+                        for m in new:
+                            payload = json.dumps(dict(m), ensure_ascii=False)
+                            self.wfile.write(f"event: message\ndata: {payload}\n\n".encode()); last_msg = m["id"]
+                        notes = db.execute("SELECT * FROM notifications WHERE user_id=? AND id>? ORDER BY id", (uid, last_notif)).fetchall()
+                        for n in notes:
+                            self.wfile.write(f"event: notification\ndata: {json.dumps(dict(n), ensure_ascii=False)}\n\n".encode()); last_notif = n["id"]
+                    # Typing indicator: someone OTHER than the viewer typed in the last 2.5s.
+                    active_now = [cid for cid, (ts, who) in TYPING.items() if time.time() - ts < 2.5 and who != uid]
+                    if active_now:
+                        self.wfile.write(f"event: typing\ndata: {json.dumps({'conversations': active_now})}\n\n".encode())
+                    self.wfile.write(b": ping\n\n"); self.wfile.flush()
+                    time.sleep(1.2)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
+            except Exception as exc:
+                import traceback; traceback.print_exc()
+                print(f"[stream] error: {exc!r}", flush=True)
+                return
+        if path == "/api/notifications/since":
+            since=int(urlparse(self.path).query.split("since=")[-1].split("&")[0] or 0)
+            with connect() as db:
+                rows=[dict(r) for r in db.execute("SELECT * FROM notifications WHERE user_id=? AND id>? ORDER BY id",(self.current_user(),since))]
+                unread=db.execute("SELECT count(*) FROM notifications WHERE user_id=? AND is_read=0",(self.current_user(),)).fetchone()[0]
+            return self.send_json(200,{"items":rows,"unread":unread})
+        if path.startswith("/api/activities/") and not path.endswith(("/join","/leave","/complete")):
+            aid=int(path.split("/")[3])
+            with connect() as db:
+                row=db.execute("""SELECT a.*,u.name AS host_name,
+                  (SELECT count(*) FROM activity_participants ap WHERE ap.activity_id=a.id) AS participant_count,
+                  EXISTS(SELECT 1 FROM activity_participants m WHERE m.activity_id=a.id AND m.user_id=?) AS joined,
+                  EXISTS(SELECT 1 FROM activity_completions c WHERE c.activity_id=a.id AND c.user_id=?) AS completed
+                  FROM activities a JOIN users u ON u.id=a.host_id WHERE a.id=?""",(self.current_user(),self.current_user(),aid)).fetchone()
+                people=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.username FROM activity_participants ap JOIN users u ON u.id=ap.user_id WHERE ap.activity_id=? ORDER BY ap.joined_at LIMIT 12""",(aid,))] if row else []
+            if not row: return self.send_json(404,{"error":"Activity not found"})
+            item=dict(row); item["participants"]=people
+            return self.send_json(200,{"item":item})
+        if path == "/api/achievements":
+            with connect() as db: rows=db.execute("SELECT a.*,ua.unlocked_at FROM achievements a LEFT JOIN user_achievements ua ON ua.achievement_id=a.id AND ua.user_id=? ORDER BY a.id",(self.current_user(),)).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/bookings":
+            with connect() as db:
+                items=[dict(r) for r in db.execute("SELECT b.booking_code,b.status,b.quantity,e.name,e.starts_at,e.location_label FROM bookings b JOIN events e ON e.id=b.event_id WHERE b.user_id=? ORDER BY b.id DESC",(self.current_user(),))]
+            return self.send_json(200,{"items":items})
+        if path == "/api/users":
+            with connect() as db: rows=db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,g.xp,g.streak FROM users u JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id ORDER BY g.xp DESC").fetchall()
+            items=[]
+            for r in rows:
+                d=dict(r); d["photo"]=f"img/p{1 + (d['id'] % 12)}.jpg"; items.append(d)
+            return self.send_json(200,{"items":items})
+        if path == "/api/challenges":
+            with connect() as db:
+                rows=db.execute("""SELECT c.*, cu.name AS challenger_name, ou.name AS opponent_name,
+                  (SELECT progress FROM challenge_participants cp WHERE cp.challenge_id=c.id AND cp.user_id=c.challenger_id) AS challenger_progress,
+                  (SELECT progress FROM challenge_participants cp WHERE cp.challenge_id=c.id AND cp.user_id=c.opponent_id) AS opponent_progress
+                  FROM challenges c JOIN users cu ON cu.id=c.challenger_id JOIN users ou ON ou.id=c.opponent_id ORDER BY c.id DESC""").fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/friends":
+            uid=self.current_user()
+            with connect() as db: rows=db.execute("""SELECT u.id,u.name,u.username,f.status, f.requester_id FROM friendships f
+              JOIN users u ON u.id=CASE WHEN f.requester_id=? THEN f.addressee_id ELSE f.requester_id END
+              WHERE f.requester_id=? OR f.addressee_id=?""",(uid,uid,uid)).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/conversations":
+            uid=self.current_user()
+            with connect() as db:
+                rows=db.execute("""SELECT c.*, (SELECT body FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
+                  (SELECT created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_at,
+                  (SELECT count(*) FROM messages m WHERE m.conversation_id=c.id) AS message_count
+                  FROM conversations c ORDER BY c.id""").fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path.startswith("/api/conversations/"):
+            cid=int(path.split("/")[3])
+            with connect() as db: rows=db.execute('SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.id',(cid,)).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/comments":
+            post_id=int(urlparse(self.path).query.split("post_id=")[-1] or 0)
+            with connect() as db: rows=db.execute('SELECT c.*,u.name FROM comments c JOIN users u ON u.id=c.author_id WHERE c.post_id=? ORDER BY c.id',(post_id,)).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/reels":
+            with connect() as db:
+                try: db.execute("ALTER TABLE posts ADD COLUMN media TEXT")
+                except sqlite3.OperationalError: pass
+                rows=db.execute("""SELECT p.*,u.name,u.username,
+                  (SELECT count(*) FROM post_likes l WHERE l.post_id=p.id) AS likes,
+                  EXISTS(SELECT 1 FROM post_likes l WHERE l.post_id=p.id AND l.user_id=?) AS liked,
+                  (SELECT count(*) FROM comments c WHERE c.post_id=p.id) AS comments
+                  FROM posts p JOIN users u ON u.id=p.author_id WHERE p.kind IN ('reel','motivation','achievement') ORDER BY p.id DESC""",(self.current_user(),)).fetchall()
+                items=[]
+                for r in rows:
+                    d=dict(r)
+                    if not d.get("photo"):
+                        bl=d["body"].lower()
+                        d["photo"]="running.jpg" if ("run" in bl or "5k" in bl or "km" in bl) else "cycling.jpg" if ("cycl" in bl or "ride" in bl) else "yoga.jpg" if "yoga" in bl else "gym.jpg" if ("gym" in bl or "lift" in bl or "strength" in bl or "ice" in bl) else "basketball.jpg" if ("court" in bl or "hoop" in bl or "basketball" in bl) else "workout.jpg"
+                    items.append(d)
+            return self.send_json(200,{"items":items})
+        if path == "/api/community":
+            cid=int(urlparse(self.path).query.split("id=")[-1].split("&")[0] or 1)
+            uid=self.current_user()
+            with connect() as db:
+                c=db.execute("SELECT * FROM communities WHERE id=?",(cid,)).fetchone()
+                if not c: return self.send_json(404,{"error":"Community not found"})
+                members=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.username FROM community_members cm JOIN users u ON u.id=cm.user_id WHERE cm.community_id=? LIMIT 24""",(cid,))]
+                posts=[dict(r) for r in db.execute("""SELECT p.*,u.name,u.username,
+                  (SELECT count(*) FROM post_likes l WHERE l.post_id=p.id) AS likes,
+                  EXISTS(SELECT 1 FROM post_likes l WHERE l.post_id=p.id AND l.user_id=?) AS liked
+                  FROM community_posts cp JOIN posts p ON p.id=cp.post_id JOIN users u ON u.id=p.author_id
+                  WHERE cp.community_id=? ORDER BY p.id DESC LIMIT 30""",(uid,cid))]
+                events=[dict(r) for r in db.execute("SELECT * FROM events WHERE category=(SELECT activity FROM communities WHERE id=?) ORDER BY starts_at LIMIT 4",(cid,))]
+            item=dict(c); item["members"]=members; item["posts"]=posts; item["events"]=events
+            return self.send_json(200,{"item":item})
+        if path == "/api/businesses":
+            with connect() as db:
+                try: db.execute("ALTER TABLE businesses ADD COLUMN photo TEXT")
+                except sqlite3.OperationalError: pass
+                db.executemany("INSERT OR IGNORE INTO businesses (id,name,category,location_label,description,rating,created_at) VALUES (?,?,?,?,?,?,?)", [
+                    (3,"Zen Yoga Studio","Yoga studio","Besant Nagar","Heated flows, aerial yoga and teacher training.",4.8,now()),
+                    (4,"Coast Cycle Co.","Cycling shop","ECR-Kelambakkam","Rentals, repairs and weekend group rides.",4.6,now()),
+                    (5,"Iron Temple Strength","Powerlifting gym","Kodambakkam","Platform lifting, coaching and open meets.",4.9,now()),
+                    (6,"The Runner's Fix","Running store","Alwarpet","Gait analysis, shoes and a runners' cafe.",4.7,now()),
+                    (7,"Aqua Fit Swim Center","Swim school","T.Nagar","Adult learn-to-swim and masters squads.",4.5,now()),
+                    (8,"Summit Climbing Gym","Climbing gym","Velachery","Bouldering, top-rope and yoga combos.",4.8,now()),
+                ])
+                rows=db.execute("SELECT * FROM businesses ORDER BY rating DESC").fetchall()
+            items=[]
+            for r in rows:
+                d=dict(r)
+                if not d.get("photo"): d["photo"]={"Gym":"gym.jpg","Sports academy":"basketball.jpg","Yoga studio":"yoga.jpg","Cycling shop":"cycling.jpg","Powerlifting gym":"gym.jpg","Running store":"running.jpg","Swim school":"workout.jpg","Climbing gym":"gym.jpg"}.get(d["category"], "workout.jpg")
+                items.append(d)
+            return self.send_json(200,{"items":items})
+        if path.startswith("/api/businesses/"):
+            bid=int(path.split("/")[3])
+            with connect() as db:
+                b=db.execute("SELECT * FROM businesses WHERE id=?",(bid,)).fetchone()
+                reviews=[dict(r) for r in db.execute("""SELECT r.*,u.name FROM reviews r JOIN users u ON u.id=r.user_id WHERE r.business_id=? ORDER BY r.id DESC LIMIT 20""",(bid,))]
+            if not b: return self.send_json(404,{"error":"Business not found"})
+            item=dict(b)
+            if not item.get("photo"): item["photo"]={"Gym":"gym.jpg","Sports academy":"basketball.jpg","Yoga studio":"yoga.jpg","Cycling shop":"cycling.jpg","Powerlifting gym":"gym.jpg","Running store":"running.jpg","Swim school":"workout.jpg","Climbing gym":"gym.jpg"}.get(item["category"], "workout.jpg")
+            item["reviews"]=reviews
+            return self.send_json(200,{"item":item})
+        if path.startswith("/api/athletes/"):
+            aid=int(path.split("/")[3]); uid=self.current_user()
+            with connect() as db:
+                a=db.execute("""SELECT u.*,p.bio,p.avatar_url,g.xp,g.streak,g.activities FROM users u JOIN profiles p ON p.user_id=u.id JOIN user_game_state g ON g.user_id=u.id WHERE u.id=?""",(aid,)).fetchone()
+                if not a: return self.send_json(404,{"error":"Athlete not found"})
+                posts=[dict(r) for r in db.execute("""SELECT p.*,
+                  (SELECT count(*) FROM post_likes l WHERE l.post_id=p.id) AS likes
+                  FROM posts p WHERE p.author_id=? ORDER BY p.id DESC LIMIT 12""",(aid,))]
+                acts=[dict(r) for r in db.execute("""SELECT a.*,(SELECT count(*) FROM activity_participants ap WHERE ap.activity_id=a.id) AS participant_count
+                  FROM activities a WHERE a.host_id=? ORDER BY a.starts_at LIMIT 8""",(aid,))]
+                badges=[dict(r) for r in db.execute("""SELECT an.name,an.icon,ua.unlocked_at FROM user_achievements ua JOIN achievements an ON an.id=ua.achievement_id WHERE ua.user_id=?""",(aid,))]
+            item=dict(a); item["posts"]=posts; item["activities"]=acts; item["badges"]=badges
+            return self.send_json(200,{"item":item})
+        if path == "/api/stats":
+            uid=self.current_user()
+            with connect() as db:
+                stats={
+                    "users": db.execute("SELECT count(*) FROM users").fetchone()[0],
+                    "activities": db.execute("SELECT count(*) FROM activities").fetchone()[0],
+                    "communities": db.execute("SELECT count(*) FROM communities").fetchone()[0],
+                    "events": db.execute("SELECT count(*) FROM events").fetchone()[0],
+                    "posts": db.execute("SELECT count(*) FROM posts").fetchone()[0],
+                    "bookings": db.execute("SELECT count(*) FROM bookings").fetchone()[0],
+                    "challenges": db.execute("SELECT count(*) FROM challenges").fetchone()[0],
+                    "messages": db.execute("SELECT count(*) FROM messages").fetchone()[0],
+                    "reports": db.execute("SELECT count(*) FROM reports WHERE status='open'").fetchone()[0],
+                }
+            return self.send_json(200,{"items":stats})
+        if path == "/api/xp":
+            with connect() as db: rows=db.execute("SELECT amount,reason,source_type,created_at FROM xp_transactions WHERE user_id=? ORDER BY id DESC LIMIT 50",(self.current_user(),)).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        # ===== FITVERSE 2.0 GET endpoints =====
+        if path == "/api/me/settings":
+            with connect() as db:
+                s=db.execute("SELECT * FROM user_settings WHERE user_id=?",(self.current_user(),)).fetchone()
+                import ai_service
+                t=ai_service.targets_from_profile(dict(s) if s else {})
+            return self.send_json(200,{"item":{**(dict(s) if s else {}), **t}})
+        if path == "/api/exercises":
+            q=urlparse(self.path).query.lower(); muscle=[m.split('=')[1] for m in q.split('&') if m.startswith('muscle=')]
+            equip=[e.split('=')[1] for e in q.split('&') if e.startswith('equipment=')]
+            search=[s.split('=')[1] for s in q.split('&') if s.startswith('q=')]
+            with connect() as db:
+                sql="SELECT * FROM exercises WHERE 1=1"; args=[]
+                if muscle and muscle[0]: sql+=" AND muscle=?"; args.append(muscle[0].capitalize())
+                if equip and equip[0]: sql+=" AND equipment=?"; args.append(equip[0].capitalize())
+                if search and search[0]: sql+=" AND lower(name) LIKE ?"; args.append(f"%{search[0]}%")
+                rows=db.execute(sql+" ORDER BY muscle,name",args).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/workouts":
+            uid=self.current_user()
+            with connect() as db:
+                rows=db.execute("SELECT * FROM workout_sessions WHERE user_id=? ORDER BY id DESC LIMIT 40",(uid,)).fetchall()
+                items=[]
+                for r in rows:
+                    d=dict(r); d["logs"]=[dict(l) for l in db.execute("""SELECT wl.*,e.name,e.muscle FROM workout_logs wl JOIN exercises e ON e.id=wl.exercise_id WHERE wl.session_id=? ORDER BY wl.id""",(d['id'],))]
+                    items.append(d)
+            return self.send_json(200,{"items":items})
+        if path == "/api/workouts/prs":
+            uid=self.current_user()
+            with connect() as db:
+                rows=db.execute("""SELECT e.name, MAX(wl.weight) max_w, MAX(wl.reps*wl.weight) max_vol, COUNT(*) n
+                  FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id JOIN exercises e ON e.id=wl.exercise_id
+                  WHERE ws.user_id=? GROUP BY e.name ORDER BY max_w DESC LIMIT 12""",(uid,)).fetchall()
+            return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/nutrition":
+            uid=self.current_user(); day=urlparse(self.path).query.split("day=")[-1].split("&")[0] or None
+            import datetime as _dt
+            day=day or _dt.date.today().isoformat()
+            with connect() as db:
+                logs=[dict(r) for r in db.execute("SELECT * FROM nutrition_logs WHERE user_id=? AND logged_on=? ORDER BY id",(uid,day))]
+                week=[dict(r) for r in db.execute("""SELECT logged_on, SUM(kcal) kcal, SUM(protein_g) p FROM nutrition_logs
+                  WHERE user_id=? AND logged_on>=date('now','-6 days') GROUP BY logged_on ORDER BY logged_on""",(uid,))]
+                s=db.execute("SELECT kcal_target,protein_target,water_target_ml FROM user_settings WHERE user_id=?",(uid,)).fetchone()
+                import ai_service
+                t=ai_service.targets_from_profile(dict(s) if s else {})
+            import datetime as _dt2
+            totals={"kcal":sum(l['kcal'] for l in logs),"protein":round(sum(l['protein_g'] for l in logs)),"carbs":round(sum(l['carbs_g'] for l in logs)),"fat":round(sum(l['fat_g'] for l in logs)),"fiber":round(sum(l['fiber_g'] for l in logs))}
+            return self.send_json(200,{"items":logs,"day":day,"totals":totals,"targets":t,"week":week})
+        if path == "/api/water":
+            uid=self.current_user(); import datetime as _dt
+            day=_dt.date.today().isoformat()
+            with connect() as db:
+                ml=db.execute("SELECT COALESCE(SUM(ml),0) FROM water_logs WHERE user_id=? AND logged_on=?",(uid,day)).fetchone()[0]
+                week=[dict(r) for r in db.execute("SELECT logged_on, SUM(ml) ml FROM water_logs WHERE user_id=? AND logged_on>=date('now','-6 days') GROUP BY logged_on",(uid,))]
+                target=db.execute("SELECT water_target_ml FROM user_settings WHERE user_id=?",(uid,)).fetchone()
+            return self.send_json(200,{"today_ml":ml,"target_ml":target['water_target_ml'] if target else 2500,"week":week})
+        if path == "/api/progress":
+            uid=self.current_user()
+            with connect() as db:
+                entries=[dict(r) for r in db.execute("SELECT * FROM progress_entries WHERE user_id=? ORDER BY entry_date DESC LIMIT 50",(uid,))]
+            return self.send_json(200,{"items":entries})
+        if path == "/api/ai/coach":
+            uid=self.current_user()
+            with connect() as db:
+                conv=db.execute("SELECT id FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT 1",(uid,)).fetchone()
+                if not conv:
+                    cur=db.execute("INSERT INTO ai_conversations (user_id,title,created_at) VALUES (?,?,?)",(uid,'Coach chat',now())); cid=cur.lastrowid
+                else: cid=conv['id']
+                msgs=[dict(r) for r in db.execute("SELECT role,content,created_at FROM ai_messages WHERE conversation_id=? ORDER BY id DESC LIMIT 40",(cid,))]
+            return self.send_json(200,{"conversationId":cid,"items":list(reversed(msgs))})
+        if path == "/api/ai/review":
+            import ai_service
+            return self.send_json(200,{"item":ai_service.weekly_review(self.current_user())})
+        if path == "/api/ai/buddy":
+            import ai_service
+            return self.send_json(200,{"items":[{"note":n} for n in ai_service.buddy_notes(self.current_user())]})
+        if path == "/api/fitmatch":
+            import ai_service
+            return self.send_json(200,{"items":ai_service.fit_match(self.current_user(),8)})
+        if path == "/api/leaderboards":
+            uid=self.current_user()
+            with connect() as db:
+                weekly=[dict(r) for r in db.execute("""SELECT u.name,u.username,COALESCE(SUM(x.amount),0) xp FROM xp_transactions x JOIN users u ON u.id=x.user_id
+                  WHERE x.created_at>=date('now','-7 days') GROUP BY x.user_id ORDER BY xp DESC LIMIT 10""")]
+                strength=[dict(r) for r in db.execute("""SELECT u.name,u.username,MAX(wl.weight) top FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id
+                  JOIN users u ON u.id=ws.user_id WHERE wl.weight>0 GROUP BY ws.user_id ORDER BY top DESC LIMIT 10""")]
+                streaks=[dict(r) for r in db.execute("SELECT u.name,u.username,g.streak FROM user_game_state g JOIN users u ON u.id=g.user_id ORDER BY g.streak DESC LIMIT 10")]
+                consistency=[dict(r) for r in db.execute("""SELECT u.name,u.username,COUNT(*) n FROM workout_sessions ws JOIN users u ON u.id=ws.user_id
+                  WHERE ws.created_at>=date('now','-28 days') GROUP BY ws.user_id ORDER BY n DESC LIMIT 10""")]
+            return self.send_json(200,{"weekly":weekly,"strength":strength,"streaks":streaks,"consistency":consistency})
+        if path == "/api/friends":
+            uid=self.current_user()
+            with connect() as db:
+                friends=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.favorite_activity,g.streak,g.xp,p.bio
+                  FROM friendships f JOIN users u ON u.id=CASE WHEN f.requester_id=? THEN f.addressee_id ELSE f.requester_id END
+                  JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id
+                  WHERE f.status='accepted' AND (f.requester_id=? OR f.addressee_id=?) ORDER BY u.name""",(uid,uid,uid))]
+                incoming=[dict(r) for r in db.execute("""SELECT f.id req_id,u.id,u.name,u.username FROM friendships f JOIN users u ON u.id=f.requester_id
+                  WHERE f.addressee_id=? AND f.status='pending'""",(uid,))]
+                for f_ in friends: f_["photo"]=f"img/p{1 + (f_['id'] % 12)}.jpg"
+            return self.send_json(200,{"items":friends,"incoming":incoming})
+        if path.startswith("/api/posts/") and path.endswith("/comments") and path.count('/')==3:
+            # already handled earlier; guard for GET comments by post id
+            pass
+        if path.startswith("/api/users/"):
+            aid=int(path.split("/")[3]); uid=self.current_user()
+            with connect() as db:
+                a=db.execute("""SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,p.avatar_url,g.xp,g.streak,g.activities
+                  FROM users u JOIN profiles p ON p.user_id=u.id JOIN user_game_state g ON g.user_id=u.id WHERE u.id=?""",(aid,)).fetchone()
+                if not a: return self.send_json(404,{"error":"Athlete not found"})
+                posts=[dict(r) for r in db.execute("SELECT * FROM posts WHERE author_id=? ORDER BY id DESC LIMIT 12",(aid,))]
+                badges=[dict(r) for r in db.execute("SELECT an.name,an.icon,ua.unlocked_at FROM user_achievements ua JOIN achievements an ON an.id=ua.achievement_id WHERE ua.user_id=?",(aid,))]
+                followers=db.execute("SELECT count(*) FROM follows WHERE followee_id=?",(aid,)).fetchone()[0]
+                following=db.execute("SELECT count(*) FROM follows WHERE follower_id=?",(aid,)).fetchone()[0]
+                is_following=db.execute("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?",(uid,aid)).fetchone()
+                sessions=db.execute("SELECT count(*) FROM workout_sessions WHERE user_id=?",(aid,)).fetchone()[0]
+            item=dict(a); item.update({"posts":posts,"badges":badges,"followers":followers,"following":following,"is_following":bool(is_following),"sessions":sessions})
+            return self.send_json(200,{"item":item})
+        if path.startswith("/api/"): return self.send_json(404,{"error":"Unknown API route"})
+        self.serve_static(path)
+
+    def do_POST(self) -> None:
+        try:
+            path = urlparse(self.path).path; data = self.body()
+            if path == "/api/auth/login":
+                username=str(data.get("username","")).strip().lower(); password=str(data.get("password",""))
+                with connect() as db: user=db.execute("SELECT * FROM users WHERE username=? OR email=?",(username,username)).fetchone()
+                if not user or hash_password(password,user["password_salt"]) != user["password_hash"]: return self.send_json(401,{"error":"Invalid username or password"})
+                token=secrets.token_urlsafe(32); SESSIONS[token]=user["id"]; return self.send_json(200,{"token":token,"user":{"id":user["id"],"name":user["name"]}})
+            if path == "/api/auth/register":
+                required=["name","username","email","password"]
+                if any(not str(data.get(k,"")).strip() for k in required): return self.send_json(400,{"error":"Name, username, email and password are required"})
+                salt=secrets.token_hex(16); stamp=now()
+                try:
+                    with connect() as db:
+                        cur=db.execute("INSERT INTO users (name,username,email,password_salt,password_hash,created_at) VALUES (?,?,?,?,?,?)",(data["name"].strip(),data["username"].strip().lower(),data["email"].strip().lower(),salt,hash_password(data["password"],salt),stamp))
+                        db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",(cur.lastrowid,0,0,0,0,0,"pending",0,0,0,stamp)); db.execute("INSERT INTO profiles (user_id,updated_at,onboarding_completed) VALUES (?,?,0)",(cur.lastrowid,stamp)); user_id=cur.lastrowid
+                    token=secrets.token_urlsafe(32); SESSIONS[token]=user_id; return self.send_json(201,{"token":token,"userId":user_id})
+                except sqlite3.IntegrityError: return self.send_json(409,{"error":"That username or email is already in use"})
+            if path == "/api/profile":
+                allowed_user={"name","city","fitness_level","fitness_goal","favorite_activity","preferred_time"}
+                allowed_profile={"bio","college_or_company","availability","workout_intensity","preferred_location","avatar_url","onboarding_completed"}
+                if not any(key in data for key in (*allowed_user,*allowed_profile)): return self.send_json(400,{"error":"No editable profile fields supplied"})
+                with connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    for key in allowed_user:
+                        if key in data: db.execute(f"UPDATE users SET {key}=? WHERE id=?",(str(data[key]).strip()[:120],self.current_user()))
+                    for key in allowed_profile:
+                        if key in data: db.execute(f"UPDATE profiles SET {key}=?,updated_at=? WHERE user_id=?",(str(data[key]).strip()[:500],now(),self.current_user()))
+                    db.commit()
+                return self.send_json(200,{"ok":True})
+            if path == "/api/activities":
+                required=("title","sport","starts_at","location_label")
+                if any(not str(data.get(k,"")).strip() for k in required): return self.send_json(400,{"error":"Activity title, sport, time and location are required"})
+                maximum=max(2,min(100,int(data.get("max_participants",8))))
+                with connect() as db:
+                    cur=db.execute("""INSERT INTO activities (title,sport,starts_at,location_label,max_participants,fitness_level,intensity,description,host_id,created_at)
+                      VALUES (?,?,?,?,?,?,?,?,?,?)""",(str(data["title"]).strip()[:100],str(data["sport"]).strip()[:50],str(data["starts_at"]),str(data["location_label"]).strip()[:120],maximum,str(data.get("fitness_level","Open"))[:30],str(data.get("intensity","Moderate"))[:30],str(data.get("description","")).strip()[:1000],self.current_user(),now()))
+                    db.execute("INSERT INTO activity_participants VALUES (?,?,?)",(cur.lastrowid,self.current_user(),now()))
+                return self.send_json(201,{"ok":True,"activityId":cur.lastrowid})
+            if path == "/api/communities":
+                name=str(data.get("name","")).strip(); description=str(data.get("description","")).strip()
+                if not name or not description:return self.send_json(400,{"error":"Community name and description are required"})
+                try:
+                    with connect() as db:
+                        cur=db.execute("INSERT INTO communities (name,description,activity,created_at) VALUES (?,?,?,?)",(name[:100],description[:800],str(data.get("activity","Fitness"))[:50],now()))
+                        db.execute("INSERT INTO community_members VALUES (?,?,?,?)",(cur.lastrowid,self.current_user(),"owner",now()))
+                    return self.send_json(201,{"ok":True,"communityId":cur.lastrowid})
+                except sqlite3.IntegrityError:return self.send_json(409,{"error":"A community with that name already exists"})
+            if path == "/api/events":
+                required=("name","category","starts_at","location_label","organizer")
+                if any(not str(data.get(k,"")).strip() for k in required): return self.send_json(400,{"error":"Event name, category, time, location and organizer are required"})
+                with connect() as db:
+                    cur=db.execute("INSERT INTO events (name,category,starts_at,location_label,price_inr,capacity,organizer,description,created_at) VALUES (?,?,?,?,?,?,?,?,?)",(str(data["name"]).strip()[:100],str(data["category"]).strip()[:50],str(data["starts_at"]),str(data["location_label"]).strip()[:120],max(0,int(data.get("price_inr",0))),max(1,int(data.get("capacity",20))),str(data["organizer"]).strip()[:100],str(data.get("description","")).strip()[:1500],now()))
+                return self.send_json(201,{"ok":True,"eventId":cur.lastrowid})
+            if path == "/api/notifications/read":
+                with connect() as db: db.execute("UPDATE notifications SET is_read=1 WHERE user_id=?" if not data.get("id") else "UPDATE notifications SET is_read=1 WHERE user_id=? AND id=?",(self.current_user(),) if not data.get("id") else (self.current_user(),int(data["id"])))
+                return self.send_json(200,{"ok":True})
+            if path == "/api/friends/request":
+                recipient=int(data.get("user_id",0))
+                if recipient == self.current_user(): return self.send_json(400,{"error":"You cannot add yourself"})
+                with connect() as db:
+                    exists=db.execute("SELECT status FROM friendships WHERE (requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?)",(self.current_user(),recipient,recipient,self.current_user())).fetchone()
+                    if exists:return self.send_json(409,{"error":"A friend relationship already exists"})
+                    db.execute("INSERT INTO friendships (requester_id,addressee_id,status,created_at) VALUES (?,?,?,?)",(self.current_user(),recipient,"pending",now()))
+                    db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(recipient,"friend_request","New friend request","Someone wants to connect through FITVERSE.",now()))
+                return self.send_json(201,{"ok":True,"status":"pending"})
+            if path.startswith("/api/posts/"):
+                parts=path.split("/"); post_id=int(parts[3]); operation=parts[4] if len(parts)>4 else ""
+                with connect() as db:
+                    if operation == "like":
+                        exists=db.execute("SELECT 1 FROM post_likes WHERE post_id=? AND user_id=?",(post_id,self.current_user())).fetchone()
+                        if exists: db.execute("DELETE FROM post_likes WHERE post_id=? AND user_id=?",(post_id,self.current_user())); liked=False
+                        else: db.execute("INSERT INTO post_likes VALUES (?,?,?)",(post_id,self.current_user(),now())); liked=True
+                        return self.send_json(200,{"ok":True,"liked":liked})
+                    if operation == "save":
+                        exists=db.execute("SELECT 1 FROM saved_posts WHERE post_id=? AND user_id=?",(post_id,self.current_user())).fetchone()
+                        if exists: db.execute("DELETE FROM saved_posts WHERE post_id=? AND user_id=?",(post_id,self.current_user())); saved=False
+                        else: db.execute("INSERT INTO saved_posts VALUES (?,?,?)",(post_id,self.current_user(),now())); saved=True
+                        return self.send_json(200,{"ok":True,"saved":saved})
+                    if operation == "comments":
+                        comment=str(data.get("body","")).strip()
+                        if not comment:return self.send_json(400,{"error":"Comment cannot be empty"})
+                        cur=db.execute("INSERT INTO comments (post_id,author_id,body,created_at) VALUES (?,?,?,?)",(post_id,self.current_user(),comment[:1000],now()))
+                        return self.send_json(201,{"ok":True,"commentId":cur.lastrowid})
+            if path.startswith("/api/activities/"):
+                parts=path.split("/"); activity_id=int(parts[3]); operation=parts[4] if len(parts)>4 else ""
+                with connect() as db:
+                    if operation == "join":
+                        activity=db.execute("SELECT max_participants FROM activities WHERE id=?",(activity_id,)).fetchone()
+                        if not activity:return self.send_json(404,{"error":"Activity not found"})
+                        if db.execute("SELECT count(*) FROM activity_participants WHERE activity_id=?",(activity_id,)).fetchone()[0]>=activity["max_participants"]: return self.send_json(409,{"error":"This activity is full"})
+                        try: db.execute("INSERT INTO activity_participants VALUES (?,?,?)",(activity_id,self.current_user(),now()))
+                        except sqlite3.IntegrityError:return self.send_json(409,{"error":"You have already joined this activity"})
+                        return self.send_json(200,{"ok":True})
+                    if operation == "leave":
+                        db.execute("DELETE FROM activity_participants WHERE activity_id=? AND user_id=?",(activity_id,self.current_user()))
+                        return self.send_json(200,{"ok":True})
+                    if operation == "complete":
+                        try: db.execute("INSERT INTO activity_completions VALUES (?,?,?)",(activity_id,self.current_user(),now()))
+                        except sqlite3.IntegrityError: return self.send_json(409,{"error":"You already completed this activity"})
+                        db.execute("UPDATE user_game_state SET activities=activities+1 WHERE user_id=?",(self.current_user(),))
+                        award_xp(db,self.current_user(),80,"Completed an activity","activity",str(activity_id))
+                        unlocked=check_achievements(db,self.current_user())
+                        msg=f"+80 XP earned!" + (f" Achievement: {', '.join(unlocked)}." if unlocked else "")
+                        db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(self.current_user(),"xp","Activity complete",msg,now()))
+                        g=user_state(db,self.current_user()); return self.send_json(200,{"ok":True,"state":g,"message":msg})
+            if path.startswith("/api/communities/"):
+                parts=path.split("/"); community_id=int(parts[3]); operation=parts[4] if len(parts)>4 else ""
+                with connect() as db:
+                    if operation == "join":
+                        try: db.execute("INSERT INTO community_members VALUES (?,?,?,?)",(community_id,self.current_user(),"member",now()))
+                        except sqlite3.IntegrityError:return self.send_json(409,{"error":"You are already a member"})
+                        return self.send_json(200,{"ok":True})
+                    if operation == "leave":
+                        db.execute("DELETE FROM community_members WHERE community_id=? AND user_id=? AND role<>'owner'",(community_id,self.current_user()))
+                        return self.send_json(200,{"ok":True})
+            if path.startswith("/api/events/") and path.endswith("/book"):
+                event_id=int(path.split("/")[3]); quantity=max(1,min(10,int(data.get("quantity",1))))
+                with connect() as db:
+                    event=db.execute("SELECT capacity FROM events WHERE id=?",(event_id,)).fetchone()
+                    if not event:return self.send_json(404,{"error":"Event not found"})
+                    booked=db.execute("SELECT COALESCE(sum(quantity),0) FROM bookings WHERE event_id=? AND status='confirmed'",(event_id,)).fetchone()[0]
+                    if booked+quantity>event["capacity"]:return self.send_json(409,{"error":"Not enough tickets remaining"})
+                    code=f"FV-2026-{secrets.randbelow(9000)+1000}"; db.execute("INSERT INTO bookings (booking_code,user_id,event_id,quantity,status,qr_payload,created_at) VALUES (?,?,?,?,?,?,?)",(code,self.current_user(),event_id,quantity,"confirmed",f"fitverse://booking/{code}",now()))
+                return self.send_json(201,{"ok":True,"bookingCode":code,"message":"Demo payment successful"})
+            if path == "/api/actions":
+                action=str(data.get("action","sync")); return self.send_json(200,perform_action(self.current_user(),action,data.get("state",{})))
+            if path == "/api/messages":
+                body=str(data.get("body","")).strip()
+                if not body or len(body)>1000:return self.send_json(400,{"error":"Message must be 1–1000 characters"})
+                cid=int(data.get("conversation_id",1))
+                with connect() as db:
+                    db.execute("INSERT INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)",(cid,self.current_user(),body,now()))
+                    kind=db.execute("SELECT kind FROM conversations WHERE id=?",(cid,)).fetchone()
+                    if kind and kind["kind"]=="direct":
+                        other=db.execute("SELECT sender_id FROM messages WHERE conversation_id=? AND sender_id<>? ORDER BY id DESC LIMIT 1",(cid,self.current_user())).fetchone()
+                        mate=other["sender_id"] if other else 2
+                        schedule_auto_reply(cid, mate)
+                return self.send_json(201,{"ok":True})
+            if path == "/api/typing":
+                TYPING[int(data.get("conversation_id",1))] = (time.time(), self.current_user())
+                return self.send_json(200,{"ok":True})
+            if path == "/api/reviews":
+                bid=int(data.get("business_id",0)); rating=max(1,min(5,int(data.get("rating",5)))); body=str(data.get("body","Great place!")).strip()[:600]
+                if not bid: return self.send_json(400,{"error":"Business is required"})
+                with connect() as db:
+                    db.execute("INSERT INTO reviews (user_id,business_id,rating,body,created_at) VALUES (?,?,?,?,?)",(self.current_user(),bid,rating,body,now()))
+                    avg=db.execute("SELECT AVG(rating) FROM reviews WHERE business_id=?",(bid,)).fetchone()[0]
+                    db.execute("UPDATE businesses SET rating=? WHERE id=?",(round(avg,2),bid))
+                return self.send_json(201,{"ok":True,"message":"Review posted"})
+            if path == "/api/community/posts":
+                cid=int(data.get("community_id",0)); body=str(data.get("body","")).strip()
+                if not cid or not body: return self.send_json(400,{"error":"Community and content are required"})
+                with connect() as db:
+                    cur=db.execute("INSERT INTO posts (author_id,body,kind,created_at) VALUES (?,?,?,?)",(self.current_user(),body[:2000],"community",now()))
+                    db.execute("INSERT OR IGNORE INTO community_posts (community_id,post_id,created_at) VALUES (?,?,?)",(cid,cur.lastrowid,now()))
+                return self.send_json(201,{"ok":True,"postId":cur.lastrowid})
+            if path == "/api/reports":
+                target_type=str(data.get("target_type","post"))[:30]; target_id=int(data.get("target_id",0)); reason=str(data.get("reason","Inappropriate content")).strip()[:500]
+                if not target_id: return self.send_json(400,{"error":"Report target is required"})
+                with connect() as db: db.execute("INSERT INTO reports (reporter_id,target_type,target_id,reason,status,created_at) VALUES (?,?,?,?, 'open',?)",(self.current_user(),target_type,target_id,reason,now()))
+                return self.send_json(201,{"ok":True,"message":"Report submitted — our moderators will review it."})
+            if path.startswith("/api/reports/") and path.endswith("/resolve"):
+                rid=int(path.split("/")[3])
+                with connect() as db: db.execute("UPDATE reports SET status='resolved' WHERE id=?",(rid,))
+                return self.send_json(200,{"ok":True})
+            if path == "/api/challenges":
+                title=str(data.get("title","Fitness challenge")).strip()[:100]; ctype=str(data.get("challenge_type","running_distance"))[:40]
+                opponent=int(data.get("opponent_id",2)); target=float(data.get("target_value",5))
+                if opponent==self.current_user(): return self.send_json(400,{"error":"Pick someone else to challenge"})
+                with connect() as db:
+                    cur=db.execute("INSERT INTO challenges (title,challenge_type,target_value,challenger_id,opponent_id,status,winner_id,starts_at,ends_at,created_at) VALUES (?,?,?,?,?,'active',NULL,?,?,?)",(title,ctype,target,self.current_user(),opponent,now()[:10],now()[:10],now()))
+                    db.execute("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,0)",(cur.lastrowid,self.current_user()))
+                    db.execute("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,0)",(cur.lastrowid,opponent))
+                    db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(opponent,"challenge","New challenge",f"You were challenged: {title}",now()))
+                return self.send_json(201,{"ok":True,"challengeId":cur.lastrowid})
+            # ===== FITVERSE 2.0 POST endpoints =====
+            if path == "/api/settings":
+                uid=self.current_user()
+                allowed={"age","sex","height_cm","weight_kg","activity_level","goal","diet_pref","days_per_week","session_minutes","equipment","kcal_target","protein_target","water_target_ml","is_private","discoverable","onboarded"}
+                vals={k:v for k,v in data.items() if k in allowed}
+                if not vals: return self.send_json(400,{"error":"Nothing to update"})
+                with connect() as db:
+                    cols=",".join(f"{k}=?" for k in vals)
+                    db.execute(f"UPDATE user_settings SET {cols},updated_at=? WHERE user_id=?",(*vals.values(),now(),uid))
+                    if db.execute("SELECT 1 FROM user_settings WHERE user_id=?",(uid,)).fetchone() is None:
+                        db.execute("INSERT INTO user_settings (user_id,updated_at) VALUES (?,?)",(uid,now()))
+                return self.send_json(200,{"ok":True})
+            if path == "/api/onboarding":
+                uid=self.current_user()
+                with connect() as db:
+                    vals={k:data.get(k) for k in ("age","sex","height_cm","weight_kg","activity_level","goal","diet_pref","days_per_week","session_minutes","equipment") if k in data}
+                    vals["onboarded"]=1
+                    import ai_service
+                    t=ai_service.targets_from_profile(vals)
+                    vals["kcal_target"]=t["kcal_target"]; vals["protein_target"]=t["protein_target"]
+                    cols=" ".join(f"{k}=?" for k in vals)
+                    try:
+                        db.execute(f"UPDATE user_settings SET {cols},updated_at=? WHERE user_id=?",(*vals.values(),now(),uid))
+                    except sqlite3.OperationalError:
+                        db.execute("INSERT INTO user_settings (user_id,updated_at) VALUES (?,?)",(uid,now()))
+                        cols2=" ".join(f"{k}=?" for k in vals)
+                        db.execute(f"UPDATE user_settings SET {cols2} WHERE user_id=?",(*vals.values(),uid))
+                    db.execute("UPDATE users SET fitness_level=?,fitness_goal=? WHERE id=?",(data.get("experience","Intermediate"),data.get("goal","General fitness"),uid))
+                return self.send_json(200,{"ok":True,"targets":t})
+            if path == "/api/posts":
+                body=str(data.get("body","")).strip()
+                if not body or len(body)>2000:return self.send_json(400,{"error":"Post content must be 1–2000 characters"})
+                kind=str(data.get("kind","fitness_update"))[:40]
+                photo=str(data.get("photo",""))[:200] if data.get("photo") else None
+                media='video' if data.get("meta")=="video" or data.get("media")=="video" else None
+                with connect() as db:
+                    try: db.execute("ALTER TABLE posts ADD COLUMN photo TEXT")
+                    except sqlite3.OperationalError: pass
+                    try: db.execute("ALTER TABLE posts ADD COLUMN media TEXT")
+                    except sqlite3.OperationalError: pass
+                    cur=db.execute("INSERT INTO posts (author_id,body,kind,photo,media,created_at) VALUES (?,?,?,?,?,?)",(self.current_user(),body,kind,photo,media,now()))
+                    db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) SELECT f.follower_id,'feed','New post',? || ' shared an update',0,? FROM follows f WHERE f.followee_id=?",((db.execute("SELECT name FROM users WHERE id=?",(self.current_user(),)).fetchone()[0]),now(),self.current_user()))
+                return self.send_json(201,{"ok":True,"postId":cur.lastrowid})
+            if path == "/api/upload":
+                import base64
+                b64=str(data.get("data","")); ext=str(data.get("ext","jpg")).lower().replace("jpeg","jpg")[:5]
+                kind=str(data.get("kind","image"))[:10]
+                if "," in b64: b64=b64.split(",",1)[1]
+                try: raw=base64.b64decode(b64)
+                except Exception: return self.send_json(400,{"error":"Invalid upload data"})
+                limit=3_000_000 if kind=="image" else 25_000_000
+                if len(raw)>limit:
+                    size_mb=3 if kind=="image" else 25
+                    return self.send_json(413,{"error":f"File too large (max {size_mb}MB)"})
+                allowed={"jpg","png","gif","webp","mp4","webm","mov"}
+                if ext not in allowed: ext="jpg" if kind=="image" else "mp4"
+                fname=f"up_{secrets.token_hex(8)}.{ext}"
+                (ROOT/"uploads").mkdir(exist_ok=True)
+                (ROOT/"uploads"/fname).write_bytes(raw)
+                return self.send_json(201,{"ok":True,"path":f"uploads/{fname}","media":"video" if ext in ("mp4","webm","mov") else "image"})
+            if path == "/api/follow":
+                uid=self.current_user(); fid=int(data.get("user_id",0))
+                if fid==uid: return self.send_json(400,{"error":"You cannot follow yourself"})
+                with connect() as db:
+                    existing=db.execute("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?",(uid,fid)).fetchone()
+                    if existing:
+                        db.execute("DELETE FROM follows WHERE follower_id=? AND followee_id=?",(uid,fid))
+                        return self.send_json(200,{"ok":True,"following":False})
+                    db.execute("INSERT OR IGNORE INTO follows (follower_id,followee_id,created_at) VALUES (?,?,?)",(uid,fid,now()))
+                    db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(fid,'social','New follower',f"{db.execute('SELECT name FROM users WHERE id=?',(uid,)).fetchone()[0]} started following you",now()))
+                return self.send_json(200,{"ok":True,"following":True})
+            if path == "/api/workouts":
+                uid=self.current_user()
+                title=str(data.get("title","Workout"))[:80]; notes=str(data.get("notes",""))[:500]
+                logs=data.get("logs") or []
+                if not logs: return self.send_json(400,{"error":"Add at least one exercise"})
+                import ai_service as _ai
+                with connect() as db:
+                    started=data.get("started_at") or now()
+                    duration=int(data.get("duration_min") or 40)
+                    volume=0.0; kcal_est=0; prs=0
+                    cur=db.execute("INSERT INTO workout_sessions (user_id,title,notes,started_at,ended_at,duration_min,total_volume,est_kcal,pr_count,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",(uid,title,notes,started,now(),duration,0,0,0,now()))
+                    sid=cur.lastrowid
+                    for lg in logs:
+                        eid=int(lg.get("exercise_id",0)); sets=int(lg.get("sets",3)); reps=int(lg.get("reps",10)); weight=float(lg.get("weight",0)); rpe=lg.get("rpe")
+                        if not eid: continue
+                        ex=db.execute("SELECT * FROM exercises WHERE id=?",(eid,)).fetchone()
+                        is_pr=0
+                        if weight>0:
+                            prev=db.execute("SELECT MAX(wl.weight) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id WHERE ws.user_id=? AND wl.exercise_id=? AND ws.id<>?",(uid,eid,sid)).fetchone()[0]
+                            if prev is None or weight>prev: is_pr=1; prs+=1
+                        vol=weight*reps*sets; volume+=vol
+                        db.execute("INSERT INTO workout_logs (session_id,exercise_id,sets,reps,weight,rpe,is_pr,created_at) VALUES (?,?,?,?,?,?,?,?)",(sid,eid,sets,reps,weight,rpe,is_pr,now()))
+                    kcal_est=max(120, min(900, round(duration*6.5*(1+prs*0.1) + volume/1000)))
+                    db.execute("UPDATE workout_sessions SET total_volume=?,est_kcal=?,pr_count=? WHERE id=?",(round(volume),kcal_est,prs,sid))
+                    award_xp(db,uid,60+prs*25,"Workout logged","workout",str(sid))
+                    if prs:
+                        db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(uid,'pr','New personal record',f"{prs} new PR{'s' if prs>1 else ''} in {title}!",now()))
+                return self.send_json(201,{"ok":True,"sessionId":sid,"pr_count":prs,"total_volume":round(volume),"est_kcal":kcal_est})
+            if path == "/api/nutrition":
+                uid=self.current_user()
+                import datetime as _dt
+                day=data.get("day") or _dt.date.today().isoformat()
+                name=str(data.get("name","")).strip()[:100]
+                if not name: return self.send_json(400,{"error":"Food name is required"})
+                with connect() as db:
+                    cur=db.execute("INSERT INTO nutrition_logs (user_id,meal,name,kcal,protein_g,carbs_g,fat_g,fiber_g,qty,logged_on,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",(uid,str(data.get("meal","breakfast"))[:20],name,int(data.get("kcal",0)),float(data.get("protein_g",0)),float(data.get("carbs_g",0)),float(data.get("fat_g",0)),float(data.get("fiber_g",0)),float(data.get("qty",1)),day,now()))
+                    award_xp(db,uid,5,"Meal logged","meal",str(cur.lastrowid))
+                return self.send_json(201,{"ok":True,"logId":cur.lastrowid})
+            if path.startswith("/api/nutrition/"):
+                uid=self.current_user(); lid=int(path.split("/")[3])
+                with connect() as db:
+                    row=db.execute("SELECT user_id FROM nutrition_logs WHERE id=?",(lid,)).fetchone()
+                    if not row or row["user_id"]!=uid: return self.send_json(404,{"error":"Log not found"})
+                    db.execute("DELETE FROM nutrition_logs WHERE id=?",(lid,))
+                return self.send_json(200,{"ok":True})
+            if path == "/api/water":
+                uid=self.current_user()
+                import datetime as _dt
+                day=_dt.date.today().isoformat()
+                ml=int(data.get("ml",250))
+                with connect() as db:
+                    db.execute("INSERT INTO water_logs (user_id,ml,logged_on,created_at) VALUES (?,?,?,?)",(uid,ml,day,now()))
+                return self.send_json(200,{"ok":True})
+            if path == "/api/progress":
+                uid=self.current_user()
+                import datetime as _dt
+                with connect() as db:
+                    cur=db.execute("INSERT INTO progress_entries (user_id,weight_kg,body_fat,chest_cm,waist_cm,hips_cm,arm_cm,photo_path,note,entry_date,created_at,is_public) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",(uid,data.get("weight_kg"),data.get("body_fat"),data.get("chest_cm"),data.get("waist_cm"),data.get("hips_cm"),data.get("arm_cm"),data.get("photo_path"),str(data.get("note",""))[:300],data.get("entry_date") or _dt.date.today().isoformat(),now(),1 if data.get("is_public") else 0))
+                return self.send_json(201,{"ok":True,"entryId":cur.lastrowid})
+            if path == "/api/ai/coach":
+                uid=self.current_user(); msg=str(data.get("message","")).strip()[:500]
+                if not msg: return self.send_json(400,{"error":"Ask me something!"})
+                import ai_service
+                r=ai_service.ai_coach(uid,msg)
+                with connect() as db:
+                    conv=db.execute("SELECT id FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT 1",(uid,)).fetchone()
+                    if not conv:
+                        cur=db.execute("INSERT INTO ai_conversations (user_id,title,created_at) VALUES (?,?,?)",(uid,'Coach chat',now())); cid=cur.lastrowid
+                    else: cid=conv['id']
+                    db.execute("INSERT INTO ai_messages (conversation_id,role,content,created_at) VALUES (?,?,?,?)",(cid,'user',msg,now()))
+                    db.execute("INSERT INTO ai_messages (conversation_id,role,content,created_at) VALUES (?,?,?,?)",(cid,'coach',r['reply'],now()))
+                return self.send_json(200,{"ok":True,"reply":r['reply'],"kind":r.get('kind','brief')})
+            if path == "/api/ai/workout":
+                import ai_service
+                plan=ai_service.generate_workout(self.current_user(),data)
+                return self.send_json(200,{"item":plan})
+            if path == "/api/ai/meal":
+                import ai_service
+                r=ai_service.analyze_meal(str(data.get("desc","")),float(data.get("grams",250)))
+                return self.send_json(200,{"item":r})
+            if path == "/api/ai/goal":
+                import ai_service
+                return self.send_json(200,{"item":ai_service.goal_plan(self.current_user(),str(data.get("goal","")))})
+            if path == "/api/block":
+                uid=self.current_user(); bid=int(data.get("user_id",0)); kind=str(data.get("kind","block"))[:10]
+                with connect() as db:
+                    if kind=="unblock": db.execute("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?",(uid,bid))
+                    else: db.execute("INSERT OR REPLACE INTO blocks (blocker_id,blocked_id,kind,created_at) VALUES (?,?,?,?)",(uid,bid,kind,now()))
+                return self.send_json(200,{"ok":True})
+            return self.send_json(404,{"error":"Unknown API route"})
+        except ValueError as error: self.send_json(400,{"error":str(error)})
+        except Exception as error:
+            print("API error:",repr(error)); self.send_json(500,{"error":"Something went wrong. Please try again."})
+
+    def serve_static(self, url_path: str) -> None:
+        requested = "index.html" if url_path in ("", "/") else url_path.lstrip("/")
+        target = (ROOT / requested).resolve()
+        if ROOT not in target.parents and target != ROOT: return self.send_error(HTTPStatus.FORBIDDEN)
+        if not target.is_file(): return self.send_error(HTTPStatus.NOT_FOUND)
+        content = target.read_bytes(); content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        self.send_response(HTTPStatus.OK); self.send_header("Content-Type",content_type + ("; charset=utf-8" if content_type.startswith("text/") or content_type in ("application/javascript",) else "")); self.send_header("Content-Length",str(len(content))); self.end_headers(); self.wfile.write(content)
+
+
+if __name__ == "__main__":
+    initialize_database()
+    server = ThreadingHTTPServer(("127.0.0.1", 4173), FitverseHandler)
+    print("FITVERSE is live at http://127.0.0.1:4173")
+    try: server.serve_forever()
+    except KeyboardInterrupt: pass
+    finally: server.server_close()
