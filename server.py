@@ -270,6 +270,34 @@ CREATE TABLE IF NOT EXISTS blocks (
 );
 CREATE INDEX IF NOT EXISTS idx_follows_followee ON follows(followee_id);
 CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id, created_at);
+-- ===== FITVERSE 3.0: intelligence ecosystem =====
+CREATE TABLE IF NOT EXISTS missions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  mission_key TEXT NOT NULL, title TEXT NOT NULL, icon TEXT, description TEXT,
+  metric TEXT NOT NULL, target INTEGER NOT NULL, reward_xp INTEGER NOT NULL DEFAULT 300,
+  status TEXT NOT NULL DEFAULT 'active', invited_friend_id INTEGER, created_at TEXT NOT NULL, completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_missions_user ON missions(user_id, status);
+CREATE TABLE IF NOT EXISTS teams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'community',
+  description TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_members (
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  joined_at TEXT NOT NULL, PRIMARY KEY(team_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS team_xp (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, amount INTEGER NOT NULL,
+  reason TEXT, source_type TEXT, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_xp_team ON team_xp(team_id);
+CREATE TABLE IF NOT EXISTS post_reactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reaction TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(post_id, user_id, reaction)
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_post ON post_reactions(post_id);
 """
 
 
@@ -284,6 +312,17 @@ def initialize_database() -> None:
             (4,"seven_day_streak","7 Day Streak","Maintain a seven-day streak.","🔥"),
             (5,"event_participant","Event Participant","Book your first fitness event.","🎟️"),
         ])
+        # Community Mission Engine seed: college teams for the Fitness War
+        stamp2 = now()
+        db.executemany("INSERT OR IGNORE INTO teams (id,name,kind,description,created_at) VALUES (?,?,?,?,?)", [
+            (1, "CSE", "college", "Computer Science squad — ship code and PRs.", stamp2),
+            (2, "AIML", "college", "AI & ML crew — training models and bodies.", stamp2),
+            (3, "ECE", "college", "Electronics squad — high voltage on and off court.", stamp2),
+            (4, "MECH", "college", "Mechanical gang — torque matters.", stamp2),
+        ])
+        # every demo user joins a team deterministically so the war has stakes
+        for u in db.execute("SELECT id FROM users").fetchall():
+            db.execute("INSERT OR IGNORE INTO team_members (team_id,user_id,joined_at) VALUES (?,?,?)", (1 + (u[0] % 4), u[0], stamp2))
         exists = db.execute("SELECT 1 FROM users WHERE id = ?", (DEMO_USER_ID,)).fetchone()
         if not exists:
             created = now()
@@ -530,7 +569,34 @@ def award_xp(db: sqlite3.Connection, user_id: int, amount: int, reason: str, sou
     except sqlite3.IntegrityError:
         return False
     db.execute("UPDATE user_game_state SET xp=xp+? WHERE user_id=?", (amount,user_id))
+    # Community Mission Engine: half of every legitimate XP flows to the user's team
+    try:
+        team = db.execute("SELECT team_id FROM team_members WHERE user_id=? LIMIT 1", (user_id,)).fetchone()
+        if team and amount > 0:
+            db.execute("INSERT INTO team_xp (team_id,user_id,amount,reason,source_type,created_at) VALUES (?,?,?,?,?,?)", (team["team_id"],user_id,amount//2,reason,source_type,now()))
+    except sqlite3.OperationalError:
+        pass
     return True
+
+
+def check_missions(db: sqlite3.Connection, user_id: int) -> dict | None:
+    """Complete the active mission if its live metric hit the target. Awards XP + notifies."""
+    try:
+        import intelligence
+        row = db.execute("SELECT * FROM missions WHERE user_id=? AND status='active' ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
+        if not row:
+            return None
+        m = dict(row)
+        progress = intelligence.mission_progress_for(db, user_id, m["metric"], m["created_at"])
+        if progress >= m["target"]:
+            db.execute("UPDATE missions SET status='completed', completed_at=? WHERE id=?", (now(), m["id"]))
+            award_xp(db, user_id, m["reward_xp"], f"Mission complete: {m['title']}", "mission", str(m["id"]))
+            db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",
+                       (user_id, "mission", f"Mission complete: {m['title']}", f"+{m['reward_xp']} XP earned. A new mission is being prepared.", now()))
+            return {"completed": m["title"], "xp": m["reward_xp"]}
+    except sqlite3.OperationalError:
+        pass
+    return None
 
 
 def check_achievements(db: sqlite3.Connection, user_id: int) -> list[str]:
@@ -578,13 +644,22 @@ def list_feed(user_id: int) -> list[dict]:
     with connect() as db:
         try: db.execute("ALTER TABLE posts ADD COLUMN photo TEXT")
         except sqlite3.OperationalError: pass
-        rows=db.execute("""SELECT p.id,p.body,p.kind,p.photo,p.created_at,u.name,u.username,
+        rows=db.execute("""SELECT p.id,p.body,p.kind,p.photo,p.media,p.created_at,u.name,u.username,p.author_id,
           (SELECT count(*) FROM post_likes l WHERE l.post_id=p.id) AS likes,
           EXISTS(SELECT 1 FROM post_likes l WHERE l.post_id=p.id AND l.user_id=?) AS liked,
           EXISTS(SELECT 1 FROM saved_posts s WHERE s.post_id=p.id AND s.user_id=?) AS saved,
           (SELECT count(*) FROM comments c WHERE c.post_id=p.id) AS comments
           FROM posts p JOIN users u ON u.id=p.author_id ORDER BY p.id DESC""",(user_id,user_id)).fetchall()
-    return [dict(row) for row in rows]
+        out=[]
+        for row in rows:
+            d=dict(row)
+            try:
+                d["reactions"]=[dict(r) for r in db.execute("SELECT reaction, COUNT(*) n FROM post_reactions WHERE post_id=? GROUP BY reaction",(d["id"],))]
+                d["my_reactions"]=[r[0] for r in db.execute("SELECT reaction FROM post_reactions WHERE post_id=? AND user_id=?",(d["id"],user_id))]
+            except sqlite3.OperationalError:
+                d["reactions"]=[]; d["my_reactions"]=[]
+            out.append(d)
+    return out
 
 
 def coach_reply(user_id: int, prompt: str) -> dict:
@@ -1085,7 +1160,67 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 sessions=db.execute("SELECT count(*) FROM workout_sessions WHERE user_id=?",(aid,)).fetchone()[0]
             item=dict(a); item.update({"posts":posts,"badges":badges,"followers":followers,"following":following,"is_following":bool(is_following),"sessions":sessions})
             return self.send_json(200,{"item":item})
-        if path.startswith("/api/"): return self.send_json(404,{"error":"Unknown API route"})
+        # ===== FITVERSE 3.0: intelligence ecosystem =====
+        if path == "/api/intelligence":
+            import intelligence
+            uid = self.current_user()
+            return self.send_json(200, {
+                "dna": intelligence.fitness_dna(uid),
+                "twin": intelligence.fitness_twin(uid),
+                "patterns": intelligence.detect_patterns(uid),
+                "debt": intelligence.fitness_debt(uid),
+            })
+        if path == "/api/intelligence/trajectory":
+            import intelligence
+            q = urlparse(self.path).query
+            params = dict(p.split('=', 1) for p in q.split('&') if '=' in p)
+            sid = params.get('scenario', 'current')
+            horizon = int(params.get('days', '90') or 90)
+            return self.send_json(200, {"item": intelligence.trajectory(self.current_user(), sid, horizon)})
+        if path == "/api/missions":
+            import intelligence
+            uid = self.current_user()
+            with connect() as db:
+                intelligence.ensure_weekly_mission(db, uid)
+                check_missions(db, uid)  # a freshly forged mission may already be earned
+                m = db.execute("SELECT * FROM missions WHERE user_id=? AND status='active' ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
+                m = dict(m) if m else None
+                if m: m["progress"] = intelligence.mission_progress_for(db, uid, m["metric"], m["created_at"])
+                history = [dict(r) for r in db.execute(
+                    "SELECT id,title,icon,reward_xp,status,completed_at FROM missions WHERE user_id=? AND status!='active' ORDER BY id DESC LIMIT 6", (uid,))]
+            return self.send_json(200, {"item": m, "history": history})
+        if path == "/api/teams":
+            uid = self.current_user()
+            with connect() as db:
+                teams = []
+                for t in db.execute("SELECT * FROM teams ORDER BY id").fetchall():
+                    d = dict(t)
+                    d["team_xp"] = db.execute("SELECT COALESCE(SUM(amount),0) FROM team_xp WHERE team_id=?", (d['id'],)).fetchone()[0]
+                    d["members"] = db.execute("SELECT COUNT(*) FROM team_members WHERE team_id=?", (d['id'],)).fetchone()[0]
+                    d["is_mine"] = db.execute("SELECT 1 FROM team_members WHERE team_id=? AND user_id=?", (d['id'], uid)).fetchone() is not None
+                    top = db.execute("""SELECT u.name, SUM(tx.amount) xp FROM team_xp tx JOIN users u ON u.id=tx.user_id
+                        WHERE tx.team_id=? GROUP BY tx.user_id ORDER BY xp DESC LIMIT 3""", (d['id'],)).fetchall()
+                    d["top"] = [dict(r) for r in top]
+                    teams.append(d)
+                teams.sort(key=lambda t: -t["team_xp"])
+                my = next((t for t in teams if t["is_mine"]), None)
+                individual = [dict(r) for r in db.execute("""SELECT u.name, u.username, SUM(tx.amount) xp FROM team_xp tx
+                    JOIN users u ON u.id=tx.user_id GROUP BY tx.user_id ORDER BY xp DESC LIMIT 10""")]
+            return self.send_json(200, {"items": teams, "mine": my, "individual": individual})
+        if path == "/api/posts":
+            uid = self.current_user()
+            with connect() as db:
+                rows = db.execute("SELECT p.*, u.name author_name, u.username FROM posts p JOIN users u ON u.id=p.author_id ORDER BY p.id DESC LIMIT 30").fetchall()
+                items = []
+                for r in rows:
+                    d = dict(r)
+                    d["reactions"] = [dict(x) for x in db.execute(
+                        "SELECT reaction, COUNT(*) n FROM post_reactions WHERE post_id=? GROUP BY reaction", (d['id'],))]
+                    d["my_reactions"] = [x[0] for x in db.execute(
+                        "SELECT reaction FROM post_reactions WHERE post_id=? AND user_id=?", (d['id'], uid))]
+                    items.append(d)
+            return self.send_json(200, {"items": items})
+        if path.startswith("/api/"): return self.send_json(404, {"error": "Unknown API route"})
         self.serve_static(path)
 
     def do_POST(self) -> None:
@@ -1190,8 +1325,9 @@ class FitverseHandler(BaseHTTPRequestHandler):
                         except sqlite3.IntegrityError: return self.send_json(409,{"error":"You already completed this activity"})
                         db.execute("UPDATE user_game_state SET activities=activities+1 WHERE user_id=?",(self.current_user(),))
                         award_xp(db,self.current_user(),80,"Completed an activity","activity",str(activity_id))
+                        mission_done=check_missions(db,self.current_user())
                         unlocked=check_achievements(db,self.current_user())
-                        msg=f"+80 XP earned!" + (f" Achievement: {', '.join(unlocked)}." if unlocked else "")
+                        msg=f"+80 XP earned!" + (f" Mission: {mission_done['completed']} +{mission_done['xp']} XP." if mission_done else "") + (f" Achievement: {', '.join(unlocked)}." if unlocked else "")
                         db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(self.current_user(),"xp","Activity complete",msg,now()))
                         g=user_state(db,self.current_user()); return self.send_json(200,{"ok":True,"state":g,"message":msg})
             if path.startswith("/api/communities/"):
@@ -1307,6 +1443,52 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     cur=db.execute("INSERT INTO posts (author_id,body,kind,photo,media,created_at) VALUES (?,?,?,?,?,?)",(self.current_user(),body,kind,photo,media,now()))
                     db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) SELECT f.follower_id,'feed','New post',? || ' shared an update',0,? FROM follows f WHERE f.followee_id=?",((db.execute("SELECT name FROM users WHERE id=?",(self.current_user(),)).fetchone()[0]),now(),self.current_user()))
                 return self.send_json(201,{"ok":True,"postId":cur.lastrowid})
+            if path == "/api/reactions":
+                pid=int(data.get("post_id",0) or 0); reaction=str(data.get("reaction",""))[:20]
+                allowed={"beast","respect","keepgoing","support"}
+                if not pid or reaction not in allowed: return self.send_json(400,{"error":"Invalid reaction"})
+                uid=self.current_user()
+                with connect() as db:
+                    if not db.execute("SELECT 1 FROM posts WHERE id=?",(pid,)).fetchone(): return self.send_json(404,{"error":"Post not found"})
+                    existing=db.execute("SELECT id FROM post_reactions WHERE post_id=? AND user_id=? AND reaction=?",(pid,uid,reaction)).fetchone()
+                    if existing:
+                        db.execute("DELETE FROM post_reactions WHERE id=?",(existing["id"],)); actioned="removed"
+                    else:
+                        db.execute("INSERT INTO post_reactions (post_id,user_id,reaction,created_at) VALUES (?,?,?,?)",(pid,uid,reaction,now()))
+                        actioned="added"
+                        owner=db.execute("SELECT author_id FROM posts WHERE id=?",(pid,)).fetchone()
+                        if owner and owner["author_id"]!=uid:
+                            reactor=db.execute("SELECT name FROM users WHERE id=?",(uid,)).fetchone()
+                            icons={"beast":"🔥","respect":"💪","keepgoing":"🫡","support":"❤️"}
+                            db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",
+                                (owner["author_id"],"reaction",reactor["name"]+" reacted to your post",icons.get(reaction,"")+" "+reaction,now()))
+                            award_xp(db, owner["author_id"], 2, "Post reaction received", "reaction", str(pid))
+                    counts=[dict(x) for x in db.execute("SELECT reaction, COUNT(*) n FROM post_reactions WHERE post_id=? GROUP BY reaction",(pid,))]
+                    mine=[x[0] for x in db.execute("SELECT reaction FROM post_reactions WHERE post_id=? AND user_id=?",(pid,uid))]
+                return self.send_json(200,{"ok":True,"actioned":actioned,"reactions":counts,"mine":mine})
+            if path == "/api/missions/join":
+                import intelligence
+                uid=self.current_user()
+                fid=int(data.get("friend_id",0) or 0) or None
+                with connect() as db:
+                    m=intelligence.ensure_weekly_mission(db,uid)
+                    if not m: return self.send_json(500,{"error":"Mission engine unavailable"})
+                    if fid: db.execute("UPDATE missions SET invited_friend_id=? WHERE id=?",(fid,m["id"]))
+                return self.send_json(200,{"ok":True,"mission":m,"invited":bool(fid)})
+            if path == "/api/missions/abandon":
+                uid=self.current_user()
+                with connect() as db:
+                    row=db.execute("SELECT id FROM missions WHERE user_id=? AND status='active'",(uid,)).fetchone()
+                    if not row: return self.send_json(404,{"error":"No active mission"})
+                    db.execute("UPDATE missions SET status='abandoned' WHERE id=?",(row["id"],))
+                return self.send_json(200,{"ok":True})
+            if path == "/api/teams/join":
+                tid=int(data.get("team_id",0) or 0); uid=self.current_user()
+                with connect() as db:
+                    if not db.execute("SELECT 1 FROM teams WHERE id=?",(tid,)).fetchone(): return self.send_json(404,{"error":"Team not found"})
+                    db.execute("DELETE FROM team_members WHERE user_id=?",(uid,))
+                    db.execute("INSERT OR IGNORE INTO team_members (team_id,user_id,joined_at) VALUES (?,?,?)",(tid,uid,now()))
+                return self.send_json(200,{"ok":True})
             if path == "/api/upload":
                 import base64
                 b64=str(data.get("data","")); ext=str(data.get("ext","jpg")).lower().replace("jpeg","jpg")[:5]
@@ -1360,9 +1542,10 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     kcal_est=max(120, min(900, round(duration*6.5*(1+prs*0.1) + volume/1000)))
                     db.execute("UPDATE workout_sessions SET total_volume=?,est_kcal=?,pr_count=? WHERE id=?",(round(volume),kcal_est,prs,sid))
                     award_xp(db,uid,60+prs*25,"Workout logged","workout",str(sid))
+                    mission_done=check_missions(db,uid)
                     if prs:
                         db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(uid,'pr','New personal record',f"{prs} new PR{'s' if prs>1 else ''} in {title}!",now()))
-                return self.send_json(201,{"ok":True,"sessionId":sid,"pr_count":prs,"total_volume":round(volume),"est_kcal":kcal_est})
+                return self.send_json(201,{"ok":True,"sessionId":sid,"pr_count":prs,"total_volume":round(volume),"est_kcal":kcal_est,"mission_completed":mission_done})
             if path == "/api/nutrition":
                 uid=self.current_user()
                 import datetime as _dt
@@ -1427,6 +1610,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
             return self.send_json(404,{"error":"Unknown API route"})
         except ValueError as error: self.send_json(400,{"error":str(error)})
         except Exception as error:
+            import traceback; traceback.print_exc()
             print("API error:",repr(error)); self.send_json(500,{"error":"Something went wrong. Please try again."})
 
     def serve_static(self, url_path: str) -> None:

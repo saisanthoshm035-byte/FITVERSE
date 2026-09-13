@@ -33,7 +33,7 @@ const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.classList
 const inr = (n) => (n > 0 ? `₹${Number(n).toLocaleString('en-IN')}` : 'Free');
 const dayShort = (iso) => { try { return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' }); } catch { return iso; } };
 const timeShort = (iso) => { try { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { return iso; } };
-const nav = [['home', '◈', 'Home'], ['discover', '⌕', 'Discover'], ['posts', '▶', 'Posts & Reels'], ['workout', '🏋', 'Workout'], ['nutrition', '🍽', 'Nutrition'], ['progress', '📈', 'Progress'], ['challenges', '◉', 'Challenges'], ['communities', '◌', 'Communities'], ['events', '◫', 'Events'], ['messages', '✉', 'Messages'], ['friends', '👥', 'Friends'], ['coach', '✦', 'AI Coach'], ['businesses', '▦', 'Businesses']];
+const nav = [['home', '◈', 'Home'], ['intelligence', '🧬', 'Fitness DNA'], ['discover', '⌕', 'Discover'], ['posts', '▶', 'Posts & Reels'], ['workout', '🏋', 'Workout'], ['nutrition', '🍽', 'Nutrition'], ['progress', '📈', 'Progress'], ['challenges', '◉', 'Challenges'], ['communities', '◌', 'Communities'], ['events', '◫', 'Events'], ['messages', '✉', 'Messages'], ['friends', '👥', 'Friends'], ['coach', '✦', 'AI Coach'], ['businesses', '▦', 'Businesses']];
 const mobileNav = [['home', '⌂'], ['discover', '⌕'], ['workout', '🏋'], ['nutrition', '🍽'], ['profile', '●']];
 const unread = () => pageData.notifications.filter(n => !n.is_read).length;
 // ---- free live APIs: weather (open-meteo), air quality (open-meteo), quotes (zenquotes), wikipedia ----
@@ -86,18 +86,20 @@ async function sportSpotlight(sport) {
 }
 const mapEmbed = (place) => `https://www.openstreetmap.org/export/embed.html?bbox=80.20%2C12.95%2C80.32%2C13.12&layer=mapnik&marker=13.05%2C80.25`;
 const level = () => Math.max(1, Math.floor((state.xp || 0) / 500) + 1);
-const levelName = () => ['Rookie', 'Mover', 'Athlete', 'Warrior', 'Legend'][Math.min(4, level() - 1)];
+const levelName = () => ['Beginner', 'Rising Athlete', 'Athlete', 'Beast', 'Elite', 'Legend'][Math.min(5, level() - 1)];
 const progress = () => Math.min(100, Math.round(((state.xp || 0) % 500) / 5));
 const me = () => pageData.profile || {};
 
 async function hydrate() {
   if (!apiEnabled) return;
   const safe = (p, fb) => api(p).then(d => d).catch(() => fb);
-  const [boot, feed, notifs, convs, achievements, buddy, fitmatch] = await Promise.all([
+  const [boot, feed, notifs, convs, achievements, buddy, fitmatch, intel] = await Promise.all([
     api('/api/bootstrap').catch(() => null), safe('/api/feed', { items: [] }), safe('/api/notifications', { items: [] }),
     safe('/api/conversations', { items: [] }), safe('/api/achievements', { items: [] }),
     safe('/api/ai/buddy', { items: [] }), safe('/api/fitmatch', { items: [] }),
+    safe('/api/intelligence', {}),
   ]);
+  pageData.intel = (intel && intel.dna) ? intel : pageData.intel;
   if (boot) {
     applyServerState(boot.state);
     pageData.profile = boot.user || {};
@@ -155,10 +157,18 @@ async function loadPageData(page) {
     add('conversations', api('/api/conversations').then(d => d.items || []));
     add('messages', api(`/api/conversations/${pageData.activeConversation}`).then(d => d.items || []));
   }
-  if (page === 'profile') { add('xpLedger', api('/api/xp').then(d => d.items || [])); add('achievements', api('/api/achievements').then(d => d.items || [])); add('friends', api('/api/friends').then(d => d.items || [])); }
+  if (page === 'profile') { add('xpLedger', api('/api/xp').then(d => d.items || [])); add('achievements', api('/api/achievements').then(d => d.items || [])); add('friends', api('/api/friends').then(d => d.items || [])); add('mission', api('/api/missions').then(d => d.item || {})); }
+  if (page === 'home') { add('mission', api('/api/missions').then(d => d.item || {})); }
   if (page === 'reels' || page === 'posts') { add('reels', api('/api/reels').then(d => d.items || [])); if (!pageData.feed.length) add('feed', api('/api/feed').then(d => d.items || [])); }
   if (page === 'businesses') add('businesses', api('/api/businesses').then(d => d.items || []));
   if (page === 'workout') { add('workouts', api('/api/workouts').then(d => d.items || [])); add('prs', api('/api/workouts/prs').then(d => d.items || [])); }
+  if (page === 'intelligence') {
+    add('intel', api('/api/intelligence').then(d => d));
+    add('mission', api('/api/missions').then(d => d.item || {}));
+    add('missionHistory', api('/api/missions').then(d => d.history || []));
+    add('teams', api('/api/teams').then(d => d.items || []));
+    add('trajectory', api('/api/intelligence/trajectory?scenario=' + (pageData.trajScenario || 'current')).then(d => d.item || {}));
+  }
   if (page === 'nutrition') { add('nutrition', api('/api/nutrition').then(d => d).catch(() => ({}))); add('water', api('/api/water').then(d => d).catch(() => ({}))); }
   if (page === 'progress') { add('progressEntries', api('/api/progress').then(d => d.items || [])); add('review', api('/api/ai/review').then(d => d.item || {}).catch(() => ({}))); }
   if (page === 'friends') { add('fitmatch', api('/api/fitmatch').then(d => d.items || [])); add('friendsData', api('/api/friends').then(d => d).catch(() => ({}))); }
@@ -194,6 +204,11 @@ function home() {
   const notes = pageData.buddy || [];
   const post = pageData.feed[0];
   const topRec = (pageData.fitmatch || pageData.recommendations)[0] || pageData.recommendations[0];
+  const intel = pageData.intel || {};
+  const dna = intel.dna || {};
+  const dsc = dna.scores || {};
+  const debt = (intel.debt || {});
+  const mission = pageData.mission || ({});
   return shell(`${pageHeader(`Good ${greeting()}, ${escapeHtml((me().name || 'Sai').split(' ')[0])} 👋`, s.today_line || 'Here’s your day at a glance.')}
 <section class="hero photo" style="background-image:linear-gradient(100deg, rgba(8,18,13,.96) 42%, rgba(8,18,13,.62) 100%), url('${PHOTOS.heroBasketball}')"><div><span class="pill lime">● WEEK ${weekNumber()}</span><h2>Fitness is better<br/>when it’s a <span>game.</span></h2><p id="wx-advice">${wx ? workoutAdvice() : 'Keep your streak alive. You’re one activity away from your weekly goal.'}</p><div id="wx-chip" class="wx-chip">${wx ? weatherChipHtml() : 'Loading live weather…'}</div><div class="hero-actions"><button class="primary" data-page="workout">Start today’s session <b>→</b></button><button class="text-btn" data-page="coach">Ask FITVERSE AI</button></div></div><div class="hero-orbit"><div class="orbit-core">${state.streak}<small>DAY STREAK</small></div><div class="float-card one">🔥<strong>${pageData.counts.friends || 0} friends</strong><small>in your circle</small></div><div class="float-card two">⚡<strong>Level ${level()}</strong><small>${levelName()}</small></div></div></section>
 <section class="dash-grid">
@@ -203,6 +218,11 @@ function home() {
   <article class="stat-card"><span>🏋</span><div><small>THIS WEEK</small><strong>${s.week && s.week.sessions != null ? `${s.week.sessions}<em> workouts</em>` : `${Math.min(4, state.activities)}<em>/4</em>`}</strong></div><i>${s.week && s.week.kcal ? `${s.week.kcal} kcal` : ''}</i></article>
 </section>
 ${notes.length ? `<section class="buddy-strip"><span class="pill lime">✦ FITVERSE AI</span>${notes.slice(0, 3).map(n => `<p>${n.note}</p>`).join('')}</section>` : ''}
+<section class="eco-strip">
+  <a class="eco-card dna" data-page="intelligence"><span class="eyebrow">🧬 FITNESS DNA</span><div class="eco-main"><div class="dna-ring" style="--v:${dsc.consistency || 0}"><b>${dsc.consistency ?? '—'}</b></div><div><h3>${escapeHtml(dna.personality || 'The Explorer')}</h3><p>Focus: ${escapeHtml(dna.focus || 'Log a session to unlock')}</p></div></div><span class="eco-more">Open DNA →</span></a>
+  <a class="eco-card ${debt.debt ? 'debt' : 'clear'}" data-page="intelligence"><span class="eyebrow">⚡ FITNESS DEBT</span><div class="eco-main"><b class="eco-big">${debt.debt ?? 0}</b><div><h3>${debt.debt ? `${debt.debt} session${debt.debt > 1 ? 's' : ''} owed` : 'All caught up'}</h3><p>${debt.completed ?? 0}/${debt.target ?? 4} this week</p></div></div><span class="eco-more">Recover →</span></a>
+  <a class="eco-card mission" data-page="intelligence"><span class="eyebrow">🎯 MISSION</span><div class="eco-main"><span class="mission-mini">${mission.icon || '🎯'}</span><div><h3>${escapeHtml(mission.title || 'Start your first mission')}</h3><p>${mission.progress != null ? `${mission.progress}/${mission.target} · ` : ''}+${mission.reward_xp || 0} XP</p></div></div><span class="eco-more">View →</span></a>
+</section>
 <section class="stat-grid"><div class="stat-card"><span>🔥</span><div><small>STREAK</small><strong>${state.streak} days</strong></div><i>↗ ${s.week ? (s.week.sessions >= 3 ? 'on fire' : 'building') : ''}</i></div><div class="stat-card"><span>⚡</span><div><small>YOUR XP</small><strong>${state.xp.toLocaleString()} <em>XP</em></strong></div><i>LEVEL ${level()}</i></div><div class="stat-card goal"><div><small>WEEKLY GOAL</small><strong>${s.week && s.week.sessions != null ? Math.min(s.week.sessions, s.week.goal || 4) : Math.min(4, state.activities)} / ${s.week ? s.week.goal || 4 : 4} workouts</strong></div><div class="bar"><i style="width:${Math.min(100, ((s.week ? s.week.sessions : state.activities) / (s.week ? s.week.goal || 4 : 4)) * 100)}%"></i></div><button data-action="complete">Complete activity +</button></div></section>
 <section class="section-head"><div><span class="eyebrow">FROM YOUR CREW</span><h2>The FITVERSE feed</h2></div><button class="link" data-action="create">Share an update <b>→</b></button></section>
 <div class="tabs" id="feed-tabs">${['For You', 'Following', 'Trending'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ftab="${t.toLowerCase().replace(' ', '')}">${t}</button>`).join('')}</div>
@@ -220,7 +240,11 @@ function weekNumber() { const d = new Date(); const start = new Date(d.getFullYe
 const POST_KINDS = { fitness_update: ['✦', 'Update'], workout: ['🏋', 'Workout'], progress: ['📈', 'Progress'], meal: ['🍽', 'Meal'], achievement: ['🏆', 'Achievement'], challenge: ['⚡', 'Challenge'], motivation: ['🔥', 'Motivation'], question: ['❓', 'Question'], reel: ['🎬', 'Reel'], activity: ['🏃', 'Activity'], community: ['◌', 'Community'] };
 function postCard(p) {
   const [icon, label] = POST_KINDS[p.kind] || ['✦', 'Update'];
-  return `<article class="post" data-post="${p.id}"><div class="post-author">${photoAvatar(p.name, p.author_id || p.id)}<div><strong>${escapeHtml(p.name)}</strong><small>${icon} ${label} · ${timeShort(p.created_at)}</small></div><button data-action="postMenu" data-id="${p.id}">•••</button></div><p>${escapeHtml(p.body)}</p>${p.photo ? (p.media === 'video' ? `<video class="post-photo" src="${p.photo}" controls preload="metadata"></video>` : `<img class="post-photo" src="${p.photo}" alt="" loading="lazy"/>`) : ''}<div class="post-actions"><button data-action="like" data-id="${p.id}">${p.liked ? '♥ Liked' : '♡ Like'} <small>${p.likes}</small></button><button data-action="comment" data-id="${p.id}">◌ Comment <small>${p.comments}</small></button><button data-action="share" data-id="${p.id}">↗ Share</button></div></article>`;
+  const REACTIONS = [['beast', '🔥', 'Beast'], ['respect', '💪', 'Respect'], ['keepgoing', '🫡', 'Keep going'], ['support', '❤️', 'Support']];
+  const rmap = {}; (p.reactions || []).forEach(r => { rmap[r.reaction] = r.n; });
+  const mine = new Set(p.my_reactions || []);
+  const reactBtns = REACTIONS.map(([k, ic, lab]) => `<button class="react ${mine.has(k) ? 'on' : ''}" data-action="react" data-id="${p.id}" data-reaction="${k}" aria-label="${lab}">${ic}${rmap[k] ? ` <small>${rmap[k]}</small>` : ''}</button>`).join('');
+  return `<article class="post" data-post="${p.id}"><div class="post-author">${photoAvatar(p.name, p.author_id || p.id)}<div><strong>${escapeHtml(p.name)}</strong><small>${icon} ${label} · ${timeShort(p.created_at)}</small></div><button data-action="postMenu" data-id="${p.id}">•••</button></div><p>${escapeHtml(p.body)}</p>${p.photo ? (p.media === 'video' ? `<video class="post-photo" src="${p.photo}" controls preload="metadata"></video>` : `<img class="post-photo" src="${p.photo}" alt="" loading="lazy"/>`) : ''}<div class="react-row">${reactBtns}</div><div class="post-actions"><button data-action="like" data-id="${p.id}">${p.liked ? '♥ Liked' : '♡ Like'} <small>${p.likes}</small></button><button data-action="comment" data-id="${p.id}">◌ Comment <small>${p.comments}</small></button><button data-action="share" data-id="${p.id}">↗ Share</button></div></article>`;
 }
 function activity(icon, title, people, time, place, type, id, joined) {
   return `<article class="activity-card" data-action="activityDetail" data-id="${id || 1}" style="cursor:pointer"><div class="activity-icon photo-tile" style="background-image:url('${sportPhoto(type)}')"><span>${icon}</span></div><div class="activity-meta"><span>${escapeHtml(type)}</span><h3>${escapeHtml(title)}</h3><p>◉ ${escapeHtml(place)}</p><div><b>◷ ${escapeHtml(time)}</b><b>◉ ${escapeHtml(people)}</b></div></div><button class="join ${joined ? 'joined' : ''}" data-action="joinActivity" data-id="${id || 1}">${joined ? 'Joined ✓' : 'Join +'}</button></article>`;
@@ -386,6 +410,114 @@ function coachPage() {
 <div class="coach-prompts wrap"><button data-action="coachAsk" data-q="What workout should I do today?">Today's workout?</button><button data-action="coachAsk" data-q="How much protein should I eat?">Protein target?</button><button data-action="coachAsk" data-q="Create a 5-day gym routine">5-day routine</button><button data-action="coachAsk" data-q="I only have dumbbells">Home workout</button><button data-action="generateWorkout">✦ Generate workout</button><button data-action="weeklyReview">📊 Weekly recap</button></div>
 <form class="composer wide" id="coach-form"><input placeholder="Ask FITVERSE anything..." maxlength="500" required/><button aria-label="Send">➤</button></form>`);
 }
+function intelligencePage() {
+  const d = pageData.intel || {};
+  const dna = d.dna || {};
+  const scores = dna.scores || {};
+  const twin = d.twin || {};
+  const debt = d.debt || {};
+  const patterns = d.patterns || [];
+  const mission = pageData.mission || {};
+  const traj = pageData.trajectory || {};
+  const sc = dna.scores ? Object.entries(scores) : [];
+  const now0 = sc.length ? sc[0] : null;
+  // radar polygon points (7 axes, 140px radius, center 160,150)
+  const axes = sc.length;
+  const R = 128, CX = 160, CY = 142;
+  const pt = (i, val) => { const a = (Math.PI * 2 * i / axes) - Math.PI / 2; return [CX + Math.cos(a) * R * val / 100, CY + Math.sin(a) * R * val / 100]; };
+  const poly = sc.map(([, v], i) => pt(i, v).map(n => n.toFixed(1)).join(',')).join(' ');
+  const grid = [25, 50, 75, 100].map(g => `<polygon points="${sc.map((_, i) => pt(i, g).map(n => n.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="rgba(163,230,53,.14)" stroke-width="1"/>`).join('');
+  const spokes = sc.map((_, i) => { const [x, y] = pt(i, 100); return `<line x1="${CX}" y1="${CY}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="rgba(163,230,53,.12)"/>`; }).join('');
+  const labels = sc.map(([k, v], i) => { const [x, y] = pt(i, 118); return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" fill="#cbe8d4" font-size="10" text-anchor="middle">${k} ${v}</text>`; }).join('');
+  const debtColor = debt.level === 'clear' ? 'var(--lime)' : debt.level === 'low' ? '#facc15' : debt.level === 'moderate' ? '#fb923c' : '#f87171';
+  return shell(`${pageHeader('Fitness DNA', 'How you train, decoded from your real activity.')}
+<div class="intel-grid">
+  <section class="card dna-card">
+    <div class="dna-head"><div><span class="eyebrow">🧬 YOUR FITNESS DNA</span><h2>${escapeHtml(dna.personality || 'Evolving')}</h2><p class="muted">Updates automatically as you train, eat, and compete.</p></div><button class="outline small" data-action="shareDna">Share card ↗</button></div>
+    <div class="dna-body">
+      <svg viewBox="0 0 320 290" class="radar" role="img" aria-label="Fitness DNA radar chart">${grid}${spokes}<polygon points="${poly}" fill="rgba(163,230,53,.22)" stroke="var(--lime)" stroke-width="2"/>${labels}</svg>
+      <div class="dna-scores">${sc.map(([k, v]) => `<div class="dna-row"><span>${k}</span><div class="bar"><i style="width:${v}%"></i></div><b>${v}</b></div>`).join('')}</div>
+    </div>
+    <div class="dna-tags">
+      <div><span class="eyebrow">STRENGTHS</span><p>${(dna.strengths || []).map(escapeHtml).join(' · ') || '—'}</p></div>
+      <div><span class="eyebrow">AREAS TO IMPROVE</span><p>${(dna.improve || []).map(escapeHtml).join(' · ') || '—'}</p></div>
+      <div><span class="eyebrow">CURRENT FOCUS</span><p>${escapeHtml(dna.focus || '—')}</p></div>
+    </div>
+  </section>
+  <section class="card twin-card">
+    <span class="eyebrow">🤖 AI FITNESS TWIN</span>
+    <h2>Where you are</h2>
+    <div class="twin-stats">
+      <div><b>${twin.where_now ? twin.where_now.sessions_28d : '—'}</b><small>sessions · 28d</small></div>
+      <div><b>${twin.where_now ? twin.where_now.weekly_avg : '—'}</b><small>avg / week</small></div>
+      <div><b>${twin.where_now ? twin.where_now.streak : '—'}</b><small>day streak</small></div>
+      <div><b>${twin.where_now && twin.where_now.top_lif ? twin.where_now.top_lif.w + 'kg' : '—'}</b><small>${twin.where_now && twin.where_now.top_lif ? escapeHtml(twin.where_now.top_lif.name) : 'top lift'}</small></div>
+    </div>
+    <div class="twin-block"><span class="eyebrow">WHAT'S HOLDING YOU BACK</span><p>${escapeHtml(twin.holding_back || 'Log a few sessions to unlock analysis.')}</p></div>
+    <div class="twin-block"><span class="eyebrow">WHERE YOU COULD GO</span><p>${escapeHtml(twin.where_could_go || '—')}</p></div>
+    <div class="twin-block next"><span class="eyebrow">DO THIS NEXT</span><p>${escapeHtml(twin.next || '—')}</p></div>
+    <p class="disclaimer">${escapeHtml(twin.disclaimer || '')}</p>
+  </section>
+  <section class="card traj-card">
+    <span class="eyebrow">🔮 TRAJECTORY SIMULATOR</span>
+    <h2>What if…</h2>
+    <div class="chip-row" id="traj-chips">${[['current', 'Current routine'], ['3days', 'Train 3 d/wk'], ['4days', 'Train 4 d/wk'], ['5days', 'Train 5 d/wk'], ['consistency', 'Improve consistency'], ['cardio', 'More cardio'], ['strength', 'Focus strength']].map(([k, l]) => `<button class="chip ${pageData.trajScenario === k ? 'active' : ''}" data-action="traj" data-id="${k}">${l}</button>`).join('')}</div>
+    ${traj.label ? `<div class="traj-result">
+      <h3>${traj.horizon_days}-DAY SCENARIO · ${escapeHtml(traj.label)}</h3>
+      <div class="traj-rows">
+        <div><span>Current consistency</span><b>${traj.current_consistency}%</b><span class="muted">→</span><b class="lime">${traj.projected_consistency}%</b></div>
+        <div><span>Weekly sessions</span><b>${traj.weekly_sessions.now}</b><span class="muted">→</span><b class="lime">${traj.weekly_sessions.projected}</b></div>
+        <div><span>Est. volume</span><b class="${traj.volume_delta_pct >= 0 ? 'lime' : 'warn'}">${traj.volume_delta_pct >= 0 ? '+' : ''}${traj.volume_delta_pct}%</b></div>
+        <div><span>Est. sessions in ${traj.horizon_days}d</span><b>${traj.estimated_sessions}</b></div>
+        ${traj.debt_clearance ? `<div><span>Debt</span><b class="lime">${escapeHtml(traj.debt_clearance)}</b></div>` : ''}
+      </div>
+      <p class="pill ${traj.direction === 'positive' ? 'lime' : 'ghost'}">Trajectory: ${traj.direction}</p>
+      <p class="disclaimer">${escapeHtml(traj.disclaimer)}</p>
+    </div>` : ''}
+  </section>
+  <section class="card patterns-card">
+    <span class="eyebrow">🧠 PATTERN DETECTOR</span>
+    <h2>What we noticed</h2>
+    ${patterns.map(p => `<div class="pattern sev-${p.severity}"><div class="pattern-head"><span>${p.icon}</span><h3>${escapeHtml(p.title)}</h3></div><p>${escapeHtml(p.detail)}</p><p class="why"><b>Why it matters:</b> ${escapeHtml(p.why)}</p><p class="fix"><b>Suggested fix:</b> ${escapeHtml(p.fix)}</p></div>`).join('')}
+  </section>
+  <section class="card debt-card">
+    <span class="eyebrow">⚡ FITNESS DEBT</span>
+    <div class="debt-top"><div><h2 class="debt-num" style="color:${debtColor}">${debt.debt ?? '—'}</h2><small>session${debt.debt === 1 ? '' : 's'} owed this week</small></div>
+    <div class="debt-meta"><div><b>${debt.completed ?? '—'}/${debt.target ?? '—'}</b><small>this week</small></div><div><b>${debt.reduction > 0 ? '-' + debt.reduction : debt.previous_debt || 0}</b><small>${debt.reduction > 0 ? 'reduced from last week' : 'last week'}</small></div></div></div>
+    <div class="bar big"><i style="width:${debt.week_progress || 0}%; background:${debtColor}"></i></div>
+    <p class="debt-advice">${escapeHtml(debt.advice || '')}</p>
+    <p class="disclaimer">Debt encourages steady consistency — never extreme make-up training.</p>
+  </section>
+  <section class="card mission-card">
+    <span class="eyebrow">🎯 MISSION ENGINE</span>
+    ${mission.id ? `<div class="mission-live">
+      <div class="mission-head"><span class="mission-icon">${mission.icon || '🎯'}</span><div><h3>${escapeHtml(mission.title)}</h3><p>${escapeHtml(mission.description || '')}</p></div><b class="xp-pill">+${mission.reward_xp} XP</b></div>
+      <div class="bar big"><i style="width:${Math.min(100, Math.round(100 * (mission.progress || 0) / mission.target))}%"></i></div>
+      <p class="muted">${mission.progress || 0} / ${mission.target} this week</p>
+      <div class="mission-actions">
+        ${mission.status === 'active' ? `<button class="primary small" data-action="missionStart" data-id="${mission.id}">On it — track progress</button>` : ''}
+        <button class="outline small" data-action="missionInvite">Invite friend</button>
+        <button class="text-btn small" data-action="missionShare">Share mission</button>
+        ${mission.invited_friend_id ? `<span class="pill lime">friend invited ✓</span>` : ''}
+      </div>
+    </div>` : '<p class="muted">Log a workout and your first mission will be forged from your DNA.</p>'}
+    ${pageData.missionHistory && pageData.missionHistory.length ? `<div class="mission-hist"><span class="eyebrow">RECENT MISSIONS</span>${pageData.missionHistory.map(h => `<div class="mh-row"><span>${h.icon || '🎯'} ${escapeHtml(h.title)}</span><em class="${h.status}">${h.status === 'completed' ? '✓ done' : escapeHtml(h.status)}</em><b>+${h.reward_xp}</b></div>`).join('')}</div>` : ''}
+  </section>
+  <section class="card teams-card">
+    <span class="eyebrow">🌎 COMMUNITY MISSION ENGINE</span>
+    <h2>Team Fitness War</h2>
+    ${(pageData.teams || []).map((t, i) => `<div class="team-row ${t.is_mine ? 'mine' : ''}">
+      <b class="rank">${String(i + 1).padStart(2, '0')}</b>
+      <div class="team-info"><h3>${escapeHtml(t.name)} ${t.is_mine ? '<span class="pill lime">your team</span>' : ''}</h3><p>${t.members} members · top: ${t.top && t.top.length ? escapeHtml(t.top[0].name) : '—'}</p>
+      <div class="bar"><i style="width:${Math.max(4, Math.round(100 * t.team_xp / Math.max(1, (pageData.teams[0] || t).team_xp)))}%"></i></div></div>
+      <div class="team-xp"><b>${(t.team_xp || 0).toLocaleString()}</b><small>team XP</small></div>
+      ${t.is_mine ? '' : `<button class="outline small" data-action="teamJoin" data-id="${t.id}">Join</button>`}
+    </div>`).join('')}
+    <p class="disclaimer">Every legitimate XP you earn — workouts, challenges, missions — fuels your team's war score.</p>
+  </section>
+</div>`);
+}
+
 function weeklyReviewPage() {
   const r = pageData.review || {};
   return shell(`${pageHeader('Weekly recap', r.week || 'Your FITVERSE week in review.')}
@@ -487,7 +619,7 @@ function athleteProfile() {
 <div id="atab-badges" style="display:none"><div class="achievement-row">${a.badges.map(b => `<article><span>${b.icon}</span><b>${escapeHtml(b.name)}</b><small>Unlocked ${dayShort(b.unlocked_at)}</small></article>`).join('') || '<p class="loading">No badges yet.</p>'}</div></div>`);
 }
 function render() {
-  const pages = { home, discover, posts: reels, reels, challenges, communities, events, messages, profile, bookings, business, admin, businesses, communityDetail, athleteProfile, workout: workoutPage, nutrition: nutritionPage, progress: progressPage, friends: friendsPage, library: libraryPage, coach: coachPage, weeklyReview: weeklyReviewPage };
+  const pages = { home, discover, posts: reels, reels, challenges, communities, events, messages, profile, bookings, business, admin, businesses, communityDetail, athleteProfile, workout: workoutPage, nutrition: nutritionPage, progress: progressPage, friends: friendsPage, library: libraryPage, coach: coachPage, weeklyReview: weeklyReviewPage, intelligence: intelligencePage };
   $('#app').innerHTML = (pages[state.page] || home)();
   bind();
 }
@@ -554,7 +686,6 @@ function celebrate(prCount) {
 }
 // Shareable card via canvas
 function shareCard(kind) {
-  const r = pageData.review || {};
   const canvas = document.createElement('canvas');
   canvas.width = 1080; canvas.height = 1350;
   const c = canvas.getContext('2d');
@@ -562,24 +693,36 @@ function shareCard(kind) {
   grad.addColorStop(0, '#0b1711'); grad.addColorStop(1, '#1d3a2d');
   c.fillStyle = grad; c.fillRect(0, 0, 1080, 1350);
   c.fillStyle = '#c9f36b'; c.font = '800 64px Manrope, Arial'; c.fillText('FITVERSE', 80, 140);
-  c.fillStyle = '#ffffff'; c.font = '800 88px Manrope, Arial';
-  c.fillText('Weekly Recap', 80, 320);
-  c.font = '500 40px Manrope, Arial'; c.fillStyle = '#9fb3a4';
-  c.fillText(r.week || new Date().toDateString(), 80, 390);
-  const stats = [[r.workouts || 0, 'workouts'], [(r.calories_burned || 0).toLocaleString(), 'kcal burned'], [r.avg_protein || 0, 'avg protein g'], [r.new_prs || 0, 'new PRs'], [(r.consistency || 0) + '%', 'consistency'], [r.streak || 0, 'day streak']];
-  stats.forEach(([v, label], i) => {
-    const x = 80 + (i % 2) * 480, y = 540 + Math.floor(i / 2) * 240;
-    c.fillStyle = '#ffffff22'; c.fillRect(x, y - 110, 420, 170);
-    c.fillStyle = '#c9f36b'; c.font = '800 84px Manrope, Arial'; c.fillText(String(v), x + 30, y);
-    c.fillStyle = '#9fb3a4'; c.font = '500 34px Manrope, Arial'; c.fillText(label, x + 30, y + 44);
+  let title = 'Weekly Recap', stats;
+  if (kind === 'fitness-dna') {
+    const d = (pageData.intel || {});
+    const dna = d.dna || {};
+    title = 'Fitness DNA';
+    c.fillStyle = '#ffffff'; c.font = '800 88px Manrope, Arial'; c.fillText('Fitness DNA', 80, 320);
+    c.font = '500 40px Manrope, Arial'; c.fillStyle = '#9fb3a4';
+    c.fillText(dna.personality || 'The Explorer', 80, 390);
+    const sc = dna.scores || {};
+    stats = Object.entries(sc).map(([k, v]) => [v, k]);
+  } else {
+    const r = pageData.review || {};
+    c.fillStyle = '#ffffff'; c.font = '800 88px Manrope, Arial'; c.fillText('Weekly Recap', 80, 320);
+    c.font = '500 40px Manrope, Arial'; c.fillStyle = '#9fb3a4';
+    c.fillText(r.week || new Date().toDateString(), 80, 390);
+    stats = [[r.workouts || 0, 'workouts'], [(r.calories_burned || 0).toLocaleString(), 'kcal burned'], [r.avg_protein || 0, 'avg protein g'], [r.new_prs || 0, 'new PRs'], [(r.consistency || 0) + '%', 'consistency'], [r.streak || 0, 'day streak']];
+  }
+  stats.slice(0, 8).forEach(([v, label], i) => {
+    const x = 80 + (i % 2) * 480, y = 540 + Math.floor(i / 2) * 200;
+    c.fillStyle = '#ffffff22'; c.fillRect(x, y - 110, 420, 160);
+    c.fillStyle = '#c9f36b'; c.font = '800 74px Manrope, Arial'; c.fillText(String(v), x + 30, y);
+    c.fillStyle = '#9fb3a4'; c.font = '500 32px Manrope, Arial'; c.fillText(label, x + 30, y + 42);
   });
   c.fillStyle = '#9fb3a4'; c.font = '500 32px Manrope, Arial';
   c.fillText('Fitness is more fun together → fitverse.app', 80, 1260);
   const a = document.createElement('a');
-  a.download = `fitverse-recap.png`;
+  a.download = `fitverse-${kind}.png`;
   a.href = canvas.toDataURL('image/png');
   a.click();
-  toast('Recap card downloaded — share it anywhere 📲');
+  toast('Card downloaded — share it anywhere 📲');
 }
 function scrollBubbles() { const b = $('#bubbles'); if (b) b.scrollTop = b.scrollHeight; }
 // Live updates: poll notifications + active conversation so chats and badges stay fresh.
@@ -981,7 +1124,8 @@ async function action(a, btn) {
           const res = await api('/api/workouts', { method: 'POST', body: JSON.stringify({ title: f.get('title'), duration_min: Number(f.get('duration_min')), logs: rows.map(r => ({ exercise_id: Number(r.exercise_id), sets: Number(r.sets), reps: Number(r.reps), weight: Number(r.weight) })) }) });
           $('#modal').innerHTML = '';
           if (res.pr_count > 0) celebrate(res.pr_count);
-          toast(`Workout saved! ${res.pr_count ? `🔥 ${res.pr_count} PR${res.pr_count > 1 ? 's' : ''}!` : '+60 XP'}`);
+          if (res.mission_completed) toast(`🎯 Mission complete: ${res.mission_completed.completed} · +${res.mission_completed.xp} XP!`);
+          else toast(`Workout saved! ${res.pr_count ? `🔥 ${res.pr_count} PR${res.pr_count > 1 ? 's' : ''}!` : '+60 XP'}`);
           await hydrate(); await loadPageData('workout'); state.page = 'workout'; render();
         } catch (err) { toast(err.message); }
       };
@@ -1117,6 +1261,58 @@ async function action(a, btn) {
     case 'weeklyReview':
       $('#modal').innerHTML = ''; state.page = 'progress'; await loadPageData('progress'); render(); window.scrollTo(0, 0); return;
     case 'shareRecap': shareCard('weekly-recap'); return;
+    case 'traj': {
+      pageData.trajScenario = btn.dataset.id;
+      await loadPageData('intelligence'); state.page = 'intelligence'; render();
+      const chips = $('#traj-chips'); if (chips) chips.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    case 'missionStart': {
+      toast('Mission active — progress updates automatically as you train 💪');
+      return;
+    }
+    case 'missionInvite': {
+      const friends = (pageData.friends && pageData.friends.length ? pageData.friends : ((await api('/api/friends')).items || []));
+      pageData.friends = friends;
+      if (!friends.length) { toast('Add friends first — then drag them into your mission!'); return; }
+      modal(`<span class="eyebrow">🤝 INVITE A FRIEND</span><h2>Who's joining the mission?</h2><div class="pick-list">${friends.map(f => `<button data-action="missionInvitePick" data-id="${f.id}">${escapeHtml(f.name)}</button>`).join('')}</div>`);
+      bind();
+      return;
+    }
+    case 'missionInvitePick': {
+      try {
+        await api('/api/missions/join', { method: 'POST', body: JSON.stringify({ friend_id: Number(btn.dataset.id) }) });
+        $('#modal').innerHTML = ''; toast('Invite sent — accountability unlocked 🤝');
+        await loadPageData('intelligence'); render();
+      } catch (err) { toast(err.message); }
+      return;
+    }
+    case 'missionShare': {
+      const m = pageData.mission || {};
+      const text = `🎯 My FITVERSE mission: ${m.title || 'Loading…'} — ${m.description || ''} Reward: +${m.reward_xp || 0} XP. Fitness is more fun together!`;
+      if (navigator.share) { navigator.share({ title: 'FITVERSE Mission', text }).catch(() => {}); }
+      else { try { await navigator.clipboard.writeText(text); toast('Mission copied — paste it anywhere 📋'); } catch { toast(text); } }
+      return;
+    }
+    case 'teamJoin': {
+      try {
+        await api('/api/teams/join', { method: 'POST', body: JSON.stringify({ team_id: Number(btn.dataset.id) }) });
+        toast('Team joined — your XP now fuels the war ⚔️');
+        await loadPageData('intelligence'); render();
+      } catch (err) { toast(err.message); }
+      return;
+    }
+    case 'shareDna': shareCard('fitness-dna'); return;
+    case 'react': {
+      const pid = Number(btn.dataset.id), r = btn.dataset.reaction;
+      try {
+        const res = await api('/api/reactions', { method: 'POST', body: JSON.stringify({ post_id: pid, reaction: r }) });
+        const feedPost = (pageData.feed || []).find(p => p.id === pid);
+        if (feedPost) { feedPost.reactions = res.reactions; feedPost.my_reactions = res.mine; }
+        render();
+      } catch (err) { toast(err.message); }
+      return;
+    }
     case 'genWorkoutFromOnboarding': $('#modal').innerHTML = ''; action('generateWorkout', null); return;
     case 'cmdk': cmdk(); return;
     case 'close': $('#modal').innerHTML = ''; return;

@@ -180,3 +180,4 @@
 .file-label .dim{color:var(--muted);font-weight:400}
 .activity-form textarea{display:block;width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:5px;font:inherit;resize:vertical}
 @media(max-width:900px){main{margin-left:70px;padding:0 24px 45px}.nav-item{font-size:11px;padding:7px 6px}.nav-item span{font-size:16px;width:100%}.nav-item{justify-content:center;padding:9px 4px}}
+
