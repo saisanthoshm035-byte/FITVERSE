@@ -237,3 +237,17 @@ button:active{transform:scale(.97);transition:transform .08s}
 .dna-mini .mini-ring b{position:relative;z-index:1;font-size:10.5px;color:var(--ink)}
 @media(max-width:760px){.moments-row{grid-template-columns:1fr}.ch-ops{grid-column:auto;justify-content:flex-end}}
 @media(prefers-reduced-motion:reduce){.skeleton::after{animation:none}button:active{transform:none}}
+
+/* ===== Social connection layer ===== */
+.friends-activity{margin:18px 0}
+.fa-list{display:grid;gap:8px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:12px}
+.fa-row{display:flex;align-items:center;gap:10px;padding:9px 6px;border-bottom:1px solid #f0f2ee;cursor:pointer;border-radius:9px}
+.fa-row:last-child{border-bottom:none}
+.fa-row:hover{background:#f6f8f3}
+.fa-icon{font-size:19px;flex:0 0 26px;text-align:center}
+.fa-copy{flex:1;font-size:12.5px;color:#3a473e;line-height:1.45;min-width:0;overflow-wrap:anywhere}
+.fa-copy b{color:var(--ink)}
+.fa-row time{font:9px 'DM Mono';color:#8a948d;flex:0 0 auto}
+.social-chip{display:inline-flex;align-items:center;gap:4px;background:#eef6d6;color:#33691d;border-radius:99px;padding:3px 9px;font-size:10.5px;font-weight:700;margin:4px 0 2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:760px){.fa-row time{display:none}.fa-list{padding:8px}}
+@media(prefers-reduced-motion:reduce){.fa-row{transition:none}}

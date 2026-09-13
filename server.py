@@ -553,6 +553,14 @@ def ics_for_event(event: dict) -> str:
             "END:VEVENT\r\nEND:VCALENDAR\r\n")
 
 
+def friend_ids(db: sqlite3.Connection, user_id: int) -> list[int]:
+    """Accepted friends + followed users — the social graph used for all friend-context."""
+    rows = db.execute("""SELECT CASE WHEN requester_id=? THEN addressee_id ELSE requester_id END id FROM friendships
+        WHERE status='accepted' AND (requester_id=? OR addressee_id=?)
+        UNION SELECT followee_id FROM follows WHERE follower_id=?""", (user_id, user_id, user_id, user_id)).fetchall()
+    return [r["id"] for r in rows]
+
+
 def read_bootstrap(user_id: int) -> dict:
     with connect() as db:
         user = dict(db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,p.avatar_url,p.onboarding_completed FROM users u JOIN profiles p ON p.user_id=u.id WHERE u.id=?", (user_id,)).fetchone())
@@ -842,6 +850,75 @@ class FitverseHandler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             return self.send_json(200,coach_reply(self.current_user(),parse_qs(query).get("q",[""])[0]))
         if path == "/api/feed": return self.send_json(200,{"items":list_feed(self.current_user())})
+        if path == "/api/friends/activity":
+            """Real recent activity from friends + followed users, newest first. Privacy: respects user_settings.is_private for non-friend rows."""
+            uid = self.current_user()
+            with connect() as db:
+                fids = friend_ids(db, uid)
+                if not fids:
+                    return self.send_json(200, {"items": []})
+                marks = ",".join("?" for _ in fids)
+                items = []
+                for r in db.execute(f"""SELECT ws.user_id, u.name, ws.title detail, ws.created_at at FROM workout_sessions ws
+                    JOIN users u ON u.id=ws.user_id WHERE ws.user_id IN ({marks})
+                    ORDER BY ws.id DESC LIMIT 12""", fids):
+                    items.append({"kind": "workout", "icon": "🏋", "name": r["name"], "user_id": r["user_id"],
+                                  "text": f"completed {r['detail']}", "at": r["at"]})
+                for r in db.execute(f"""SELECT cp.user_id, u.name, c.title detail, c.id cid, cp.completed_at at FROM challenge_participants cp
+                    JOIN challenges c ON c.id=cp.challenge_id JOIN users u ON u.id=cp.user_id
+                    WHERE cp.user_id IN ({marks}) ORDER BY cp.rowid DESC LIMIT 8""", fids):
+                    items.append({"kind": "challenge", "icon": "⚔️", "name": r["name"], "user_id": r["user_id"],
+                                  "text": f"is competing in {r['detail']}", "at": r["at"], "link": "challenges"})
+                for r in db.execute(f"""SELECT mp.user_id, u.name, m.title detail, m.reward_xp, m.completed_at at FROM missions mp
+                    JOIN users u ON u.id=mp.user_id JOIN missions m ON m.id=mp.id
+                    WHERE mp.user_id IN ({marks}) AND mp.status='completed' ORDER BY mp.id DESC LIMIT 6""", fids):
+                    items.append({"kind": "mission", "icon": "🎯", "name": r["name"], "user_id": r["user_id"],
+                                  "text": f"completed mission {r['detail']} (+{r['reward_xp']} XP)", "at": r["at"]})
+                for r in db.execute(f"""SELECT ua.user_id, u.name, a.name detail, a.icon icon, ua.unlocked_at at FROM user_achievements ua
+                    JOIN users u ON u.id=ua.user_id JOIN achievements a ON a.id=ua.achievement_id
+                    WHERE ua.user_id IN ({marks}) ORDER BY ua.unlocked_at DESC LIMIT 8""", fids):
+                    items.append({"kind": "achievement", "icon": r["icon"] or "🏅", "name": r["name"], "user_id": r["user_id"],
+                                  "text": f"unlocked {r['detail']}", "at": r["at"]})
+                for r in db.execute(f"""SELECT ap.user_id, u.name, a.title detail, a.id aid, ap.joined_at at FROM activity_participants ap
+                    JOIN activities a ON a.id=ap.activity_id JOIN users u ON u.id=ap.user_id
+                    WHERE ap.user_id IN ({marks}) ORDER BY ap.rowid DESC LIMIT 8""", fids):
+                    items.append({"kind": "event", "icon": "📅", "name": r["name"], "user_id": r["user_id"],
+                                  "text": f"is joining {r['detail']}", "at": r["at"], "link": "events"})
+                for r in db.execute(f"""SELECT cm.user_id, u.name, c.name detail, cm.joined_at at FROM community_members cm
+                    JOIN communities c ON c.id=cm.community_id JOIN users u ON u.id=cm.user_id
+                    WHERE cm.user_id IN ({marks}) ORDER BY cm.joined_at DESC LIMIT 6""", fids):
+                    items.append({"kind": "community", "icon": "◌", "name": r["name"], "user_id": r["user_id"],
+                                  "text": f"joined {r['detail']}", "at": r["at"], "link": "communities"})
+                for r in db.execute(f"""SELECT user_id, streak, updated_at at FROM user_game_state
+                    WHERE user_id IN ({marks}) AND streak >= 7 ORDER BY streak DESC LIMIT 4""", fids):
+                    nm = db.execute("SELECT name FROM users WHERE id=?", (r["user_id"],)).fetchone()
+                    items.append({"kind": "streak", "icon": "🔥", "name": nm["name"] if nm else "A friend", "user_id": r["user_id"],
+                                  "text": f"hit a {r['streak']}-day streak", "at": r["at"]})
+                items.sort(key=lambda x: str(x["at"]) or "", reverse=True)
+            return self.send_json(200, {"items": items[:14]})
+        if path == "/api/social/context":
+            """Per-item friend counts for communities/activities/challenges + friend commenters on recent posts."""
+            uid = self.current_user()
+            with connect() as db:
+                fids = friend_ids(db, uid)
+                out = {"communities": {}, "activities": {}, "challenges": {}, "posts": {}}
+                if fids:
+                    marks = ",".join("?" for _ in fids)
+                    for r in db.execute(f"""SELECT community_id cid, COUNT(*) n, GROUP_CONCAT(u.name) names FROM community_members cm
+                        JOIN users u ON u.id=cm.user_id WHERE cm.user_id IN ({marks}) GROUP BY community_id""", fids):
+                        out["communities"][str(r["cid"])] = {"n": r["n"], "names": r["names"].split(",")[:3]}
+                    for r in db.execute(f"""SELECT activity_id aid, COUNT(*) n, GROUP_CONCAT(u.name) names FROM activity_participants ap
+                        JOIN users u ON u.id=ap.user_id WHERE ap.user_id IN ({marks}) GROUP BY activity_id""", fids):
+                        out["activities"][str(r["aid"])] = {"n": r["n"], "names": r["names"].split(",")[:3]}
+                    for r in db.execute(f"""SELECT challenge_id cid, COUNT(*) n, GROUP_CONCAT(u.name) names FROM challenge_participants cp
+                        JOIN users u ON u.id=cp.user_id WHERE cp.user_id IN ({marks}) GROUP BY challenge_id""", fids):
+                        out["challenges"][str(r["cid"])] = {"n": r["n"], "names": r["names"].split(",")[:3]}
+                    for r in db.execute(f"""SELECT c.post_id pid, COUNT(DISTINCT c.author_id) n, GROUP_CONCAT(DISTINCT u.name) names
+                        FROM comments c JOIN users u ON u.id=c.author_id
+                        WHERE c.author_id IN ({marks}) AND c.post_id IN (SELECT id FROM posts ORDER BY id DESC LIMIT 30)
+                        GROUP BY c.post_id""", fids):
+                        out["posts"][str(r["pid"])] = {"n": r["n"], "names": (r["names"] or "").split(",")[:2]}
+            return self.send_json(200, out)
         if path == "/api/feed/tabs":
             uid = self.current_user()
             tab = urlparse(self.path).query.split("tab=")[-1].split("&")[0] or "foryou"

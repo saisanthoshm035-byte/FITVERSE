@@ -162,7 +162,7 @@ async function loadPageData(page) {
     add('messages', api(`/api/conversations/${pageData.activeConversation}`).then(d => d.items || []));
   }
   if (page === 'profile') { add('xpLedger', api('/api/xp').then(d => d.items || [])); add('achievements', api('/api/achievements').then(d => d.items || [])); add('friends', api('/api/friends').then(d => d.items || [])); add('mission', api('/api/missions').then(d => d.item || {})); }
-  if (page === 'home') { add('mission', api('/api/missions').then(d => d.item || {})); add('moments', api('/api/moments').then(d => d.items || [])); }
+  if (page === 'home') { add('mission', api('/api/missions').then(d => d.item || {})); add('moments', api('/api/moments').then(d => d.items || [])); add('friendsActivity', api('/api/friends/activity').then(d => d.items || [])); add('socialCtx', api('/api/social/context').then(d => d).catch(() => ({}))); }
   if (page === 'reels' || page === 'posts') { add('reels', api('/api/reels').then(d => d.items || [])); if (!pageData.feed.length) add('feed', api('/api/feed').then(d => d.items || [])); }
   if (page === 'businesses') add('businesses', api('/api/businesses').then(d => d.items || []));
   if (page === 'workout') { add('workouts', api('/api/workouts').then(d => d.items || [])); add('prs', api('/api/workouts/prs').then(d => d.items || [])); }
@@ -228,6 +228,7 @@ ${notes.length ? `<section class="buddy-strip"><span class="pill lime">✦ FITVE
   <a class="eco-card mission" data-page="intelligence"><span class="eyebrow">🎯 MISSION</span><div class="eco-main"><span class="mission-mini">${mission.icon || '🎯'}</span><div><h3>${escapeHtml(mission.title || 'Start your first mission')}</h3><p>${mission.progress != null ? `${mission.progress}/${mission.target} · ` : ''}+${mission.reward_xp || 0} XP</p></div></div><span class="eco-more">View →</span></a>
 </section>
 ${momentsSection()}
+${friendsActivitySection()}
 <section class="stat-grid"><div class="stat-card"><span>🔥</span><div><small>STREAK</small><strong>${state.streak} days</strong></div><i>↗ ${s.week ? (s.week.sessions >= 3 ? 'on fire' : 'building') : ''}</i></div><div class="stat-card"><span>⚡</span><div><small>YOUR XP</small><strong>${state.xp.toLocaleString()} <em>XP</em></strong></div><i>LEVEL ${level()}</i></div><div class="stat-card goal"><div><small>WEEKLY GOAL</small><strong>${s.week && s.week.sessions != null ? Math.min(s.week.sessions, s.week.goal || 4) : Math.min(4, state.activities)} / ${s.week ? s.week.goal || 4 : 4} workouts</strong></div><div class="bar"><i style="width:${Math.min(100, ((s.week ? s.week.sessions : state.activities) / (s.week ? s.week.goal || 4 : 4)) * 100)}%"></i></div><button data-action="complete">Complete activity +</button></div></section>
 <section class="section-head"><div><span class="eyebrow">FROM YOUR CREW</span><h2>The FITVERSE feed</h2></div><button class="link" data-action="create">Share an update <b>→</b></button></section>
 <div class="tabs" id="feed-tabs">${['For You', 'Following', 'Trending'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ftab="${t.toLowerCase().replace(' ', '')}">${t}</button>`).join('')}</div>
@@ -243,6 +244,27 @@ function momentsSection() {
   return `<section class="moments-strip"><div class="section-head"><div><span class="eyebrow">🏆 FITVERSE MOMENTS</span><h2>Your recent wins</h2></div></div><div class="moments-row">${items.slice(0, 4).map((m, i) => `<article class="moment-card k${i % 4}"><span class="moment-icon">${m.icon}</span><div><small>${escapeHtml(m.card.headline)}</small><h3>${escapeHtml(m.card.main)}</h3><b>${escapeHtml(m.card.big)}</b></div><button class="moment-share" data-action="shareMoment" data-i="${i}" title="Share this moment" aria-label="Share moment">↗</button></article>`).join('')}</div></section>`;
 }
 
+function socialChip(type, id) {
+  const ctx = pageData.socialCtx && pageData.socialCtx[type];
+  const info = ctx && ctx[String(id)];
+  if (!info || !info.n) return '';
+  const label = { communities: 'members', activities: 'attending', challenges: 'competing', posts: 'commented' }[type];
+  const who = (info.names || []).slice(0, 2).map(n => n.split(' ')[0]).join(' & ');
+  return `<span class="social-chip" title="${escapeHtml((info.names || []).join(', '))}">👥 ${info.n} friend${info.n > 1 ? 's' : ''} ${label}${info.n === 1 && who ? ' · ' + escapeHtml(who) : ''}</span>`;
+}
+
+function friendsActivitySection() {
+  const items = pageData.friendsActivity || [];
+  if (!items.length) return '';
+  return `<section class="friends-activity"><div class="section-head"><div><span class="eyebrow">👥 FRIENDS ACTIVITY</span><h2>Your crew is moving</h2></div><button class="link" data-page="friends">See friends <b>→</b></button></div><div class="fa-list">${items.slice(0, 6).map(a => `
+    <article class="fa-row" ${a.user_id ? `data-action="athlete" data-id="${a.user_id}" role="button" title="Open profile"` : ''}>
+      <span class="fa-icon">${a.icon}</span>
+      <div class="fa-copy"><b>${escapeHtml(a.name)}</b> ${escapeHtml(a.text)}</div>
+      ${a.link ? `<button class="text-btn small" data-page="${a.link}">View</button>` : ''}
+      <time>${timeShort(a.at)}</time>
+    </article>`).join('')}</div></section>`;
+}
+
 function emptyState(icon, title, body, page, cta) {
   return `<div class="empty-state"><span aria-hidden="true">${icon}</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p>${page ? `<button class="primary small" data-page="${page}">${escapeHtml(cta)}</button>` : ''}</div>`;
 }
@@ -255,10 +277,10 @@ function postCard(p) {
   const rmap = {}; (p.reactions || []).forEach(r => { rmap[r.reaction] = r.n; });
   const mine = new Set(p.my_reactions || []);
   const reactBtns = REACTIONS.map(([k, ic, lab]) => `<button class="react ${mine.has(k) ? 'on' : ''}" data-action="react" data-id="${p.id}" data-reaction="${k}" aria-label="${lab}">${ic}${rmap[k] ? ` <small>${rmap[k]}</small>` : ''}</button>`).join('');
-  return `<article class="post" data-post="${p.id}"><div class="post-author">${photoAvatar(p.name, p.author_id || p.id)}<div><strong>${escapeHtml(p.name)}</strong><small>${icon} ${label} · ${timeShort(p.created_at)}</small></div><button data-action="postMenu" data-id="${p.id}">•••</button></div><p>${escapeHtml(p.body)}</p>${p.photo ? (p.media === 'video' ? `<video class="post-photo" src="${p.photo}" controls preload="metadata"></video>` : `<img class="post-photo" src="${p.photo}" alt="" loading="lazy"/>`) : ''}<div class="react-row">${reactBtns}</div><div class="post-actions"><button data-action="like" data-id="${p.id}">${p.liked ? '♥ Liked' : '♡ Like'} <small>${p.likes}</small></button><button data-action="comment" data-id="${p.id}">◌ Comment <small>${p.comments}</small></button><button data-action="share" data-id="${p.id}">↗ Share</button></div></article>`;
+  return `<article class="post" data-post="${p.id}"><div class="post-author">${photoAvatar(p.name, p.author_id || p.id)}<div><strong>${escapeHtml(p.name)}</strong><small>${icon} ${label} · ${timeShort(p.created_at)}</small></div><button data-action="postMenu" data-id="${p.id}">•••</button></div>${socialChip('posts', p.id)}<p>${escapeHtml(p.body)}</p>${p.photo ? (p.media === 'video' ? `<video class="post-photo" src="${p.photo}" controls preload="metadata"></video>` : `<img class="post-photo" src="${p.photo}" alt="" loading="lazy"/>`) : ''}<div class="react-row">${reactBtns}</div><div class="post-actions"><button data-action="like" data-id="${p.id}">${p.liked ? '♥ Liked' : '♡ Like'} <small>${p.likes}</small></button><button data-action="comment" data-id="${p.id}">◌ Comment <small>${p.comments}</small></button><button data-action="share" data-id="${p.id}">↗ Share</button></div></article>`;
 }
 function activity(icon, title, people, time, place, type, id, joined) {
-  return `<article class="activity-card" data-action="activityDetail" data-id="${id || 1}" style="cursor:pointer"><div class="activity-icon photo-tile" style="background-image:url('${sportPhoto(type)}')"><span>${icon}</span></div><div class="activity-meta"><span>${escapeHtml(type)}</span><h3>${escapeHtml(title)}</h3><p>◉ ${escapeHtml(place)}</p><div><b>◷ ${escapeHtml(time)}</b><b>◉ ${escapeHtml(people)}</b></div></div><button class="join ${joined ? 'joined' : ''}" data-action="joinActivity" data-id="${id || 1}">${joined ? 'Joined ✓' : 'Join +'}</button></article>`;
+  return `<article class="activity-card" data-action="activityDetail" data-id="${id || 1}" style="cursor:pointer"><div class="activity-icon photo-tile" style="background-image:url('${sportPhoto(type)}')"><span>${icon}</span></div><div class="activity-meta"><span>${escapeHtml(type)}</span><h3>${escapeHtml(title)}</h3>${socialChip('activities', id)}<p>◉ ${escapeHtml(place)}</p><div><b>◷ ${escapeHtml(time)}</b><b>◉ ${escapeHtml(people)}</b></div></div><button class="join ${joined ? 'joined' : ''}" data-action="joinActivity" data-id="${id || 1}">${joined ? 'Joined ✓' : 'Join +'}</button></article>`;
 }
 function discover() {
   const recs = pageData.recommendations.length ? pageData.recommendations : [];
@@ -292,20 +314,20 @@ function challenges() {
     : ch.status === 'active' && ch.joined
       ? `<button class="outline small" data-action="chProgress" data-id="${ch.id}" data-target="${ch.target_value}">+ Log progress</button>${ch.involved ? '' : `<button class="more" data-action="chInvite" data-id="${ch.id}" title="Invite friend">＋👥</button>`}`
       : ch.status === 'completed' && ch.winner_id ? `<span class="pill lime">${ch.winner_id === (me().id || 1) ? 'You won 🏆' : 'Decided'}</span>` : `<button class="outline small" data-action="chInvite" data-id="${ch.id}">Join</button>`;
-  return `<article><span>⚡</span><div><b>${escapeHtml(ch.title)}</b><p>${escapeHtml(ch.challenge_type)} · vs ${escapeHtml(ch.challenger_id === (me().id || 1) ? ch.opponent_name : ch.challenger_name)} · target ${ch.target_value}</p><div class="bar slim"><i style="width:${pct}%"></i></div></div><div class="challenge-progress"><strong>${ch.status}</strong><em>${myP || 0}/${ch.target_value}</em></div><div class="ch-ops">${ops}</div></article>`;
+  return `<article><span>⚡</span><div><b>${escapeHtml(ch.title)}</b><p>${escapeHtml(ch.challenge_type)} · vs ${escapeHtml(ch.challenger_id === (me().id || 1) ? ch.opponent_name : ch.challenger_name)} · target ${ch.target_value}</p>${socialChip('challenges', ch.id)}<div class="bar slim"><i style="width:${pct}%"></i></div></div><div class="challenge-progress"><strong>${ch.status}</strong><em>${myP || 0}/${ch.target_value}</em></div><div class="ch-ops">${ops}</div></article>`;
 }).join('') || emptyState('⚔️', 'No challenges yet', 'Challenge a friend and make fitness more fun.', null, '')}</div>
 ${(pageData.challengeBoard || []).length ? `<section class="section-head"><div><span class="eyebrow">HALL OF WINS</span><h2>Most challenge victories</h2></div></section><section class="win-board">${(pageData.challengeBoard || []).map((r, i) => `<div class="rank"><b>0${i + 1}</b>${avatar(r.name, ['blue', 'mint', 'teal', 'orange', 'purple'][i % 5])}<strong>${escapeHtml(r.name === me().name ? 'You' : r.name)}</strong><em>${r.wins} win${r.wins > 1 ? 's' : ''}</em></div>`).join('')}</section>` : ''}
 <section class="leaderboard"><div><span class="eyebrow">CAMPUS LEADERBOARD</span><h2>XP leaders this week</h2>${(pageData.leaderboard || []).slice(0, 5).map((r, i) => `<div class="rank ${r.name === me().name ? 'you' : ''}"><b>0${i + 1}</b>${avatar(r.name, ['blue', 'mint', 'teal', 'orange', 'purple'][i % 5])}<strong>${escapeHtml(r.name === me().name ? 'You' : r.name)}</strong><em>${r.xp.toLocaleString()} XP</em></div>`).join('')}</div><div class="level-card"><span>LEVEL ${level()}</span><h3>${levelName()}</h3><p>${Math.max(0, 500 - (state.xp % 500))} XP until ${levelName(1) || 'next'} level</p><div class="bar"><i style="width:${progress()}%"></i></div></div></section>`);
 }
 function communityCard(c) {
-  return `<article class="community-card" data-community="${c.id}"><div class="community-cover photo" style="background-image:linear-gradient(rgba(11,23,17,.25), rgba(11,23,17,.45)), url('${sportPhoto(c.activity)}')" data-action="communityOpen" data-id="${c.id}" role="button" title="Open community"><span>🏀</span><small>${(c.member_count || 0).toLocaleString()} members</small></div><div><h3 data-action="communityOpen" data-id="${c.id}" role="button">${escapeHtml(c.name)}</h3><p>${escapeHtml(c.description)}</p><button class="${c.joined ? 'outline' : 'primary small'}" data-action="${c.joined ? 'leaveCommunity' : 'joinCommunity'}" data-id="${c.id}">${c.joined ? 'Joined ✓' : 'Join community'}</button><button class="more" data-action="communityMenu" data-id="${c.id}">•••</button></div></article>`;
+  return `<article class="community-card" data-community="${c.id}"><div class="community-cover photo" style="background-image:linear-gradient(rgba(11,23,17,.25), rgba(11,23,17,.45)), url('${sportPhoto(c.activity)}')" data-action="communityOpen" data-id="${c.id}" role="button" title="Open community"><span>🏀</span><small>${(c.member_count || 0).toLocaleString()} members</small></div><div><h3 data-action="communityOpen" data-id="${c.id}" role="button">${escapeHtml(c.name)}</h3>${socialChip('communities', c.id)}<p>${escapeHtml(c.description)}</p><button class="${c.joined ? 'outline' : 'primary small'}" data-action="${c.joined ? 'leaveCommunity' : 'joinCommunity'}" data-id="${c.id}">${c.joined ? 'Joined ✓' : 'Join community'}</button><button class="more" data-action="communityMenu" data-id="${c.id}">•••</button></div></article>`;
 }
 function communities() {
   return shell(`${pageHeader('Communities', 'Find a place to belong, wherever you move.')}
 <div class="community-hero"><span class="pill lime">YOUR COMMUNITIES</span><h2>Move with your <em>people.</em></h2><p>From first-time runners to court regulars — your next crew is here.</p><button class="primary" data-action="createCommunity">＋ Create community</button></div><div class="community-grid">${pageData.communities.map(communityCard).join('') || '<p class="loading">Loading communities…</p>'}</div>`);
 }
 function eventCard(e) {
-  return `<article class="event-card" data-event="${e.id}"><div class="event-img photo" style="background-image:url('img/${e.photo}')"><span>${escapeHtml(e.category.toUpperCase())}</span><b>${dayShort(e.starts_at)}</b></div><div><h3>${escapeHtml(e.name)}</h3><p>⌖ ${escapeHtml(e.location_label)} · ${e.booked_count || 0} attending</p><strong>${inr(e.price_inr)}</strong><div style="display:flex;gap:6px"><button class="outline" data-action="bookEvent" data-id="${e.id}">${e.booked ? 'Booked ✓' : 'Book now'}</button><button class="more" data-action="eventDetail" data-id="${e.id}" title="Details">ℹ</button></div></div></article>`;
+  return `<article class="event-card" data-event="${e.id}"><div class="event-img photo" style="background-image:url('img/${e.photo}')"><span>${escapeHtml(e.category.toUpperCase())}</span><b>${dayShort(e.starts_at)}</b></div><div><h3>${escapeHtml(e.name)}</h3>${socialChip('activities', e.id)}<p>⌖ ${escapeHtml(e.location_label)} · ${e.booked_count || 0} attending</p><strong>${inr(e.price_inr)}</strong><div style="display:flex;gap:6px"><button class="outline" data-action="bookEvent" data-id="${e.id}">${e.booked ? 'Booked ✓' : 'Book now'}</button><button class="more" data-action="eventDetail" data-id="${e.id}" title="Details">ℹ</button></div></div></article>`;
 }
 function events() {
   const hero = pageData.events.find(e => e.id === 1) || pageData.events[0];
