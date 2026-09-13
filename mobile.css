@@ -1,0 +1,210 @@
+/* ============================================================
+   FITVERSE mobile optimization layer — loaded LAST.
+   Only touches phones (<=760px). Desktop (761px+) is 100% untouched:
+   every rule below lives inside a max-width media query except
+   the few safe global additions at the bottom (marked).
+   ============================================================ */
+
+/* ---------- Phone-wide foundations ---------- */
+@media (max-width: 760px) {
+  html { -webkit-text-size-adjust: 100%; }
+  body { overflow-x: hidden; }
+  /* kill stray horizontal scroll: anything wide must shrink, never overflow */
+  main, section, article, .card, .intel-grid .card { min-width: 0; max-width: 100%; }
+  img, video { max-width: 100%; height: auto; }
+  h1, h2, h3, p { overflow-wrap: break-word; }
+
+  /* Page shell: full-bleed, tighter padding, room for bottom bar */
+  main { margin: 0 !important; padding: 0 14px 96px !important; max-width: 100%; }
+  .top { min-height: 0; padding: 14px 0 6px; flex-wrap: wrap; gap: 8px; }
+  .top h1 { font-size: 21px; letter-spacing: -0.8px; }
+  .top p { font-size: 11px; }
+  .top-actions { gap: 8px; }
+  .icon-btn { font-size: 20px; padding: 10px 8px; }        /* >=44px tap target */
+  .profile-chip { padding: 6px 4px; }
+  .profile-chip .avatar, .profile-chip .pavatar { width: 34px; height: 34px; }
+
+  /* Bottom nav: bigger fingers-first targets + overflow safe */
+  .mobile-nav { height: 62px; padding-bottom: env(safe-area-inset-bottom, 0); }
+  .mobile-nav button { font-size: 21px; min-width: 56px; min-height: 48px; }
+  .mobile-nav small { font-size: 8.5px; }
+
+  /* ---------- HOME: the two overflowing grids ---------- */
+  .stat-grid { grid-template-columns: 1fr 1fr; gap: 10px; margin: 14px 0 22px; }
+  .stat-card { padding: 13px; min-height: 84px; gap: 10px; }
+  .stat-card.goal { grid-column: 1 / -1; }
+  .stat-card strong { font-size: 15px; letter-spacing: -0.4px; }
+  .dash-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .dash-grid .stat-card .bar { grid-column: 1 / -1; }
+  .eco-strip { grid-template-columns: 1fr; gap: 10px; }
+  .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin: 20px 0 12px; max-width: 100%; }
+  .section-head h2 { font-size: 16px; }
+  .section-head .link { white-space: nowrap; font-size: 11px; padding: 6px 0 6px 8px; }
+  .home-split { grid-template-columns: 1fr; gap: 14px; }
+  .hero { padding: 22px 18px; min-height: 0; border-radius: 18px; }
+  .hero h2 { font-size: 27px; letter-spacing: -1.4px; }
+  .hero p { font-size: 12.5px; }
+  .hero-actions { flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  .leaderboard { grid-template-columns: 1fr; gap: 14px; padding: 18px; }
+  .buddy-strip p { font-size: 12px; }
+
+  /* ---------- Cards, grids, feeds ---------- */
+  .activity-grid, .people-grid, .community-grid, .event-grid { grid-template-columns: 1fr; gap: 11px; }
+  .activity-card, .post, .session-card { padding: 13px; }
+  .achievement-row { grid-template-columns: 1fr; gap: 10px; }
+  .achievement-row article { padding: 13px; }
+
+  /* ---------- DISCOVER ---------- */
+  .discover-intro { display: block; padding: 20px 16px; border-radius: 16px; }
+  .discover-intro h2 { font-size: 25px; letter-spacing: -1.1px; }
+  .discover-intro .filter { margin-top: 12px; }
+  .match-feature { display: block; min-height: 0; }
+  .match-big-art { height: 110px; flex-direction: row; gap: 10px; justify-content: center; }
+  .match-big-art div { font-size: 44px; letter-spacing: -2px; }
+  .match-feature-copy { padding: 20px 16px; }
+  .match-feature h2 { font-size: 23px; }
+  .match-score { display: none; }
+  .tabs { gap: 16px; margin: 18px 0 10px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { font-size: 12.5px; padding: 0 2px 10px; white-space: nowrap; flex: 0 0 auto; }
+  .search { padding: 12px 14px; }
+  .search input { font-size: 16px; }                        /* 16px = iOS won't zoom */
+
+  /* ---------- WORKOUT (gym-friendly: big controls) ---------- */
+  .workout-top { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+  .workout-top .outline, .workout-top .primary { width: 100%; padding: 13px 10px; font-size: 12px; }
+  .wo-row { grid-template-columns: 1.6fr 0.8fr 0.8fr 1fr; gap: 6px; }
+  .wo-row select, .wo-row input { font-size: 16px !important; padding: 10px 6px !important; min-height: 44px; }
+  .activity-form input, .activity-form select { font-size: 16px; padding: 11px; }
+  .activity-form button { min-height: 46px; }
+
+  /* ---------- NUTRITION / PROGRESS quick actions ---------- */
+  .water-quick button, .quick-add button { min-height: 46px; font-size: 14px; }
+
+  /* ---------- MESSAGES: keep the conversation list usable ---------- */
+  .message-layout { display: grid; grid-template-columns: 1fr; height: auto; min-height: 0; }
+  .conversation-list { display: block !important; border-right: 0; border-bottom: 1px solid var(--line); max-height: 168px; overflow-y: auto; padding: 8px; }
+  .message-search { position: sticky; top: 0; z-index: 1; margin-bottom: 6px; }
+  .conversation { padding: 12px 8px; }
+  .chat { height: 62vh; min-height: 420px; }
+  .chat-head { padding: 10px 12px; position: sticky; top: 0; background: #fff; z-index: 2; }
+  .bubbles { padding: 14px 12px; gap: 8px; }
+  .bubbles p { max-width: 78%; font-size: 13.5px; padding: 10px 13px; }
+  .composer { margin: 6px 10px calc(6px + env(safe-area-inset-bottom, 0)); padding: 3px; }
+  .composer input { font-size: 16px; padding: 12px 10px; }  /* no iOS zoom, easy typing */
+  .composer button { padding: 0 18px; min-height: 44px; }
+  .typing { padding: 6px 16px; }
+
+  /* ---------- AI COACH ---------- */
+  .coach-layout { padding: 16px; }
+  .coach-answer { font-size: 13.5px; line-height: 1.65; padding: 14px; }
+  .coach-prompts { gap: 7px; }
+  .coach-prompts button { padding: 11px 13px; font-size: 11.5px; } /* comfy taps */
+
+  /* ---------- CHALLENGES / COMMUNITIES / EVENTS ---------- */
+  .challenge-hero { display: block; padding: 22px 16px; }
+  .challenge-hero h2 { font-size: 24px; }
+  .challenge-kpi { display: none; }
+  .challenge-list article { grid-template-columns: 34px 1fr auto; gap: 10px; padding: 13px; }
+  .challenge-progress { display: none; }
+  .versus { flex-wrap: wrap; gap: 12px; }
+  .community-hero { padding: 22px 16px; }
+  .community-hero h2 { font-size: 25px; }
+  .event-hero { padding: 24px 18px; min-height: 0; }
+  .event-hero h2 { font-size: 27px; letter-spacing: -1.2px; }
+  .event-art { display: none; }
+  .moon { width: 84px; height: 84px; right: 18px; top: 16px; }
+  .event-hero > div:first-child { max-width: 100%; }
+
+  /* ---------- PROFILE ---------- */
+  .profile-info { grid-template-columns: 66px 1fr; padding: 0 14px 13px; gap: 12px; }
+  .profile-info > .avatar, .profile-info > .pavatar { width: 62px; height: 62px; font-size: 15px; margin-top: -28px; border-width: 4px; }
+  .profile-info h2 { font-size: 18px; }
+  .profile-info .outline { grid-column: 1 / -1; width: 100%; min-height: 42px; }
+  .profile-actions { display: flex; gap: 8px; grid-column: 1 / -1; flex-wrap: wrap; }
+  .profile-stats { gap: 8px; padding: 12px 14px; justify-content: space-between; flex-wrap: wrap; }
+  .profile-stats b { font-size: 14px; }
+  .profile-tools { flex-wrap: wrap; gap: 8px; }
+  .profile-tools .outline { flex: 1 1 44%; min-height: 44px; font-size: 11px; }
+  .tabs button { padding-bottom: 10px; }
+
+  /* ---------- BUSINESS / athlete detail bits ---------- */
+  .biz-body, .biz-card > div:last-child { padding: 13px; }
+
+  /* ---------- MODALS: bottom sheets that always fit ---------- */
+  .modal-card { position: fixed; left: 0; right: 0; bottom: 0; top: auto; transform: none;
+    width: 100%; max-width: 100%; max-height: 88dvh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    border-radius: 20px 20px 0 0; padding: 20px 16px calc(18px + env(safe-area-inset-bottom, 0));
+    padding-bottom: max(18px, env(safe-area-inset-bottom)); animation: sheet-up .22s ease; }
+  .modal-backdrop { z-index: 10; }
+  .modal-card { z-index: 11; }
+  .modal-card h2 { font-size: 19px; }
+  .modal-x { position: sticky; float: right; top: 0; margin: -6px -4px 0 0; font-size: 26px; padding: 8px; }
+  .create-options { grid-template-columns: repeat(2, 1fr); }
+  .react-row .react { padding: 8px 12px; font-size: 14px; }  /* finger-size reactions */
+  @keyframes sheet-up { from { transform: translateY(40px); opacity: .6; } to { transform: none; opacity: 1; } }
+
+  /* ---------- INTELLIGENCE page on phones ---------- */
+  .intel-grid { grid-template-columns: 1fr; gap: 12px; }
+  .intel-grid .card { padding: 15px; }
+  .dna-body { gap: 14px; }
+  .radar { flex: 1 1 100%; width: 100%; max-width: 320px; margin: 0 auto; }
+  .dna-tags { grid-template-columns: 1fr; gap: 10px; }
+  .twin-stats { grid-template-columns: repeat(2, 1fr); }
+  .team-row { grid-template-columns: 24px 1fr auto; }
+  .team-xp { display: block; }
+  .mission-actions .primary, .mission-actions .outline { min-height: 44px; }
+  .debt-num { font-size: 44px; }
+
+  /* ---------- Reels: full-bleed, no side padding ---------- */
+  .reel-feed { padding: 0 !important; }
+  main:has(.reel-feed) { padding-left: 0 !important; padding-right: 0 !important; }
+
+  /* ---------- Auth (login/signup) ---------- */
+  .auth-card { padding: 20px 16px; }
+  .auth-card input { font-size: 16px; min-height: 46px; }
+}
+
+/* ---------- Extra-small phones (320–360px) ---------- */
+@media (max-width: 360px) {
+  .top h1 { font-size: 18px; }
+  .hero h2 { font-size: 23px; letter-spacing: -1px; }
+  .stat-grid { gap: 8px; }
+  .stat-card { padding: 11px; }
+  .stat-card strong { font-size: 13.5px; }
+  .wo-row { grid-template-columns: 1.4fr 0.8fr 0.8fr 1fr; }
+  .match-feature-copy { padding: 16px 13px; }
+  .chip-row .chip { padding: 6px 10px; font-size: 11.5px; }
+}
+
+/* ============================================================
+   Safe global additions (apply at ALL sizes — including desktop)
+   ============================================================ */
+
+/* Never let long words/usernames blow out cards, on any screen */
+.post p, .mh-row, .team-info h3, .conversation strong, .pattern h3,
+.booking-item h3, .activity-meta h3, .person-info h3 { overflow-wrap: anywhere; }
+
+/* Bigger tap targets for the small inline buttons, desktop included (subtle) */
+.react { min-height: 34px; }
+.mobile-more-btn { display: none; }
+
+/* ---------- Mobile "More" menu (renders only on phones) ---------- */
+@media (max-width: 760px) {
+  .mobile-more-btn { display: grid; place-items: center; width: 46px; height: 46px;
+    border-radius: 50%; background: #fff; border: 1px solid var(--line);
+    font-size: 19px; font-weight: 800; color: var(--ink);
+    box-shadow: 0 4px 14px #0b17111a; }
+  .more-sheet .pick-list button { min-height: 48px; font-size: 14.5px; }
+  .more-sheet .sheet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+  .more-sheet .sheet-grid button { border: 1px solid var(--line); border-radius: 12px;
+    padding: 13px 10px; text-align: left; font-size: 13px; font-weight: 700; color: var(--ink);
+    background: #fff; min-height: 52px; }
+  .more-sheet .sheet-grid button span { display: block; font-size: 19px; margin-bottom: 4px; }
+}
+
+/* Respect reduced-motion users everywhere */
+@media (prefers-reduced-motion: reduce) {
+  .modal-card { animation: none; }
+  .eco-card, .activity-card { transition: none; }
+}

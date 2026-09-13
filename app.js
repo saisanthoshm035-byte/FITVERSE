@@ -193,7 +193,7 @@ function shell(content) {
   const u = unread();
   return `<div class="app-shell">
   <aside class="sidebar"><a class="brand" data-page="home"><i>F</i> FITVERSE</a><p class="eyebrow">PLAY TOGETHER</p><nav>${nav.map(([id, icon, label]) => `<button class="nav-item ${state.page === id ? 'active' : ''}" data-page="${id}"><span>${icon}</span>${label}${id === 'messages' && u ? `<b>${u}</b>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="mini-profile">${photoAvatar(me().name, 1)}<div><strong>${escapeHtml(me().name || 'Sai Kumar')}</strong><small>Level ${level()} · ${levelName()}</small></div></div><button class="create-btn" data-action="create">＋ Create</button></div></aside>
-  <main>${content}</main><nav class="mobile-nav" aria-label="Primary">${mobileNav.map(([p, i]) => `<button data-page="${p}" class="${state.page === p ? 'active' : ''}" aria-label="${p}"><span aria-hidden="true">${i}</span><small>${p}</small></button>`).join('')}</nav><div id="toast" role="status" aria-live="polite"></div><div id="modal"></div></div>`;
+  <main>${content}</main><nav class="mobile-nav" aria-label="Primary">${mobileNav.map(([p, i]) => `<button data-page="${p}" class="${state.page === p ? 'active' : ''}" aria-label="${p}"><span aria-hidden="true">${i}</span><small>${p}</small></button>`).join('')}<button class="mobile-more-btn" data-action="moreMenu" aria-label="All pages" style="align-self:center">⊞</button></nav><div id="toast" role="status" aria-live="polite"></div><div id="modal"></div></div>`;
 }
 function pageHeader(title, sub = 'Your fitness world, in motion.') {
   const u = unread();
@@ -1260,6 +1260,12 @@ async function action(a, btn) {
     }
     case 'weeklyReview':
       $('#modal').innerHTML = ''; state.page = 'progress'; await loadPageData('progress'); render(); window.scrollTo(0, 0); return;
+    case 'moreMenu': {
+      const pages = [['intelligence', '🧬', 'Fitness DNA'], ['posts', '▶', 'Posts & Reels'], ['progress', '📈', 'Progress'], ['challenges', '◉', 'Challenges'], ['communities', '◌', 'Communities'], ['events', '◫', 'Events'], ['messages', '✉', 'Messages'], ['friends', '👥', 'Friends'], ['coach', '✦', 'AI Coach'], ['businesses', '▦', 'Businesses'], ['bookings', '🎟', 'My bookings'], ['library', '📚', 'Exercise library']];
+      modal(`<div class="more-sheet"><span class="eyebrow">ALL OF FITVERSE</span><h2 style="font-size:19px;margin:4px 0 2px">Go to…</h2><div class="sheet-grid">${pages.map(([p, ic, label]) => `<button data-page="${p}" class="${state.page === p ? 'active' : ''}"><span>${ic}</span>${label}</button>`).join('')}</div></div>`);
+      bind();
+      return;
+    }
     case 'shareRecap': shareCard('weekly-recap'); return;
     case 'traj': {
       pageData.trajScenario = btn.dataset.id;
