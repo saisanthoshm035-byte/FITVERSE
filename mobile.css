@@ -208,3 +208,32 @@
   .modal-card { animation: none; }
   .eco-card, .activity-card { transition: none; }
 }
+
+/* ===== Polish & Moments (all sizes where marked) ===== */
+.skeleton{position:relative;overflow:hidden;background:#edf0eb;border-radius:10px;min-height:60px}
+.skeleton::after{content:'';position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,#ffffff8c,transparent);animation:shimmer 1.4s infinite}
+@keyframes shimmer{100%{transform:translateX(100%)}}
+button:active{transform:scale(.97);transition:transform .08s}
+.moment-card{display:flex;gap:12px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;min-width:0}
+.moment-card .moment-icon{font-size:26px}
+.moment-card small{font:9px 'DM Mono';color:#828e85;letter-spacing:.8px;display:block}
+.moment-card h3{font-size:14px;margin:2px 0;color:var(--ink);overflow-wrap:anywhere}
+.moment-card b{font-size:15px;color:#33691d}
+.moment-share{margin-left:auto;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:15px;background:#fff;min-width:42px;min-height:42px}
+.moments-row{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.moment-card.k0{border-top:3px solid var(--lime2)}
+.moment-card.k1{border-top:3px solid #5a8dc8}
+.moment-card.k2{border-top:3px solid #e8784a}
+.moment-card.k3{border-top:3px solid #865bb2}
+.ch-ops{display:flex;gap:6px;align-items:center;flex-wrap:wrap;grid-column:4}
+.ch-ops .primary,.ch-ops .outline{min-height:38px}
+.challenge-list .bar.slim{margin-top:7px;max-width:230px}
+.win-board{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 18px;margin-bottom:20px}
+.dna-mini{display:flex;gap:9px;align-items:center;background:#f2f7e2;border-radius:12px;padding:9px 13px;margin:10px 0}
+.dna-mini b{font-size:13px;color:#33691d}
+.dna-mini small{color:var(--muted);font-size:11px;display:block}
+.dna-mini .mini-ring{--v:0;width:38px;height:38px;border-radius:50%;background:conic-gradient(var(--lime2) calc(var(--v)*1%),#e7ebe7 0);display:grid;place-items:center;position:relative;flex:0 0 38px}
+.dna-mini .mini-ring::before{content:'';position:absolute;width:28px;height:28px;border-radius:50%;background:#f2f7e2}
+.dna-mini .mini-ring b{position:relative;z-index:1;font-size:10.5px;color:var(--ink)}
+@media(max-width:760px){.moments-row{grid-template-columns:1fr}.ch-ops{grid-column:auto;justify-content:flex-end}}
+@media(prefers-reduced-motion:reduce){.skeleton::after{animation:none}button:active{transform:none}}

@@ -108,6 +108,37 @@ def ai_coach(user_id: int, message: str) -> dict:
     def parts(*xs):
         return " ".join(x for x in xs if x)
 
+    # --- FITVERSE 3.0 context: missions, DNA, debt, patterns ---
+    try:
+        import intelligence
+        dna = intelligence.fitness_dna(user_id)
+        debt = intelligence.fitness_debt(user_id)
+        sc = dna["scores"]
+        with connect() as db:
+            mission = intelligence.ensure_weekly_mission(db, user_id)
+        if any(k in q for k in ("mission", "operation")):
+            return {"reply": parts(
+                f"🎯 Your active mission is {mission['title']}: {mission['description']}",
+                f"Progress: {mission.get('progress', 0)}/{mission['target']} · +{mission['reward_xp']} XP when you finish. Log a workout and I'll track it automatically."), "kind": "mission"}
+        if "fitness dna" in q or "my dna" in q or "personality" in q:
+            top3 = ", ".join(f"{k.capitalize()} {v}" for k, v in sorted(sc.items(), key=lambda kv: -kv[1])[:3])
+            return {"reply": parts(
+                f"🧬 Your Fitness DNA says you're {dna['personality']}.",
+                f"Top scores: {top3}.",
+                f"Focus: {dna['focus']}."), "kind": "dna"}
+        if "debt" in q or "behind" in q or "missed" in q or "catch up" in q:
+            return {"reply": parts(
+                f"⚡ Fitness debt: {debt['debt']} of {debt['target']} weekly sessions.",
+                debt["advice"]), "kind": "debt"}
+        if any(k in q for k in ("lazy", "motivat", "skip", "don't feel", "cant be bothered", "can't be bothered")):
+            left = max(0, mission["target"] - mission.get("progress", 0))
+            return {"reply": parts(
+                f"🔥 Small win first: {mission['title']} needs just {left} more this week.",
+                f"Even 20 minutes keeps your {streak}-day streak breathing.",
+                "You don't need motivation — you need a smaller first step."), "kind": "motivation"}
+    except Exception:
+        pass  # intelligence layer unavailable — fall through to the classic branches
+
     # --- injury / pain: safety first ---
     if any(k in q for k in ("knee", "hurts", "pain", "injur", "sharp", "swollen")):
         return {"reply": parts("🩺", SAFETY,

@@ -311,6 +311,12 @@ def initialize_database() -> None:
             (3,"goal_crusher","Goal Crusher","Complete four activities in a week.","🎯"),
             (4,"seven_day_streak","7 Day Streak","Maintain a seven-day streak.","🔥"),
             (5,"event_participant","Event Participant","Book your first fitness event.","🎟️"),
+            (6,"first_pr","First PR","Log a personal record.","🏋️"),
+            (7,"mission_master","Mission Master","Complete 3 missions.","🥇"),
+            (8,"accountability_partner","Accountability Partner","Add your first friend.","🤝"),
+            (9,"consistency_master","Consistency Master","Train 12 times.","⚡"),
+            (10,"century","Century Club","Reach 1000 XP.","💯"),
+            (11,"hydration_helper","Hydration Hero","Log water on 5 different days.","💧"),
         ])
         # Community Mission Engine seed: college teams for the Fitness War
         stamp2 = now()
@@ -601,12 +607,22 @@ def check_missions(db: sqlite3.Connection, user_id: int) -> dict | None:
 
 def check_achievements(db: sqlite3.Connection, user_id: int) -> list[str]:
     game = user_state(db,user_id); unlocked=[]
+    prs = db.execute("SELECT COUNT(*) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id WHERE ws.user_id=? AND wl.is_pr=1",(user_id,)).fetchone()[0]
+    missions = db.execute("SELECT COUNT(*) FROM missions WHERE user_id=? AND status='completed'",(user_id,)).fetchone()[0]
+    friends = db.execute("SELECT COUNT(*) FROM friendships WHERE status='accepted' AND (requester_id=? OR addressee_id=?)",(user_id,user_id)).fetchone()[0]
+    water_days = db.execute("SELECT COUNT(DISTINCT logged_on) FROM water_logs WHERE user_id=?",(user_id,)).fetchone()[0]
     thresholds = [
         (1, game["activities"] >= 1),
         (2, db.execute("SELECT 1 FROM challenges WHERE winner_id=? LIMIT 1",(user_id,)).fetchone() is not None),
         (3, game["activities"] >= 4),
         (4, game["streak"] >= 7),
         (5, game["booked_event"] == 1),
+        (6, prs >= 1),
+        (7, missions >= 3),
+        (8, friends >= 1),
+        (9, game["activities"] >= 12),
+        (10, game["xp"] >= 1000),
+        (11, water_days >= 5),
     ]
     for achievement_id, eligible in thresholds:
         if eligible:
@@ -664,16 +680,49 @@ def list_feed(user_id: int) -> list[dict]:
 
 def coach_reply(user_id: int, prompt: str) -> dict:
     q=prompt.lower(); data=read_bootstrap(user_id); matches=recommendations(user_id)
-    if any(word in q for word in ("basketball","people","match","compatible")):
+    import intelligence, ai_service
+    dna=intelligence.fitness_dna(user_id); debt=intelligence.fitness_debt(user_id)
+    twin=intelligence.fitness_twin(user_id); patterns=intelligence.detect_patterns(user_id)
+    with connect() as db:
+        mission=intelligence.ensure_weekly_mission(db,user_id)
+        protein=db.execute("SELECT COALESCE(SUM(protein_g),0) FROM nutrition_logs WHERE user_id=? AND logged_on=date('now')",(user_id,)).fetchone()[0]
+        kcal=db.execute("SELECT COALESCE(SUM(kcal),0) FROM nutrition_logs WHERE user_id=? AND logged_on=date('now')",(user_id,)).fetchone()[0]
+        settings=ai_service.get_settings(db,user_id)
+        last_workouts=[dict(r) for r in db.execute("SELECT title,created_at FROM workout_sessions WHERE user_id=? ORDER BY id DESC LIMIT 3",(user_id,))]
+    sc=dna["scores"]
+    if any(w in q for w in ("mission","operation")):
+        text=f"Your active mission is {mission['icon']} {mission['title']}: {mission['description']} Progress: {mission.get('progress',0)}/{mission['target']} · +{mission['reward_xp']} XP on completion."
+    elif any(w in q for w in ("dna","personality","strengths")):
+        text=f"Your Fitness DNA says you're {dna['personality']}. Top scores: {', '.join(f'{k.capitalize()} {v}' for k,v in sorted(sc.items(),key=lambda kv:-kv[1])[:3])}. Focus area: {dna['focus']}."
+    elif any(w in q for w in ("debt","behind","missed")):
+        text=f"Fitness debt: {debt['debt']} of {debt['target']} weekly sessions. {debt['advice']}"
+    elif any(w in q for w in ("pattern","holding me back","plateau","plateauing","why am i not")):
+        p=next((x for x in patterns if x["severity"]!="good"),None)
+        text=f"{p['title']}. {p['detail']} {p['fix']}" if p else f"No concerning patterns — your recent training looks balanced. Weakest area right now: {twin['weakest'].capitalize()}. {twin['holding_back']}"
+    elif any(w in q for w in ("protein","calorie","calories","eat","food","nutrition")):
+        pt=settings.get("protein_target") or 120; kt=settings.get("kcal_target") or 2200
+        text=f"Today: {kcal:g}/{kt} kcal and {protein:g}/{pt}g protein. " + ("Protein is behind — a chicken pane, dal, curd or a shake closes the gap." if protein<pt*0.6 else "Protein is on track — keep the meals coming.")
+    elif any(w in q for w in ("today","what should i do","next workout","train today","suggestion","recommend")):
+        focus=sc["cardio"]<50 and "cardio" or (sc["lower"] if False else ("lower body" if sc.get("strength",0)>55 else "upper body"))
+        imbalanced=next((x for x in patterns if x["id"]=="imbalance"),None)
+        if imbalanced: focus="lower body"
+        elif debt["debt"]>=2: focus="an easy 30-minute full-body session — re-entry before intensity"
+        text=f"Given your DNA ({dna['personality']}), I'd do {focus} today. {twin['where_could_go']}"
+    elif any(w in q for w in ("workout","routine","session","exercise")):
+        recent=" → ".join(w["title"] for w in last_workouts) if last_workouts else "no sessions yet"
+        text=f"Recent sessions: {recent}. Based on that and your {sc['intensity']} intensity score, alternate muscle groups and keep RPE around 7-8. Need a plan? Use the AI generator on the Workout page."
+    elif any(w in q for w in ("basketball","people","match","compatible","buddy","partner")):
         top=matches[0] if matches else None
         text=f"Your best current match is {top['name']} at {top['score']}%. You both enjoy {top['activity']} and share a weekday training window." if top else "Complete onboarding details to improve your matches."
-    elif any(word in q for word in ("event","weekend")):
+    elif any(w in q for w in ("event","weekend")):
         text="Chennai Night Run is coming up at Marina Beach. It is a great social 6K option for your current activity level."
-    elif any(word in q for word in ("challenge","compete")):
-        text="Try a 5K distance challenge with Rahul. It is active, measurable, and awards XP only when the result is recorded."
+    elif any(w in q for w in ("challenge","compete")):
+        text=f"You have a challenge system waiting — head to Challenges, pick a friend and stake your claim. Wins award +150 XP and a badge. Current streak to defend: {data['state']['streak']} days."
+    elif any(w in q for w in ("motivat","lazy","tired","skip")):
+        text=f"{mission['icon']} Small win first: {mission['title'].lower()} needs just {max(0,mission['target']-mission.get('progress',0))} more this week. Even 20 minutes keeps the {data['state']['streak']}-day streak breathing. You don't need motivation — you need a smaller first step."
     else:
         remaining=max(0,4-data["state"]["activities"])
-        text=f"You are {remaining} activity{'ies' if remaining != 1 else 'y'} from your weekly goal. Join Sunset basketball or log a completed activity to keep your streak moving."
+        text=f"You are {remaining} activity{'ies' if remaining != 1 else 'y'} from your weekly goal. Active mission: {mission['title']} ({mission.get('progress',0)}/{mission['target']}). Ask me about your DNA, debt, patterns, protein, or what to train today."
     return {"reply":text,"source":"deterministic profile and FITVERSE activity data"}
 
 
@@ -793,6 +842,33 @@ class FitverseHandler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             return self.send_json(200,coach_reply(self.current_user(),parse_qs(query).get("q",[""])[0]))
         if path == "/api/feed": return self.send_json(200,{"items":list_feed(self.current_user())})
+        if path == "/api/feed/tabs":
+            uid = self.current_user()
+            tab = urlparse(self.path).query.split("tab=")[-1].split("&")[0] or "foryou"
+            with connect() as db:
+                if tab == "following":
+                    rows = db.execute("""SELECT DISTINCT p.id FROM posts p
+                        WHERE p.author_id=? OR p.author_id IN (SELECT followee_id FROM follows WHERE follower_id=?)
+                        OR p.author_id IN (SELECT CASE WHEN requester_id=? THEN addressee_id ELSE requester_id END FROM friendships
+                                           WHERE status='accepted' AND (requester_id=? OR addressee_id=?))
+                        ORDER BY p.id DESC LIMIT 30""", (uid, uid, uid, uid, uid)).fetchall()
+                elif tab == "trending":
+                    rows = db.execute("""SELECT p.id, (SELECT COUNT(*) FROM post_likes l WHERE l.post_id=p.id)
+                        + (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id)*2
+                        + (SELECT COUNT(*) FROM post_reactions r WHERE r.post_id=p.id)*2 AS heat
+                        FROM posts p ORDER BY heat DESC, p.id DESC LIMIT 30""").fetchall()
+                else:  # foryou: own + friends + followed first, then everyone by recency
+                    rows = db.execute("""SELECT p.id, CASE WHEN p.author_id=? THEN 3
+                        WHEN p.author_id IN (SELECT followee_id FROM follows WHERE follower_id=?) THEN 2
+                        WHEN p.author_id IN (SELECT CASE WHEN requester_id=? THEN addressee_id ELSE requester_id END FROM friendships
+                                            WHERE status='accepted' AND (requester_id=? OR addressee_id=?)) THEN 2
+                        ELSE 0 END AS affinity, p.id AS heat
+                        FROM posts p ORDER BY affinity DESC, p.id DESC LIMIT 30""", (uid, uid, uid, uid, uid)).fetchall()
+                ids = [r[0] for r in rows] or [0]
+                marks = ",".join("?" for _ in ids)
+                feed = [item for item in list_feed(uid) if item["id"] in set(ids)]
+                feed.sort(key=lambda x: ids.index(x["id"]))
+            return self.send_json(200, {"tab": tab, "items": feed})
         if path == "/api/profile":
             with connect() as db:
                 row=db.execute("""SELECT u.id,u.name,u.username,u.email,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,
@@ -922,12 +998,21 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 d=dict(r); d["photo"]=f"img/p{1 + (d['id'] % 12)}.jpg"; items.append(d)
             return self.send_json(200,{"items":items})
         if path == "/api/challenges":
+            uid=self.current_user()
             with connect() as db:
                 rows=db.execute("""SELECT c.*, cu.name AS challenger_name, ou.name AS opponent_name,
                   (SELECT progress FROM challenge_participants cp WHERE cp.challenge_id=c.id AND cp.user_id=c.challenger_id) AS challenger_progress,
-                  (SELECT progress FROM challenge_participants cp WHERE cp.challenge_id=c.id AND cp.user_id=c.opponent_id) AS opponent_progress
-                  FROM challenges c JOIN users cu ON cu.id=c.challenger_id JOIN users ou ON ou.id=c.opponent_id ORDER BY c.id DESC""").fetchall()
-            return self.send_json(200,{"items":[dict(r) for r in rows]})
+                  (SELECT progress FROM challenge_participants cp WHERE cp.challenge_id=c.id AND cp.user_id=c.opponent_id) AS opponent_progress,
+                  EXISTS(SELECT 1 FROM challenge_participants cp WHERE cp.challenge_id=c.id AND cp.user_id=?) AS joined,
+                  (c.challenger_id=? OR c.opponent_id=?) AS involved
+                  FROM challenges c JOIN users cu ON cu.id=c.challenger_id JOIN users ou ON ou.id=c.opponent_id ORDER BY c.id DESC""",(uid,uid,uid)).fetchall()
+                friends=[dict(r) for r in db.execute("""SELECT u.id,u.name FROM friendships f
+                  JOIN users u ON u.id=CASE WHEN f.requester_id=? THEN f.addressee_id ELSE f.requester_id END
+                  WHERE f.status='accepted' AND (f.requester_id=? OR f.addressee_id=?) ORDER BY u.name""",(uid,uid,uid))]
+                board=[dict(r) for r in db.execute("""SELECT u.name, COUNT(*) wins FROM challenges c
+                  JOIN users u ON u.id=c.winner_id WHERE c.winner_id IS NOT NULL
+                  GROUP BY c.winner_id ORDER BY wins DESC LIMIT 5""")]
+            return self.send_json(200,{"items":[dict(r) for r in rows],"friends":friends,"leaderboard":board})
         if path == "/api/friends":
             uid=self.current_user()
             with connect() as db: rows=db.execute("""SELECT u.id,u.name,u.username,f.status, f.requester_id FROM friendships f
@@ -1170,6 +1255,36 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 "patterns": intelligence.detect_patterns(uid),
                 "debt": intelligence.fitness_debt(uid),
             })
+        if path == "/api/moments":
+            uid = self.current_user()
+            with connect() as db:
+                prs = [dict(r) for r in db.execute("""SELECT e.name, wl.weight, wl.reps, ws.created_at FROM workout_logs wl
+                    JOIN workout_sessions ws ON ws.id=wl.session_id JOIN exercises e ON e.id=wl.exercise_id
+                    WHERE ws.user_id=? AND wl.is_pr=1 AND wl.weight>0 ORDER BY ws.id DESC LIMIT 4""", (uid,))]
+                streak = db.execute("SELECT streak FROM user_game_state WHERE user_id=?", (uid,)).fetchone()
+                missions = [dict(r) for r in db.execute(
+                    "SELECT title, reward_xp, completed_at FROM missions WHERE user_id=? AND status='completed' ORDER BY id DESC LIMIT 3", (uid,))]
+                wins = [dict(r) for r in db.execute(
+                    "SELECT title, ends_at as at FROM challenges WHERE winner_id=? LIMIT 3", (uid,))]
+            items = []
+            for p in prs:
+                items.append({"kind": "pr", "icon": "🏆", "title": f"New personal best — {p['name']}",
+                              "detail": f"{p['weight']:g} kg × {p['reps']} reps", "date": p["created_at"],
+                              "card": {"headline": "NEW PERSONAL BEST", "main": p["name"], "big": f"{p['weight']:g} KG × {p['reps']}"}})
+            if streak and streak["streak"] >= 7:
+                items.append({"kind": "streak", "icon": "🔥", "title": f"{streak['streak']}-day streak",
+                              "detail": "Consistency is compounding — keep the chain alive.", "date": now(),
+                              "card": {"headline": "STREAK MILESTONE", "main": "Day streak", "big": str(streak["streak"])}})
+            for m in missions:
+                items.append({"kind": "mission", "icon": "🎯", "title": f"Mission complete — {m['title']}",
+                              "detail": f"+{m['reward_xp']} XP earned", "date": m["completed_at"],
+                              "card": {"headline": "MISSION COMPLETE", "main": m["title"], "big": f"+{m['reward_xp']} XP"}})
+            for w in wins:
+                items.append({"kind": "challenge", "icon": "⚔️", "title": f"Challenge won — {w['title']}",
+                              "detail": "Victory is earned, not given.", "date": w["at"],
+                              "card": {"headline": "CHALLENGE WON", "main": w["title"], "big": "WINNER"}})
+            items.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
+            return self.send_json(200, {"items": items[:8]})
         if path == "/api/intelligence/trajectory":
             import intelligence
             q = urlparse(self.path).query
@@ -1400,6 +1515,44 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     db.execute("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,0)",(cur.lastrowid,opponent))
                     db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(opponent,"challenge","New challenge",f"You were challenged: {title}",now()))
                 return self.send_json(201,{"ok":True,"challengeId":cur.lastrowid})
+            if path.startswith("/api/challenges/"):
+                parts=path.split("/"); cid=int(parts[3]); op=parts[4] if len(parts)>4 else ""
+                uid=self.current_user()
+                with connect() as db:
+                    ch=db.execute("SELECT * FROM challenges WHERE id=?",(cid,)).fetchone()
+                    if not ch: return self.send_json(404,{"error":"Challenge not found"})
+                    ch=dict(ch)
+                    if op=="accept":
+                        if ch["opponent_id"]!=uid: return self.send_json(403,{"error":"Only the challenged user can accept"})
+                        db.execute("UPDATE challenges SET status='active' WHERE id=?",(cid,))
+                        db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(ch["challenger_id"],"challenge","Challenge accepted",f"Game on: {ch['title']}",now()))
+                        return self.send_json(200,{"ok":True,"status":"active"})
+                    if op=="decline":
+                        if ch["opponent_id"]!=uid: return self.send_json(403,{"error":"Only the challenged user can decline"})
+                        db.execute("UPDATE challenges SET status='declined' WHERE id=?",(cid,))
+                        return self.send_json(200,{"ok":True,"status":"declined"})
+                    if op=="invite":
+                        fid=int(data.get("friend_id",0) or 0)
+                        if not fid: return self.send_json(400,{"error":"Pick a friend to invite"})
+                        db.execute("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,0)",(cid,fid))
+                        fname=db.execute("SELECT name FROM users WHERE id=?",(fid,)).fetchone()
+                        db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(fid,"challenge","You are invited",f"Join the challenge: {ch['title']}",now()))
+                        return self.send_json(200,{"ok":True,"invited":fname["name"] if fname else None})
+                    if op=="progress":
+                        amount=float(data.get("amount",0) or 0)
+                        if amount<=0: return self.send_json(400,{"error":"Enter your progress amount"})
+                        row=db.execute("SELECT progress FROM challenge_participants WHERE challenge_id=? AND user_id=?",(cid,uid)).fetchone()
+                        if not row: return self.send_json(403,{"error":"Join the challenge first"})
+                        newp=row["progress"]+amount
+                        db.execute("UPDATE challenge_participants SET progress=? WHERE challenge_id=? AND user_id=?",(newp,cid,uid))
+                        done=None
+                        if newp>=ch["target_value"] and ch["status"]=="active":
+                            db.execute("UPDATE challenges SET status='completed', winner_id=? WHERE id=?",(uid,cid))
+                            award_xp(db,uid,150,f"Challenge won: {ch['title']}","challenge",str(cid))
+                            check_achievements(db,uid)
+                            db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(uid,"challenge","Challenge complete!",f"You crushed: {ch['title']} · +150 XP",now()))
+                            done={"won":True,"xp":150}
+                        return self.send_json(200,{"ok":True,"progress":newp,"completed":done})
             # ===== FITVERSE 2.0 POST endpoints =====
             if path == "/api/settings":
                 uid=self.current_user()

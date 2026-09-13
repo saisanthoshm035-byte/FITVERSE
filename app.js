@@ -150,7 +150,11 @@ async function loadPageData(page) {
     add('communities', api('/api/communities').then(d => d.items || []));
     add('businesses', api('/api/businesses').then(d => d.items || []));
   }
-  if (page === 'challenges') add('challenges', api('/api/challenges').then(d => d.items || []));
+  if (page === 'challenges') {
+    add('challenges', api('/api/challenges').then(d => d.items || []));
+    add('challengeFriends', api('/api/challenges').then(d => d.friends || []));
+    add('challengeBoard', api('/api/challenges').then(d => d.leaderboard || []));
+  }
   if (page === 'communities') add('communities', api('/api/communities').then(d => d.items || []));
   if (page === 'events') add('events', api('/api/events').then(d => d.items || []));
   if (page === 'messages') {
@@ -158,7 +162,7 @@ async function loadPageData(page) {
     add('messages', api(`/api/conversations/${pageData.activeConversation}`).then(d => d.items || []));
   }
   if (page === 'profile') { add('xpLedger', api('/api/xp').then(d => d.items || [])); add('achievements', api('/api/achievements').then(d => d.items || [])); add('friends', api('/api/friends').then(d => d.items || [])); add('mission', api('/api/missions').then(d => d.item || {})); }
-  if (page === 'home') { add('mission', api('/api/missions').then(d => d.item || {})); }
+  if (page === 'home') { add('mission', api('/api/missions').then(d => d.item || {})); add('moments', api('/api/moments').then(d => d.items || [])); }
   if (page === 'reels' || page === 'posts') { add('reels', api('/api/reels').then(d => d.items || [])); if (!pageData.feed.length) add('feed', api('/api/feed').then(d => d.items || [])); }
   if (page === 'businesses') add('businesses', api('/api/businesses').then(d => d.items || []));
   if (page === 'workout') { add('workouts', api('/api/workouts').then(d => d.items || [])); add('prs', api('/api/workouts/prs').then(d => d.items || [])); }
@@ -223,6 +227,7 @@ ${notes.length ? `<section class="buddy-strip"><span class="pill lime">✦ FITVE
   <a class="eco-card ${debt.debt ? 'debt' : 'clear'}" data-page="intelligence"><span class="eyebrow">⚡ FITNESS DEBT</span><div class="eco-main"><b class="eco-big">${debt.debt ?? 0}</b><div><h3>${debt.debt ? `${debt.debt} session${debt.debt > 1 ? 's' : ''} owed` : 'All caught up'}</h3><p>${debt.completed ?? 0}/${debt.target ?? 4} this week</p></div></div><span class="eco-more">Recover →</span></a>
   <a class="eco-card mission" data-page="intelligence"><span class="eyebrow">🎯 MISSION</span><div class="eco-main"><span class="mission-mini">${mission.icon || '🎯'}</span><div><h3>${escapeHtml(mission.title || 'Start your first mission')}</h3><p>${mission.progress != null ? `${mission.progress}/${mission.target} · ` : ''}+${mission.reward_xp || 0} XP</p></div></div><span class="eco-more">View →</span></a>
 </section>
+${momentsSection()}
 <section class="stat-grid"><div class="stat-card"><span>🔥</span><div><small>STREAK</small><strong>${state.streak} days</strong></div><i>↗ ${s.week ? (s.week.sessions >= 3 ? 'on fire' : 'building') : ''}</i></div><div class="stat-card"><span>⚡</span><div><small>YOUR XP</small><strong>${state.xp.toLocaleString()} <em>XP</em></strong></div><i>LEVEL ${level()}</i></div><div class="stat-card goal"><div><small>WEEKLY GOAL</small><strong>${s.week && s.week.sessions != null ? Math.min(s.week.sessions, s.week.goal || 4) : Math.min(4, state.activities)} / ${s.week ? s.week.goal || 4 : 4} workouts</strong></div><div class="bar"><i style="width:${Math.min(100, ((s.week ? s.week.sessions : state.activities) / (s.week ? s.week.goal || 4 : 4)) * 100)}%"></i></div><button data-action="complete">Complete activity +</button></div></section>
 <section class="section-head"><div><span class="eyebrow">FROM YOUR CREW</span><h2>The FITVERSE feed</h2></div><button class="link" data-action="create">Share an update <b>→</b></button></section>
 <div class="tabs" id="feed-tabs">${['For You', 'Following', 'Trending'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ftab="${t.toLowerCase().replace(' ', '')}">${t}</button>`).join('')}</div>
@@ -232,6 +237,12 @@ ${notes.length ? `<section class="buddy-strip"><span class="pill lime">✦ FITVE
 <section class="home-split"><div><div class="section-head"><div><span class="eyebrow">FIT MATCH</span><h2>Your #1 training match</h2></div><button class="link" data-page="friends">See all matches <b>→</b></button></div><div class="match-card"><div class="match-art"><span>${topRec ? topRec.score : 94}%</span><small>FIT MATCH</small></div><div class="match-copy">${photoAvatar(topRec ? topRec.name : 'Rahul Menon', topRec?.id || 2)}<div><h3>${escapeHtml(topRec ? topRec.name : 'Rahul Menon')} <i>✓</i></h3><p>${escapeHtml(topRec ? `${topRec.activity} · ${topRec.fitnessLevel || topRec.fitness_level} · ${topRec.preferredTime || topRec.preferred_time}` : 'Basketball · Intermediate · 5–6 PM')}</p><div class="tag-row">${((topRec?.reasons) || ['Same sport', 'Nearby']).map(r => `<span>${escapeHtml(r)}</span>`).join('')}</div></div><button class="primary small" data-action="friend" data-id="${topRec?.id || 2}">${state.friends ? 'Friends ✓' : 'Add friend'}</button></div></div></div><div class="feed-mini"><div class="section-head"><div><span class="eyebrow">TRENDING NOW</span><h2>Popular with friends</h2></div></div>${post ? postCard(post) : '<article class="post"><p>No posts yet — be the first to share.</p></article>'}</div></section>
 <section class="quote-bar" id="quote-bar">${quote || 'Small steps every day.'}</section>`);
 }
+function momentsSection() {
+  const items = pageData.moments || [];
+  if (!items.length) return '';
+  return `<section class="moments-strip"><div class="section-head"><div><span class="eyebrow">🏆 FITVERSE MOMENTS</span><h2>Your recent wins</h2></div></div><div class="moments-row">${items.slice(0, 4).map((m, i) => `<article class="moment-card k${i % 4}"><span class="moment-icon">${m.icon}</span><div><small>${escapeHtml(m.card.headline)}</small><h3>${escapeHtml(m.card.main)}</h3><b>${escapeHtml(m.card.big)}</b></div><button class="moment-share" data-action="shareMoment" data-i="${i}" title="Share this moment" aria-label="Share moment">↗</button></article>`).join('')}</div></section>`;
+}
+
 function emptyState(icon, title, body, page, cta) {
   return `<div class="empty-state"><span aria-hidden="true">${icon}</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p>${page ? `<button class="primary small" data-page="${page}">${escapeHtml(cta)}</button>` : ''}</div>`;
 }
@@ -273,7 +284,17 @@ function challenges() {
   const myProgress = c ? (c.challenger_id === 1 ? c.challenger_progress : c.opponent_progress) : 3.8;
   return shell(`${pageHeader('Challenges', 'Play harder with the people who keep you going.')}
 <section class="challenge-hero"><div><span class="pill coral">HEAD TO HEAD</span><h2>${state.challenge === 'won' ? 'You took the win.' : active ? 'The run is on.' : 'Rahul challenged you.'}</h2><p>${state.challenge === 'won' ? 'Victory looks good on you. Start another challenge?' : active ? `You have until ${c ? dayShort(c.ends_at) : 'Sunday'} to make your move.` : 'A 5K race is waiting for your answer.'}</p><div class="versus"><div>${avatar(c?.challenger_name || 'Rahul Menon', 'blue')}<strong>${escapeHtml((c?.challenger_name || 'Rahul').split(' ')[0])}</strong><small>${oppProgress} km</small></div><b>VS</b><div>${avatar('Sai Kumar', 'mint')}<strong>You</strong><small>${myProgress} km</small></div></div>${state.challenge === 'pending' ? '<button class="primary" data-action="accept">Accept challenge <b>→</b></button>' : state.challenge === 'accepted' ? '<button class="primary" data-action="win">Mark activity complete +120 XP</button>' : '<button class="primary" data-action="challenge" data-id="2">New challenge vs Rahul</button>'}</div><div class="challenge-kpi"><span>🏃</span><small>5K RUN</small><strong>${active ? '4 days' : '7 days'}</strong><p>${active ? 'remaining' : 'to accept'}</p></div></section>
-<section class="section-head"><div><span class="eyebrow">YOUR ARENA</span><h2>Active challenges</h2></div><button class="create-inline" data-action="challenge">＋ New challenge</button></section><div class="challenge-list">${pageData.challenges.map(ch => `<article><span>⚡</span><div><b>${escapeHtml(ch.title)}</b><p>${escapeHtml(ch.challenge_type)} · vs ${escapeHtml(ch.challenger_id === 1 ? ch.opponent_name : ch.challenger_name)}</p></div><div class="challenge-progress"><strong>${ch.status}</strong><div class="bar"><i style="width:${Math.min(100, Math.round(((ch.challenger_id === 1 ? ch.challenger_progress : ch.opponent_progress) / (ch.target_value || 5)) * 100))}%"></i></div></div>${ch.status === 'active' ? '<button class="outline" data-action="win">Complete</button>' : `<button class="outline" data-action="challengeView" data-id="${ch.id}">View</button>`}</article>`).join('') || '<article><span>⚡</span><div><b>September Streak</b><p>Complete 4 activities this week</p></div><div class="challenge-progress"><strong>' + Math.min(4, state.activities) + '/4</strong><div class="bar"><i style="width:' + Math.min(100, state.activities * 25) + '%"></i></div></div><button class="outline" data-action="complete">Log activity</button></article>'}</div>
+<section class="section-head"><div><span class="eyebrow">YOUR ARENA</span><h2>Active challenges</h2></div><button class="create-inline" data-action="challenge">＋ New challenge</button></section><div class="challenge-list">${(pageData.challenges || []).map(ch => {
+  const myP = ch.challenger_id === (me().id || 1) ? ch.challenger_progress : ch.opponent_progress;
+  const pct = Math.min(100, Math.round(((myP || 0) / (ch.target_value || 5)) * 100));
+  const ops = ch.status === 'pending' && ch.opponent_id === (me().id || 1)
+    ? `<button class="primary small" data-action="chAccept" data-id="${ch.id}">Accept</button><button class="text-btn small" data-action="chDecline" data-id="${ch.id}">Decline</button>`
+    : ch.status === 'active' && ch.joined
+      ? `<button class="outline small" data-action="chProgress" data-id="${ch.id}" data-target="${ch.target_value}">+ Log progress</button>${ch.involved ? '' : `<button class="more" data-action="chInvite" data-id="${ch.id}" title="Invite friend">＋👥</button>`}`
+      : ch.status === 'completed' && ch.winner_id ? `<span class="pill lime">${ch.winner_id === (me().id || 1) ? 'You won 🏆' : 'Decided'}</span>` : `<button class="outline small" data-action="chInvite" data-id="${ch.id}">Join</button>`;
+  return `<article><span>⚡</span><div><b>${escapeHtml(ch.title)}</b><p>${escapeHtml(ch.challenge_type)} · vs ${escapeHtml(ch.challenger_id === (me().id || 1) ? ch.opponent_name : ch.challenger_name)} · target ${ch.target_value}</p><div class="bar slim"><i style="width:${pct}%"></i></div></div><div class="challenge-progress"><strong>${ch.status}</strong><em>${myP || 0}/${ch.target_value}</em></div><div class="ch-ops">${ops}</div></article>`;
+}).join('') || emptyState('⚔️', 'No challenges yet', 'Challenge a friend and make fitness more fun.', null, '')}</div>
+${(pageData.challengeBoard || []).length ? `<section class="section-head"><div><span class="eyebrow">HALL OF WINS</span><h2>Most challenge victories</h2></div></section><section class="win-board">${(pageData.challengeBoard || []).map((r, i) => `<div class="rank"><b>0${i + 1}</b>${avatar(r.name, ['blue', 'mint', 'teal', 'orange', 'purple'][i % 5])}<strong>${escapeHtml(r.name === me().name ? 'You' : r.name)}</strong><em>${r.wins} win${r.wins > 1 ? 's' : ''}</em></div>`).join('')}</section>` : ''}
 <section class="leaderboard"><div><span class="eyebrow">CAMPUS LEADERBOARD</span><h2>XP leaders this week</h2>${(pageData.leaderboard || []).slice(0, 5).map((r, i) => `<div class="rank ${r.name === me().name ? 'you' : ''}"><b>0${i + 1}</b>${avatar(r.name, ['blue', 'mint', 'teal', 'orange', 'purple'][i % 5])}<strong>${escapeHtml(r.name === me().name ? 'You' : r.name)}</strong><em>${r.xp.toLocaleString()} XP</em></div>`).join('')}</div><div class="level-card"><span>LEVEL ${level()}</span><h3>${levelName()}</h3><p>${Math.max(0, 500 - (state.xp % 500))} XP until ${levelName(1) || 'next'} level</p><div class="bar"><i style="width:${progress()}%"></i></div></div></section>`);
 }
 function communityCard(c) {
@@ -311,7 +332,7 @@ function profile() {
   const p = me();
   const unlocked = pageData.achievements.filter(a => a.unlocked_at).length;
   return shell(`${pageHeader('Your profile', 'Your progress tells a story.')}
-<section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Sai Kumar')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'saikumar')} · ${escapeHtml(p.city || 'Chennai')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section><div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
+<section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Sai Kumar')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'saikumar')} · ${escapeHtml(p.city || 'Chennai')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
 <div id="ptab-posts">${pageData.feed.filter(x => x.username === p.username).map(postCard).join('') || '<p class="loading">No posts yet — create one from the ＋ button.</p>'}</div>
 <div id="ptab-friends" style="display:none">${pageData.friends.map(f => `<article class="person-card" style="max-width:420px"><div class="person-info" style="padding:14px">${avatar(f.name, 'teal')}<h3>${escapeHtml(f.name)} <i>✓</i></h3><p>@${escapeHtml(f.username)} · ${escapeHtml(f.status)}</p></div></article>`).join('') || '<p class="loading">No friends yet — find matches on Discover.</p>'}</div>
 <div id="ptab-achievements" style="display:none"><div class="achievement-row">${pageData.achievements.map(a => `<article class="${a.unlocked_at ? '' : 'locked'}" style="${a.unlocked_at ? '' : 'opacity:.45'}"><span>${a.icon}</span><b>${escapeHtml(a.name)}</b><small>${escapeHtml(a.description)}</small></article>`).join('')}</div><p class="loading">${unlocked}/${pageData.achievements.length} unlocked</p></div>`);
@@ -685,6 +706,28 @@ function celebrate(prCount) {
   setTimeout(() => el.remove(), 6000);
 }
 // Shareable card via canvas
+function momentCard(m) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1080; canvas.height = 1080;
+  const c = canvas.getContext('2d');
+  const g = c.createLinearGradient(0, 0, 1080, 1080);
+  g.addColorStop(0, '#0b1711'); g.addColorStop(1, '#1d3a2d');
+  c.fillStyle = g; c.fillRect(0, 0, 1080, 1080);
+  c.fillStyle = '#c9f36b'; c.font = '800 56px Manrope, Arial'; c.fillText('FITVERSE', 80, 140);
+  c.fillStyle = '#c9f36b'; c.font = '700 44px Manrope, Arial'; c.fillText(m.card.headline, 80, 400);
+  c.fillStyle = '#ffffff'; c.font = '800 92px Manrope, Arial'; c.fillText(m.card.main.slice(0, 22), 80, 520);
+  c.font = '800 150px Manrope, Arial'; c.fillStyle = '#ffffff'; c.fillText(String(m.card.big).slice(0, 14), 80, 720);
+  const streak = state.streak || 0;
+  if (streak > 0) { c.fillStyle = '#9fb3a4'; c.font = '500 40px Manrope, Arial'; c.fillText('🔥 ' + streak + '-day streak', 80, 830); }
+  c.fillStyle = '#9fb3a4'; c.font = '500 32px Manrope, Arial';
+  c.fillText('Fitness is more fun together → fitverse.app', 80, 980);
+  const a = document.createElement('a');
+  a.download = 'fitverse-moment.png';
+  a.href = canvas.toDataURL('image/png');
+  a.click();
+  toast('Moment card downloaded — post it anywhere 📲');
+}
+
 function shareCard(kind) {
   const canvas = document.createElement('canvas');
   canvas.width = 1080; canvas.height = 1350;
@@ -792,9 +835,19 @@ function bind() {
     $$('[data-atab]').forEach(x => x.classList.toggle('active', x === b));
     ['posts', 'activities', 'badges'].forEach(t => { const el = $(`#atab-${t}`); if (el) el.style.display = t === b.dataset.atab ? '' : 'none'; });
   });
-  $$('[data-ftab]').forEach(b => b.onclick = () => {
+  $$('[data-ftab]').forEach(b => b.onclick = async () => {
     $$('[data-ftab]').forEach(x => x.classList.toggle('active', x === b));
     ['foryou', 'following', 'trending'].forEach(t => { const el = $(`#feed-${t}`); if (el) el.style.display = t === b.dataset.ftab ? '' : 'none'; });
+    const tab = b.dataset.ftab;
+    const holder = $(`#feed-${tab}`);
+    if (!holder || holder.dataset.loaded === '1') return;
+    holder.innerHTML = '<p class="loading">Loading…</p>';
+    try {
+      const d = await api('/api/feed/tabs?tab=' + tab);
+      holder.innerHTML = d.items.length ? d.items.map(postCard).join('') : emptyState(tab === 'following' ? '👥' : '🔥', tab === 'following' ? 'Follow more athletes' : 'Nothing trending yet', tab === 'following' ? 'Posts from people you follow appear here. Find your crew on Discover.' : 'Interact with posts and the hottest ones rise here.');
+      holder.dataset.loaded = '1';
+      bind();
+    } catch { holder.innerHTML = '<p class="loading">Could not load this tab.</p>'; }
   });
   $$('[data-prtab]').forEach(b => b.onclick = () => {
     state.prTab = b.dataset.prtab;
@@ -1091,6 +1144,45 @@ async function action(a, btn) {
       }; bind(); return;
     }
     case 'challengeView': toast(`Challenge ${id}: ${state.challenge === 'won' ? 'you won this one' : 'keep pushing!'}`); return;
+    case 'chAccept': {
+      try { await api('/api/challenges/' + id + '/accept', { method: 'POST', body: '{}' }); toast('Challenge accepted — game on! ⚔️'); await loadPageData('challenges'); render(); } catch (e) { toast(e.message); }
+      return;
+    }
+    case 'chDecline': {
+      try { await api('/api/challenges/' + id + '/decline', { method: 'POST', body: '{}' }); toast('Challenge declined.'); await loadPageData('challenges'); render(); } catch (e) { toast(e.message); }
+      return;
+    }
+    case 'chProgress': {
+      const target = btn.dataset.target || 5;
+      modal(`<span class="eyebrow">LOG PROGRESS</span><h2>How much did you add?</h2><form class="activity-form" id="chp-form"><label>Progress amount<input name="amount" type="number" min="0.1" step="0.1" value="1" required/><small style="color:var(--muted)">Challenge target: ${target}</small></label><button class="primary" type="submit">Add progress</button></form>`);
+      bind();
+      $('#chp-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const amount = Number(Object.fromEntries(new FormData(e.currentTarget)).amount);
+        try {
+          const res = await api('/api/challenges/' + id + '/progress', { method: 'POST', body: JSON.stringify({ amount }) });
+          $('#modal').innerHTML = '';
+          if (res.completed && res.completed.won) { celebrate(1); toast(`🏆 Challenge won! +${res.completed.xp} XP`); }
+          else toast(`Progress logged: ${res.progress}/${target}`);
+          await loadPageData('challenges'); state.page = 'challenges'; render();
+        } catch (e) { toast(e.message); }
+      };
+      return;
+    }
+    case 'chInvite': {
+      const friends = pageData.challengeFriends && pageData.challengeFriends.length ? pageData.challengeFriends : [];
+      if (!friends.length) { toast('Add friends first, then pull them into your challenges!'); return; }
+      modal(`<span class="eyebrow">INVITE TO CHALLENGE</span><h2>Pull someone in</h2><div class="pick-list">${friends.map(f => `<button data-action="chInvitePick" data-id="${f.id}" data-cid="${id}">${escapeHtml(f.name)}</button>`).join('')}</div>`);
+      bind();
+      return;
+    }
+    case 'chInvitePick': {
+      try {
+        const res = await api('/api/challenges/' + Number(btn.dataset.cid) + '/invite', { method: 'POST', body: JSON.stringify({ friend_id: Number(btn.dataset.id) }) });
+        $('#modal').innerHTML = ''; toast(`Invited ${res.invited} 🤝`);
+      } catch (e) { toast(e.message); }
+      return;
+    }
     case 'accept': done('Challenge accepted — game on!'); return;
     case 'win': done('Challenge complete! +120 XP'); return;
     case 'complete': done('Activity logged! +80 XP'); return;
@@ -1309,6 +1401,12 @@ async function action(a, btn) {
       return;
     }
     case 'shareDna': shareCard('fitness-dna'); return;
+    case 'shareMoment': {
+      const m = (pageData.moments || [])[Number(btn.dataset.i)];
+      if (!m) return;
+      momentCard(m);
+      return;
+    }
     case 'react': {
       const pid = Number(btn.dataset.id), r = btn.dataset.reaction;
       try {
