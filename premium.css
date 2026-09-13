@@ -179,3 +179,21 @@ body { font-feature-settings: "ss01" on; }
   .lib-card, .moment-card, .booking-item, .post, .primary, .outline,
   .modal-card, .modal-backdrop, .dna-row .bar i { transition: none !important; animation: none !important; }
 }
+
+/* ---------- Auth entry points & signup form (presentation only) ---------- */
+.auth-btn { white-space: nowrap; font-size: 11.5px; padding: 10px 15px; }
+.auth-btn.primary { box-shadow: 0 2px 12px rgba(169, 221, 67, .4); }
+.auth-hint { font-size: 12px; color: var(--muted); margin: 14px 0 0; }
+.form-error { background: #fdecea; color: #a1352a; border: 1px solid #f4c7c0; border-radius: 10px; padding: 10px 13px; font-size: 12px; line-height: 1.45; margin-bottom: 4px; }
+.pw-hint { display: block; color: var(--muted); font-size: 10px; margin-top: 4px; }
+.pw-meter { height: 4px; background: #edf0eb; border-radius: 4px; margin-top: 7px; overflow: hidden; }
+.pw-meter i { display: block; height: 100%; width: 0; background: var(--coral); border-radius: 4px; transition: width .25s ease, background .25s ease; }
+.pw-meter i.mid { background: #e8a13c; }
+.pw-meter i.strong { background: #57a05c; }
+.mini-profile.guest { width: 100%; text-align: left; background: none; border-top: 1px solid var(--line); }
+.mini-profile.guest:hover { background: #eff4e7; border-radius: 10px; }
+@media (max-width: 620px) {
+  .auth-btn { padding: 9px 12px; font-size: 11px; }
+  .top-actions { gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { .pw-meter i { transition: none; } }

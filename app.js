@@ -201,7 +201,10 @@ function shell(content) {
 }
 function pageHeader(title, sub = 'Your fitness world, in motion.') {
   const u = unread();
-  return `<header class="top"><div><span class="eyebrow">FITVERSE / ${state.page.toUpperCase()}</span><h1>${title}</h1><p>${sub}</p></div><div class="top-actions"><button class="icon-btn" data-action="notifications" title="Notifications">♧${u ? `<em>${u}</em>` : ''}</button><button class="icon-btn" data-action="cmdk" title="Search (Ctrl+K)">⌕</button><button class="profile-chip" data-page="profile">${photoAvatar(me().name, 1)}<span>Sai</span><i>⌄</i></button></div></header>`;
+  const topRight = sessionToken
+    ? `<button class="icon-btn" data-action="notifications" title="Notifications">♧${u ? `<em>${u}</em>` : ''}</button><button class="icon-btn" data-action="cmdk" title="Search (Ctrl+K)">⌕</button><button class="profile-chip" data-page="profile">${photoAvatar(me().name, 1)}<span>Sai</span><i>⌄</i></button><button class="outline auth-btn" data-action="logout" title="Log out">Logout</button>`
+    : `<button class="outline auth-btn" data-action="account">Log in</button><button class="primary auth-btn" data-action="register">Sign up</button>`;
+  return `<header class="top"><div><span class="eyebrow">FITVERSE / ${state.page.toUpperCase()}</span><h1>${title}</h1><p>${sub}</p></div><div class="top-actions">${topRight}</div></header>`;
 }
 function home() {
   const s = pageData.dash || {};
@@ -977,14 +980,26 @@ async function action(a, btn) {
       }; bind(); return;
     }
     case 'register': {
-      modal(`<span class="eyebrow">JOIN FITVERSE</span><h2>Create your account</h2><form class="activity-form" id="register-form"><label>Display name<input name="name" required></label><label>Username<input name="username" required></label><label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" minlength="6" required></label><button class="primary" type="submit">Create account</button></form>`);
-      $('#register-form').onsubmit = async (e) => {
-        e.preventDefault(); const f = new FormData(e.currentTarget);
+      modal(`<span class="eyebrow">JOIN FITVERSE</span><h2>Create your account</h2><p>Track workouts, compete with friends and grow your Fitness DNA.</p><form class="activity-form" id="register-form" novalidate><label>Full name<input name="name" autocomplete="name" required placeholder="e.g. Arjun Rao"></label><label>Email<input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></label><label>Username<input name="username" autocomplete="username" required minlength="3" placeholder="lowercase, no spaces"></label><label>Password<input name="password" type="password" id="reg-pw" autocomplete="new-password" required placeholder="min 8 chars, letters + numbers"><small class="pw-hint">At least 8 characters, including a letter and a number.</small><div class="pw-meter"><i></i></div></label><label>Confirm password<input name="confirm" type="password" autocomplete="new-password" required placeholder="retype your password"></label><div class="form-error" id="reg-error" hidden></div><button class="primary" type="submit">Create account</button></form><p class="auth-hint">Already training with us? <button class="text-btn" data-action="account">Log in</button></p>`);
+      const form = $('#register-form'); const errBox = $('#reg-error'); const pw = $('#reg-pw'); const meter = form.querySelector('.pw-meter i');
+      const pwOk = (v) => v.length >= 8 && /[a-zA-Z]/.test(v) && /\d/.test(v);
+      const fail = (msg) => { errBox.textContent = msg; errBox.hidden = false; };
+      pw.oninput = () => { const v = pw.value; const score = (v.length >= 8 ? 1 : 0) + (/[a-zA-Z]/.test(v) ? 1 : 0) + (/\d/.test(v) ? 1 : 0); meter.style.width = (v ? score / 3 * 100 : 0) + '%'; meter.className = score === 3 ? 'strong' : score === 2 ? 'mid' : ''; };
+      form.onsubmit = async (e) => {
+        e.preventDefault(); errBox.hidden = true; const f = new FormData(form);
+        const name = String(f.get('name')).trim(), email = String(f.get('email')).trim().toLowerCase(), username = String(f.get('username')).trim().toLowerCase(), pass = String(f.get('password')), confirm = String(f.get('confirm'));
+        if (!name || !email || !username || !pass) return fail('Please fill in every field.');
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail("That email address doesn't look right — please check it.");
+        if (/\s/.test(username) || username.length < 3) return fail('Username needs at least 3 characters and no spaces.');
+        if (!pwOk(pass)) return fail('Password needs at least 8 characters, including a letter and a number.');
+        if (pass !== confirm) return fail("Passwords don't match — please retype them.");
+        const btn = form.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Creating your account…';
         try {
-          const result = await api('/api/auth/register', { method: 'POST', body: JSON.stringify(Object.fromEntries(f)) });
+          const result = await api('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, email, username, password: pass }) });
           sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken);
-          $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render(); toast('Welcome to FITVERSE!');
-        } catch (error) { toast(error.message); }
+          $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render();
+          toast(`🎉 Welcome to FITVERSE, ${name.split(' ')[0]}! Your account is ready.`);
+        } catch (error) { btn.disabled = false; btn.textContent = 'Create account'; fail(error.message); }
       }; bind(); return;
     }
     case 'logout': sessionToken = ''; localStorage.removeItem('fitverse-session'); $('#modal').innerHTML = ''; hydrate().then(render); toast('Signed out of this browser session'); return;
