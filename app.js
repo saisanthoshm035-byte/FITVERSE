@@ -471,14 +471,14 @@ function intelligencePage() {
   const poly = sc.map(([, v], i) => pt(i, v).map(n => n.toFixed(1)).join(',')).join(' ');
   const grid = [25, 50, 75, 100].map(g => `<polygon points="${sc.map((_, i) => pt(i, g).map(n => n.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="rgba(163,230,53,.14)" stroke-width="1"/>`).join('');
   const spokes = sc.map((_, i) => { const [x, y] = pt(i, 100); return `<line x1="${CX}" y1="${CY}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="rgba(163,230,53,.12)"/>`; }).join('');
-  const labels = sc.map(([k, v], i) => { const [x, y] = pt(i, 118); return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" fill="#cbe8d4" font-size="10" text-anchor="middle">${k} ${v}</text>`; }).join('');
+  const labels = sc.map(([k, v], i) => { const [x, y] = pt(i, 112); const anchor = x < CX - 15 ? 'start' : x > CX + 15 ? 'end' : 'middle'; const tx = anchor === 'start' ? x + 3 : anchor === 'end' ? x - 3 : x; return `<text x="${tx.toFixed(1)}" y="${y.toFixed(1)}" fill="#cbe8d4" font-size="10" text-anchor="${anchor}">${k} ${v}</text>`; }).join('');
   const debtColor = debt.level === 'clear' ? 'var(--lime)' : debt.level === 'low' ? '#facc15' : debt.level === 'moderate' ? '#fb923c' : '#f87171';
   return shell(`${pageHeader('Fitness DNA', 'How you train, decoded from your real activity.')}
 <div class="intel-grid">
   <section class="card dna-card">
     <div class="dna-head"><div><span class="eyebrow">🧬 YOUR FITNESS DNA</span><h2>${escapeHtml(dna.personality || 'Evolving')}</h2><p class="muted">Updates automatically as you train, eat, and compete.</p></div><button class="outline small" data-action="shareDna">Share card ↗</button></div>
     <div class="dna-body">
-      <svg viewBox="0 0 320 290" class="radar" role="img" aria-label="Fitness DNA radar chart">${grid}${spokes}<polygon points="${poly}" fill="rgba(163,230,53,.22)" stroke="var(--lime)" stroke-width="2"/>${labels}</svg>
+      <svg viewBox="-10 -20 340 306" class="radar" role="img" aria-label="Fitness DNA radar chart">${grid}${spokes}<polygon points="${poly}" fill="rgba(163,230,53,.22)" stroke="var(--lime)" stroke-width="2"/>${labels}</svg>
       <div class="dna-scores">${sc.map(([k, v]) => `<div class="dna-row"><span>${k}</span><div class="bar"><i style="width:${v}%"></i></div><b>${v}</b></div>`).join('')}</div>
     </div>
     <div class="dna-tags">
