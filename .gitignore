@@ -4,3 +4,6 @@ __pycache__/
 uploads/
 *.log
 .DS_Store
+fitverse.db-shm
+fitverse.db-wal
+server.log

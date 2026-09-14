@@ -24,7 +24,7 @@ const apiHeaders = () => ({ 'Content-Type': 'application/json', ...(sessionToken
 async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...apiHeaders(), ...(options.headers || {}) } });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'We could not complete that action.');
+  if (!response.ok) { const err = new Error(data.error || 'We could not complete that action.'); err.status = response.status; throw err; }
   return data;
 }
 const escapeHtml = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
@@ -32,6 +32,29 @@ const avatar = (name, tone = 'coral') => `<div class="avatar ${tone}">${escapeHt
 const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600); };
 const inr = (n) => (n > 0 ? `₹${Number(n).toLocaleString('en-IN')}` : 'Free');
 const dayShort = (iso) => { try { return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' }); } catch { return iso; } };
+// Upload a file via the existing base64 /api/upload endpoint. Returns { path, media } or null.
+async function uploadImageFile(file, forceVideo = false) {
+  const isVid = forceVideo || (file.type || '').startsWith('video');
+  const ext = (file.name.split('.').pop() || (isVid ? 'mp4' : 'jpg')).toLowerCase();
+  const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+  return api('/api/upload', { method: 'POST', body: JSON.stringify({ data: dataUrl, ext, kind: isVid ? 'video' : 'image' }) });
+}
+// Subtle notification sound — WebAudio, gated on user preference + interaction.
+function notifSound() {
+  try {
+    if (localStorage.getItem('fvSound') !== '1') return;
+    const Ctx = window.AudioContext || window.webkitAudioContext; if (!Ctx) return;
+    const ctx = new Ctx();
+    const o = ctx.createOscillator(); const g = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(880, ctx.currentTime);
+    o.frequency.setValueAtTime(1320, ctx.currentTime + 0.09);
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+    o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.4);
+    setTimeout(() => { try { ctx.close(); } catch (_) {} }, 600);
+  } catch (_) {}
+}
 const timeShort = (iso) => { try { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { return iso; } };
 const nav = [['home', '◈', 'Home'], ['intelligence', '🧬', 'Fitness DNA'], ['discover', '⌕', 'Discover'], ['posts', '▶', 'Posts & Reels'], ['workout', '🏋', 'Workout'], ['nutrition', '🍽', 'Nutrition'], ['progress', '📈', 'Progress'], ['challenges', '◉', 'Challenges'], ['communities', '◌', 'Communities'], ['events', '◫', 'Events'], ['messages', '✉', 'Messages'], ['friends', '👥', 'Friends'], ['coach', '✦', 'AI Coach'], ['businesses', '▦', 'Businesses']];
 const mobileNav = [['home', '⌂'], ['discover', '⌕'], ['workout', '🏋'], ['nutrition', '🍽'], ['profile', '●']];
@@ -112,6 +135,7 @@ async function hydrate() {
   pageData.achievements = achievements.items || [];
   pageData.buddy = (buddy.items || []).map(x => ({ note: x.note }));
   pageData.fitmatch = fitmatch.items || [];
+  pageData.daily = await api('/api/ai/daily', { method: 'POST', body: '{}' }).catch(() => null);
   syncAvatars();
   if (pageData.conversations.length && !pageData.conversations.some(c => c.id === pageData.activeConversation)) pageData.activeConversation = pageData.conversations[0].id;
   if (state.page === 'home') loadDashboard();
@@ -178,6 +202,19 @@ async function loadPageData(page) {
   if (page === 'friends') { add('fitmatch', api('/api/fitmatch').then(d => d.items || [])); add('friendsData', api('/api/friends').then(d => d).catch(() => ({}))); }
   if (page === 'library') add('exercises', api('/api/exercises').then(d => d.items || []));
   if (page === 'coach') add('coachChat', api('/api/ai/coach').then(d => d.items || []).catch(() => []));
+  if (page === 'connectHealth') {
+    add('healthIntegrations', api('/api/health/integrations').then(d => d).catch(() => null));
+    add('healthOverview', api('/api/health/overview').then(d => d).catch(() => null));
+    add('healthCardio', api('/api/health/cardio').then(d => d).catch(() => null));
+    add('healthRec', api('/api/health/recommendation').then(d => d).catch(() => null));
+  }
+  if (page === 'businesses') {
+    add('businesses', api('/api/businesses').then(d => d.items || []));
+    add('myBusinesses', api('/api/businesses/mine').then(d => d.items || []).catch(() => []));
+  }
+  if (page === 'businessChannel') {
+    add('bizDetail', api(`/api/businesses/${Number(state.bizId) || 1}`).then(d => d.item || {}).catch(() => null));
+  }
   if (page === 'communityDetail' && state.detailId) add('detailData', api(`/api/community?id=${state.detailId}`).then(d => d.item || {}));
   if (page === 'athleteProfile' && state.detailId) add('detailData', api(`/api/athletes/${state.detailId}`).then(d => d.item || {}));
   if (page === 'bookings') add('bookings', api('/api/bookings').then(d => d.items || []));
@@ -202,7 +239,7 @@ function shell(content) {
 function pageHeader(title, sub = 'Your fitness world, in motion.') {
   const u = unread();
   const topRight = sessionToken
-    ? `<button class="icon-btn" data-action="notifications" title="Notifications">♧${u ? `<em>${u}</em>` : ''}</button><button class="icon-btn" data-action="cmdk" title="Search (Ctrl+K)">⌕</button><button class="profile-chip" data-page="profile">${photoAvatar(me().name, 1)}<span>Sai</span><i>⌄</i></button><button class="outline auth-btn" data-action="logout" title="Log out">Logout</button>`
+    ? `<button class="icon-btn" data-action="notificationsOpen" title="Notification center">🔔${u ? `<em>${u}</em>` : ''}</button><button class="icon-btn" data-action="cmdk" title="Search (Ctrl+K)">⌕</button><button class="profile-chip" data-page="profile">${photoAvatar(me().name, 1)}<span>Sai</span><i>⌄</i></button><button class="outline auth-btn" data-action="logout" title="Log out">Logout</button>`
     : `<button class="outline auth-btn" data-action="account">Log in</button><button class="primary auth-btn" data-action="register">Sign up</button>`;
   return `<header class="top"><div><span class="eyebrow">FITVERSE / ${state.page.toUpperCase()}</span><h1>${title}</h1><p>${sub}</p></div><div class="top-actions">${topRight}</div></header>`;
 }
@@ -231,6 +268,7 @@ ${notes.length ? `<section class="buddy-strip"><span class="pill lime">✦ FITVE
   <a class="eco-card mission" data-page="intelligence"><span class="eyebrow">🎯 MISSION</span><div class="eco-main"><span class="mission-mini">${mission.icon || '🎯'}</span><div><h3>${escapeHtml(mission.title || 'Start your first mission')}</h3><p>${mission.progress != null ? `${mission.progress}/${mission.target} · ` : ''}+${mission.reward_xp || 0} XP</p></div></div><span class="eco-more">View →</span></a>
 </section>
 ${momentsSection()}
+${dailyCompanionCard()}
 ${friendsActivitySection()}
 <section class="stat-grid"><div class="stat-card"><span>🔥</span><div><small>STREAK</small><strong>${state.streak} days</strong></div><i>↗ ${s.week ? (s.week.sessions >= 3 ? 'on fire' : 'building') : ''}</i></div><div class="stat-card"><span>⚡</span><div><small>YOUR XP</small><strong>${state.xp.toLocaleString()} <em>XP</em></strong></div><i>LEVEL ${level()}</i></div><div class="stat-card goal"><div><small>WEEKLY GOAL</small><strong>${s.week && s.week.sessions != null ? Math.min(s.week.sessions, s.week.goal || 4) : Math.min(4, state.activities)} / ${s.week ? s.week.goal || 4 : 4} workouts</strong></div><div class="bar"><i style="width:${Math.min(100, ((s.week ? s.week.sessions : state.activities) / (s.week ? s.week.goal || 4 : 4)) * 100)}%"></i></div><button data-action="complete">Complete activity +</button></div></section>
 <section class="section-head"><div><span class="eyebrow">FROM YOUR CREW</span><h2>The FITVERSE feed</h2></div><button class="link" data-action="create">Share an update <b>→</b></button></section>
@@ -358,6 +396,7 @@ function profile() {
   const unlocked = pageData.achievements.filter(a => a.unlocked_at).length;
   return shell(`${pageHeader('Your profile', 'Your progress tells a story.')}
 <section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Sai Kumar')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'saikumar')} · ${escapeHtml(p.city || 'Chennai')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
+<a class="pill lime" data-page="connectHealth" style="cursor:pointer;text-decoration:none;display:inline-block;margin:0 0 14px">🔌 Connect Health Data — Strava, steps, sleep →</a>
 <div id="ptab-posts">${pageData.feed.filter(x => x.username === p.username).map(postCard).join('') || '<p class="loading">No posts yet — create one from the ＋ button.</p>'}</div>
 <div id="ptab-friends" style="display:none">${pageData.friends.map(f => `<article class="person-card" style="max-width:420px"><div class="person-info" style="padding:14px">${avatar(f.name, 'teal')}<h3>${escapeHtml(f.name)} <i>✓</i></h3><p>@${escapeHtml(f.username)} · ${escapeHtml(f.status)}</p></div></article>`).join('') || '<p class="loading">No friends yet — find matches on Discover.</p>'}</div>
 <div id="ptab-achievements" style="display:none"><div class="achievement-row">${pageData.achievements.map(a => `<article class="${a.unlocked_at ? '' : 'locked'}" style="${a.unlocked_at ? '' : 'opacity:.45'}"><span>${a.icon}</span><b>${escapeHtml(a.name)}</b><small>${escapeHtml(a.description)}</small></article>`).join('')}</div><p class="loading">${unlocked}/${pageData.achievements.length} unlocked</p></div>`);
@@ -593,6 +632,93 @@ function business() {
   return shell(`${pageHeader('Business dashboard', 'A focused view of your fitness business and its event reach.')}
 <div class="admin-grid"><article><span class="eyebrow">PROFILE VIEWS</span><b>1,284</b><small>Last 30 days</small></article><article><span class="eyebrow">EVENT BOOKINGS</span><b>${myBookings}</b><small>Bookings via FITVERSE</small></article><article><span class="eyebrow">BUSINESSES</span><b>${pageData.businesses.length}</b><small>On the platform</small></article><article><span class="eyebrow">ENGAGEMENT</span><b>8.4%</b><small>Healthy growth</small></article></div><section class="section-head"><div><span class="eyebrow">BUSINESSES</span><h2>Local fitness partners</h2></div><button class="create-inline" data-action="createBusinessEvent">＋ Create event</button></section><table class="data-table"><thead><tr><th>BUSINESS</th><th>CATEGORY</th><th>LOCATION</th><th>RATING</th></tr></thead><tbody>${pageData.businesses.map(row => `<tr><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.location_label)}</td><td>★ ${row.rating}</td></tr>`).join('') || '<tr><td colspan="4">Loading business data…</td></tr>'}</tbody></table>`);
 }
+function dailyCompanionCard() {
+  const d = pageData.daily;
+  if (!d || !d.recommendation) return '';
+  const rec = d.recommendation;
+  return `<section class="daily-companion" id="daily-companion"><div class="dc-head"><span class="pill lime">✦ AI COMPANION</span><b>${escapeHtml(d.greeting || 'Hello')}</b>${d.streak ? `<span class="dc-streak">🔥 ${d.streak} day streak</span>` : ''}</div>
+  ${d.lines.map(l => `<p class="dc-line">${escapeHtml(l)}</p>`).join('')}
+  <div class="dc-rec"><b>${escapeHtml(rec.title)}</b><p>${escapeHtml(rec.why)}</p></div>
+  <div class="dc-actions"><button class="primary small" data-action="dailyPlan">Build my plan</button><a class="outline small" href="#" data-action="dailyCoach" style="text-decoration:none;display:inline-block">Ask the coach</a></div></section>`;
+}
+function connectHealth() {
+  const integ = pageData.healthIntegrations || { items: [] };
+  const ov = pageData.healthOverview || {};
+  const cardio = pageData.healthCardio || {};
+  const rec = pageData.healthRec || {};
+  const strava = integ.items.find(i => i.provider === 'strava') || {};
+  const hc = integ.items.find(i => i.provider === 'health_connect') || { connected: false };
+  const s = ov.today || {};
+  const week = ov.week || {};
+  const weekRow = (label, val, sub) => `<div class="hc-week-row"><span>${label}</span><b>${val}</b><small>${sub}</small></div>`;
+  const cardioBody = cardio.insufficient
+    ? `<div class="hc-empty"><span>🫀</span><b>Not enough data yet</b><p>${escapeHtml(cardio.need || 'Log cardio workouts with distance to unlock pace and consistency analysis.')}</p></div>`
+    : `<div class="hc-stats"><div><b>${cardio.sessions ?? '—'}</b><small>sessions (28d)</small></div><div><b>${cardio.total_km ?? '—'} km</b><small>total distance</small></div><div><b>${cardio.avg_pace_min_km ? cardio.avg_pace_min_km + ' min/km' : '—'}</b><small>avg pace</small></div><div><b>${cardio.pace_trend_pct != null ? (cardio.pace_trend_pct > 0 ? '▲ ' : '▼ ') + Math.abs(cardio.pace_trend_pct) + '%' : '—'}</b><small>pace trend</small></div><div><b>${cardio.avg_hr ? cardio.avg_hr + ' bpm' : '—'}</b><small>avg heart rate</small></div><div><b>${cardio.consistency_days ?? '—'}</b><small>active days</small></div></div>
+       ${cardio.typical_gap_days ? `<p class="hc-note">Typical gap between cardio sessions: ${cardio.typical_gap_days} days · sports: ${escapeHtml((cardio.sports || []).join(', '))}</p>` : ''}`;
+  return shell(`${pageHeader('Connect Health Data', 'Bring your real training data into FITVERSE — always your choice, always private.')}
+<section class="hc-hero"><div><span class="pill lime">🔒 PRIVATE BY DESIGN</span><h2>Your data, <em>your control.</em></h2><p>Health data stays on your account, is never public, and is used only for your own insights. Disconnect anytime to delete synced data.</p></div></section>
+<section class="hc-connections">
+  <article class="hc-card ${strava.connected ? 'connected' : ''}"><div class="hc-card-head"><span class="hc-logo">🏃</span><div><h3>Strava</h3><p>${strava.connected ? 'Connected' + (strava.last_synced_at ? ' · last synced ' + timeShort(strava.last_synced_at) : '') : 'Sync runs, rides and walks with distance, pace, elevation and heart rate where available.'}</p></div>${strava.connected ? '<span class="hc-state on">Connected</span>' : '<span class="hc-state">Not connected</span>'}</div>
+    ${strava.connected
+      ? `<div class="hc-actions"><button class="primary small" data-action="stravaSync">Sync now</button><button class="outline small" data-action="stravaDisconnect">Disconnect</button></div>`
+      : strava.configured
+        ? `<div class="hc-actions"><button class="primary small" data-action="stravaConnect">Connect Strava</button><small class="hc-scope">You'll approve read-only access to your activities on Strava's own site.</small></div>`
+        : `<div class="hc-setup"><p><b>Strava connection isn't configured on this server yet.</b></p><p>To enable it (free): create an API app at <span class="code">strava.com/settings/api</span>, then set these environment variables and restart:</p><ul><li><span class="code">STRAVA_CLIENT_ID</span></li><li><span class="code">STRAVA_CLIENT_SECRET</span></li><li><span class="code">STRAVA_REDIRECT_URI</span> <small>(your site URL + /api/health/strava/callback)</small></li></ul><p class="hc-note">FITVERSE never fakes health data — until configured, this shows the honest setup state.</p></div>`}
+  </article>
+  <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">🤖</span><div><h3>Health Connect (Android)</h3><p>Steps, sleep, heart rate, hydration and more — from your phone's health hub.</p></div>${hc.connected ? '<span class="hc-state on">Connected</span>' : '<span class="hc-state">Bridge pending</span>'}</div>
+    <div class="hc-setup"><p>Health Connect is a device-local Android API — a web page can't read it directly. FITVERSE's data model, sync pipeline and this UI are <b>ready</b>; the remaining step is the native Android bridge (FITVERSE app) that will pass your data through with your explicit permission per type.</p><p class="hc-note">In the meantime you can log weight, steps and hydration manually below — it feeds the same insights.</p></div>
+  </article>
+</section>
+<section class="hc-section"><div class="section-head"><div><span class="eyebrow">UNIFIED VIEW</span><h2>Your fitness data today</h2></div></div>
+  <div class="hc-stats wide"><div><b>${ov.streak ?? 0}</b><small>day streak</small></div><div><b>${week.sessions ?? 0}</b><small>workouts this week</small></div><div><b>${week.kcal ?? 0}</b><small>kcal burned (7d)</small></div><div><b>${s.kcal ?? 0}<em>/${s.kcal_target || '—'}</em></b><small>kcal today</small></div><div><b>${s.protein ?? 0}<em>/${s.protein_target || '—'}g</em></b><small>protein today</small></div><div><b>${s.water_ml != null ? (s.water_ml / 1000).toFixed(1) : '—'}<em>/${s.water_target_ml ? (s.water_target_ml / 1000).toFixed(1) : '—'}L</em></b><small>hydration</small></div></div>
+</section>
+<section class="hc-section"><div class="section-head"><div><span class="eyebrow">CARDIO ANALYSIS</span><h2>Heart & legs, in numbers</h2></div><small class="hc-note">From your logged distance workouts${strava.connected ? ' + Strava' : ''}</small></div>
+  ${cardioBody}
+</section>
+<section class="hc-section"><div class="section-head"><div><span class="eyebrow">SMART RECOMMENDATION</span><h2>Today's smart suggestion</h2></div></div>
+  <div class="hc-rec"><b>${escapeHtml(rec.title || 'Log a workout to unlock')}</b><p>${escapeHtml(rec.why || '')}</p>${(rec.tips || []).map(t => `<p class="hc-tip">💡 ${escapeHtml(t)}</p>`).join('')}</div>
+</section>
+<section class="hc-section"><div class="section-head"><div><span class="eyebrow">MANUAL LOG</span><h2>Daily metrics</h2></div></div>
+  <form class="hc-form" id="metrics-form"><label>Steps<input name="steps" type="number" min="0" placeholder="8000"/></label><label>Weight (kg)<input name="weight_kg" type="number" step="0.1" placeholder="68.5"/></label><label>Sleep (min)<input name="sleep_min" type="number" min="0" placeholder="450"/></label><label>Resting HR<input name="resting_hr" type="number" min="30" max="120" placeholder="62"/></label><button class="primary">Save today</button></form>
+</section>`);
+}
+function businessChannel() {
+  const b = pageData.bizDetail || {};
+  if (!b.id) return shell(`${pageHeader('Business', 'Loading…')}<p class="loading">Loading business…</p>`);
+  const mapHtml = (b.lat && b.lng)
+    ? `<div id="biz-map" class="biz-map" data-lat="${b.lat}" data-lng="${b.lng}" data-name="${escapeHtml(b.name)}"></div><a class="outline small" href="https://www.openstreetmap.org/?mlat=${b.lat}&mlon=${b.lng}#map=16/${b.lat}/${b.lng}" target="_blank" rel="noopener">🧭 Open directions</a>`
+    : '';
+  const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const hoursRows = b.hours && Object.keys(b.hours).length
+    ? DOW.map((d, i) => b.hours[String(i)] ? `<div class="biz-hours-row"><span>${d}</span><b>${b.hours[String(i)][0]} – ${b.hours[String(i)][1]}</b></div>` : '').join('')
+    : (b.hours_note ? `<p class="biz-hours-note">◷ ${escapeHtml(b.hours_note)}</p>` : '');
+  const products = (b.products || []).map(p => `<article class="biz-product"><div class="biz-product-img" style="background-image:url('${p.image || 'img/workout.jpg'}')"></div><div><h4>${escapeHtml(p.name)}</h4><p>${escapeHtml(p.description)}</p><div class="biz-product-row">${p.price ? `<b>${escapeHtml(p.price)}</b>` : ''}${p.link ? `<a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">View →</a>` : ''}</div></div></article>`).join('');
+  const photos = (b.photos || []).map(p => `<div class="biz-photo-thumb" style="background-image:url('${p}')"></div>`).join('');
+  const posts = (b.channel_posts || []).map(p => `<article class="biz-post"><p>${escapeHtml(p.body)}</p>${p.media_url ? (p.media_type === 'video' ? `<video src="${p.media_url}" controls></video>` : `<img src="${p.media_url}" alt=""/>`) : ''}<small>${escapeHtml(p.author_name || '')} · ${timeShort(p.created_at)}</small></article>`).join('') || '<p class="muted">No posts from this business yet.</p>';
+  const ownerTools = b.is_owner ? `<div class="biz-owner-tools"><button class="primary small" data-action="bizEdit" data-id="${b.id}">Edit profile</button><button class="outline small" data-action="bizAddProduct" data-id="${b.id}">＋ Product</button><button class="outline small" data-action="bizAddPhoto" data-id="${b.id}">📷 Photo</button><button class="outline small" data-action="bizSetHours" data-id="${b.id}">◷ Hours</button><button class="outline small" data-action="bizCompose" data-id="${b.id}">✎ Write post</button></div>` : '';
+  return shell(`<div class="biz-channel-hero photo" style="background-image:url('${b.cover || 'img/' + (b.photo || 'gym.jpg')}')">
+    <div class="biz-channel-head"><span class="biz-channel-logo" style="background-image:url('${b.logo || ''}')">${b.logo ? '' : '🏋'}</span>
+    <div><span class="pill lime">FITVERSE BUSINESS${b.verified ? ' · VERIFIED' : ''}</span><h2>${escapeHtml(b.name)}</h2><p>${escapeHtml(b.tagline || b.category + ' · ' + (b.location_label || ''))}</p></div>
+    <div class="biz-channel-actions"><button class="${b.is_following ? 'outline' : 'primary'}" data-action="bizFollow" data-id="${b.id}">${b.is_following ? 'Following ✓' : 'Follow'}</button><small>${b.followers ?? 0} followers</small></div></div></div>
+  ${ownerTools}
+  <section class="biz-channel-grid">
+    <div class="biz-channel-main">
+      <span class="eyebrow">ABOUT</span><p>${escapeHtml(b.description)}</p>
+      ${b.website ? `<a class="biz-link" href="${escapeHtml(b.website)}" target="_blank" rel="noopener">🌐 ${escapeHtml(b.website)}</a>` : ''}
+      ${b.phone ? `<a class="biz-link" href="tel:${escapeHtml(b.phone)}">📞 ${escapeHtml(b.phone)}</a>` : ''}
+      ${b.address ? `<p class="biz-link">⌖ ${escapeHtml(b.address)}</p>` : ''}
+      ${hoursRows ? `<span class="eyebrow" style="margin-top:14px">OPENING HOURS</span>${hoursRows}` : ''}
+      <span class="eyebrow" style="margin-top:14px">POSTS</span>
+      ${ownerTools ? '' : ''}
+      ${posts}
+      ${photos ? `<span class="eyebrow" style="margin-top:14px">PHOTOS</span><div class="biz-photos">${photos}</div>` : ''}
+    </div>
+    <aside class="biz-channel-side">
+      ${products ? `<span class="eyebrow">PRODUCTS & SERVICES</span>${products}` : ''}
+      ${mapHtml ? `<span class="eyebrow">LOCATION</span>${mapHtml}` : (b.address ? `<span class="eyebrow">LOCATION</span><p class="muted">Map coming soon — address: ${escapeHtml(b.address)}</p>` : '')}
+    </aside>
+  </section>`);
+}
 function admin() {
   const s = pageData.stats || {};
   return shell(`${pageHeader('Admin dashboard', 'Moderation and platform health for the FITVERSE demo.')}
@@ -626,17 +752,26 @@ function reels() {
 ${tab === 'reels' ? reelsGrid : `${postsTab}${postsGrid}`}`);
 }
 function businesses() {
-  return shell(`${pageHeader('Businesses', 'Gyms, studios and stores — reviewed by the community.')}
-<div class="community-hero"><span class="pill lime">LOCAL PARTNERS</span><h2>Where the city <em>trains.</em></h2><p>Every business is real, rated and reviewed by FITVERSE athletes.</p></div>
-<div class="biz-grid">${pageData.businesses.map(b => `
+  const mine = pageData.myBusinesses || [];
+  const cats = ['All', ...new Set((pageData.businesses || []).map(b => b.category).filter(Boolean))];
+  const active = state.bizCat || 'All';
+  const q = (state.bizQuery || '').toLowerCase();
+  const list = (pageData.businesses || []).filter(b => (active === 'All' || b.category === active) && (!q || (b.name + ' ' + b.category + ' ' + (b.location_label || '')).toLowerCase().includes(q)));
+  return shell(`${pageHeader('Businesses', 'Gyms, studios, stores and coaches — the FITVERSE business ecosystem.')}
+<div class="community-hero"><span class="pill lime">LOCAL PARTNERS</span><h2>Where the city <em>trains.</em></h2><p>Real businesses, real owners, real reviews. Own one? Put it on the map.</p>
+  <div class="biz-cta"><button class="primary" data-action="bizCreate">🏪 Add your business</button>${mine.length ? `<button class="outline" data-action="bizOpenMine" data-id="${mine[0].id}">My business dashboard</button>` : ''}</div></div>
+<div class="biz-filters"><div class="tabs" id="biz-cats">${cats.map(c => `<button class="${c === active ? 'active' : ''}" data-bcat="${escapeHtml(c)}">${escapeHtml(c)}</button>`).join('')}</div>
+<div class="search"><input id="biz-search" placeholder="Search gyms, stores, coaches…" value="${escapeHtml(state.bizQuery || '')}"/><span>⌕</span></div></div>
+<div class="biz-grid">${list.map(b => `
 <article class="biz-card" data-business="${b.id}">
-  <div class="biz-photo photo" style="background-image:url('img/${b.photo || 'workout.jpg'}')"><span>${escapeHtml(b.category)}</span></div>
+  <div class="biz-photo photo" style="background-image:url('${b.cover || 'img/' + (b.photo || 'workout.jpg')}')"><span>${escapeHtml(b.category)}</span></div>
   <div class="biz-body">
-    <h3>${escapeHtml(b.name)}</h3>
+    <h3>${escapeHtml(b.name)}${b.owner_id ? ' <i class="biz-owned">★ owned</i>' : ''}</h3>
+    ${b.tagline ? `<p class="biz-tagline">${escapeHtml(b.tagline)}</p>` : ''}
     <p>⌖ ${escapeHtml(b.location_label)}</p>
-    <div class="biz-row"><span class="stars" title="${b.rating}">${'★'.repeat(Math.round(b.rating))}${'☆'.repeat(5 - Math.round(b.rating))}</span><b>${b.rating}</b><button class="outline small" data-action="businessDetail" data-id="${b.id}">Reviews & details</button></div>
+    <div class="biz-row"><span class="stars" title="${b.rating}">${'★'.repeat(Math.round(b.rating))}${'☆'.repeat(5 - Math.round(b.rating))}</span><b>${b.rating}</b><button class="outline small" data-action="bizOpen" data-id="${b.id}">Open channel</button><button class="outline small" data-action="businessDetail" data-id="${b.id}">Reviews</button></div>
   </div>
-</article>`).join('') || '<p class="loading">Loading businesses…</p>'}</div>`);
+</article>`).join('') || `<p class="loading">No businesses match${q ? ' “' + escapeHtml(state.bizQuery) + '”' : ''}.</p>`}</div>`);
 }
 let detailData = null;
 function communityDetail() {
@@ -665,7 +800,7 @@ function athleteProfile() {
 <div id="atab-badges" style="display:none"><div class="achievement-row">${a.badges.map(b => `<article><span>${b.icon}</span><b>${escapeHtml(b.name)}</b><small>Unlocked ${dayShort(b.unlocked_at)}</small></article>`).join('') || '<p class="loading">No badges yet.</p>'}</div></div>`);
 }
 function render() {
-  const pages = { home, discover, posts: reels, reels, challenges, communities, events, messages, profile, bookings, business, admin, businesses, communityDetail, athleteProfile, workout: workoutPage, nutrition: nutritionPage, progress: progressPage, friends: friendsPage, library: libraryPage, coach: coachPage, weeklyReview: weeklyReviewPage, intelligence: intelligencePage };
+  const pages = { home, discover, posts: reels, reels, challenges, communities, events, messages, profile, bookings, business, admin, businesses, communityDetail, athleteProfile, workout: workoutPage, nutrition: nutritionPage, progress: progressPage, friends: friendsPage, library: libraryPage, coach: coachPage, weeklyReview: weeklyReviewPage, intelligence: intelligencePage, connectHealth, businessChannel };
   $('#app').innerHTML = (pages[state.page] || home)();
   bind();
 }
@@ -845,7 +980,10 @@ async function activityDetail(id) {
   } catch (e) { toast(e.message); }
 }
 function bind() {
-  $$('[data-page]').forEach(b => b.onclick = async () => { state.page = b.dataset.page; render(); loadPageData(state.page); window.scrollTo(0, 0); });
+  $$('[data-page]').forEach(b => b.onclick = async () => { if (b.dataset.bizid) state.bizId = Number(b.dataset.bizid); state.page = b.dataset.page; render(); loadPageData(state.page); window.scrollTo(0, 0); });
+  $$('[data-bcat]').forEach(b => b.onclick = () => { state.bizCat = b.dataset.bcat; render(); const inp = $('#biz-search'); if (inp) { inp.focus(); inp.value = state.bizQuery || ''; } });
+  const bizSearch = $('#biz-search');
+  if (bizSearch) { let t; bizSearch.oninput = () => { clearTimeout(t); t = setTimeout(() => { state.bizQuery = bizSearch.value; render(); const inp = $('#biz-search'); if (inp) { inp.focus(); inp.value = state.bizQuery; } }, 250); }; }
   $$('[data-conv]').forEach(b => b.onclick = async () => { pageData.activeConversation = Number(b.dataset.conv); await loadMessages(); window.scrollTo(0, 0); });
   $$('[data-action]').forEach(b => b.onclick = () => action(b.dataset.action, b));
   $$('[data-tab]').forEach(b => b.onclick = () => {
@@ -899,7 +1037,8 @@ function bind() {
     pageData.coachChat.push({ role: 'user', content: msg });
     render();
     try {
-      const r = await api('/api/ai/coach', { method: 'POST', body: JSON.stringify({ message: msg }) });
+      const r = await api('/api/ai/companion', { method: 'POST', body: JSON.stringify({ message: msg, conversationId: pageData.coachConvId }) });
+      pageData.coachConvId = r.conversationId;
       pageData.coachChat.push({ role: 'coach', content: r.reply });
     } catch (err) {
       pageData.coachChat.push({ role: 'coach', content: 'I could not reach the server just now — give it another shot.' });
@@ -914,6 +1053,27 @@ function bind() {
     try { await api('/api/community/posts', { method: 'POST', body: JSON.stringify({ community_id: Number(cpf.dataset.cid), body: bodyTxt }) }); await loadPageData('communityDetail'); toast('Posted to the community'); }
     catch (err) { toast(err.message); input.value = bodyTxt; }
   };
+  // FITVERSE 4.0: daily metrics form (Connect Health Data page)
+  const mf = $('#metrics-form');
+  if (mf) mf.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.currentTarget));
+    try { await api('/api/health/metrics', { method: 'POST', body: JSON.stringify(f) }); toast('Saved — your unified view updates instantly'); }
+    catch (err) { toast(err.message); }
+  };
+  // FITVERSE 4.0: business channel Leaflet map (free OpenStreetMap tiles, no API key)
+  const mapEl = $('#biz-map');
+  if (mapEl && !mapEl._init && window.L) {
+    mapEl._init = true;
+    const lat = Number(mapEl.dataset.lat), lng = Number(mapEl.dataset.lng);
+    try {
+      const map = L.map(mapEl, { scrollWheelZoom: false, attributionControl: true }).setView([lat, lng], 16);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' }).addTo(map);
+      L.marker([lat, lng]).addTo(map).bindPopup(escapeHtml(mapEl.dataset.name || ''));
+      setTimeout(() => map.invalidateSize(), 150);
+    } catch (_) {}
+  }
+  if (mapEl && !window.L && !mapEl._warned) { mapEl._warned = true; mapEl.innerHTML = '<div class="biz-map-fallback">🗺 Map tiles need internet — address: ' + escapeHtml(mapEl.dataset.name || '') + '</div>'; }
   // Typing indicator: broadcast while the user types (throttled), and show partner typing via SSE.
   const ci = $('#composer-input');
   if (ci) ci.oninput = () => {
@@ -1122,13 +1282,210 @@ async function action(a, btn) {
       (async () => {
         try {
           const { item: b } = await api(`/api/businesses/${id}`);
-        modal(`<div class="detail-photo" style="background-image:url('img/${b.photo || 'workout.jpg'}')"></div><span class="eyebrow">${escapeHtml(b.category.toUpperCase())}</span><h2>${escapeHtml(b.name)}</h2><p>${escapeHtml(b.description || '')}</p><div class="compat"><span>⌖ ${escapeHtml(b.location_label)}</span><span class="stars">${'★'.repeat(Math.round(b.rating))}${'☆'.repeat(5 - Math.round(b.rating))}</span><b>${b.rating}</b></div><span class="eyebrow" style="display:block;margin-top:14px">REVIEWS</span><div class="comment-list">${(b.reviews || []).map(r => `<div class="comment">${avatar(r.name, 'teal')}<div><strong>${escapeHtml(r.name)}</strong><p>${'★'.repeat(r.rating)}</p><p>${escapeHtml(r.body)}</p><small>${timeShort(r.created_at)}</small></div></div>`).join('') || '<p>No reviews yet — be the first.</p>'}</div><form class="activity-form" id="review-form"><label>Your rating<select name="rating"><option value="5">★★★★★</option><option value="4">★★★★</option><option value="3">★★★</option><option value="2">★★</option><option value="1">★</option></select></label><label>Your review<input name="body" placeholder="Great coaches, spotless floor..." required maxlength="600"></label><button class="primary" type="submit">Post review</button></form>`);
+        modal(`<div class="detail-photo" style="background-image:url('img/${b.photo || 'workout.jpg'}')"></div><span class="eyebrow">${escapeHtml(b.category.toUpperCase())}</span><h2>${escapeHtml(b.name)}</h2><p>${escapeHtml(b.description || '')}</p><div class="compat"><span>⌖ ${escapeHtml(b.location_label)}</span><span class="stars">${'★'.repeat(Math.round(b.rating))}${'☆'.repeat(5 - Math.round(b.rating))}</span><b>${b.rating}</b></div><div class="hero-actions"><button class="primary" data-action="bizOpen" data-id="${b.id}">Open channel</button></div><span class="eyebrow" style="display:block;margin-top:14px">REVIEWS</span><div class="comment-list">${(b.reviews || []).map(r => `<div class="comment">${avatar(r.name, 'teal')}<div><strong>${escapeHtml(r.name)}</strong><p>${'★'.repeat(r.rating)}</p><p>${escapeHtml(r.body)}</p><small>${timeShort(r.created_at)}</small></div></div>`).join('') || '<p>No reviews yet — be the first.</p>'}</div><form class="activity-form" id="review-form"><label>Your rating<select name="rating"><option value="5">★★★★★</option><option value="4">★★★★</option><option value="3">★★★</option><option value="2">★★</option><option value="1">★</option></select></label><label>Your review<input name="body" placeholder="Great coaches, spotless floor..." required maxlength="600"></label><button class="primary" type="submit">Post review</button></form>`);
         bind();
         $('#review-form').onsubmit = async (e) => {
           e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
           try { await api('/api/reviews', { method: 'POST', body: JSON.stringify({ business_id: id, rating: Number(f.rating), body: f.body }) }); $('#modal').innerHTML = ''; action('businessDetail', { dataset: { id: String(id) } }); toast('Review posted'); }
           catch (err) { toast(err.message); }
         };
+        } catch (e) { toast(e.message); }
+      })();
+      return;
+    }
+    case 'bizOpen': {
+      (async () => {
+        try {
+          const probe = await api(`/api/businesses/${id}`);
+          state.bizId = id; state.page = 'businessChannel'; render(); await loadPageData('businessChannel'); render(); window.scrollTo(0, 0);
+        } catch (e) { toast(e.message); }
+      })();
+      return;
+    }
+    case 'bizCreate': {
+      const cats = ['Gym', 'Yoga studio', 'Powerlifting gym', 'Running store', 'Sports academy', 'Cycling shop', 'Swim school', 'Climbing gym', 'Nutrition store', 'Personal training', 'Physiotherapy', 'Sports clinic'];
+      modal(`<span class="eyebrow">BUSINESS OWNERS</span><h2>Add your business</h2><form class="activity-form" id="biz-form">
+        <label>Business name<input name="name" required maxlength="100" placeholder="Powerhouse Fitness"></label>
+        <label>Category<select name="category">${cats.map(c => `<option>${c}</option>`).join('')}</select></label>
+        <label>Tagline<input name="tagline" maxlength="120" placeholder="Strength training for everyone"></label>
+        <label>Description<textarea name="description" rows="3" maxlength="1200" placeholder="What makes your business special?"></textarea></label>
+        <label>Area / locality<input name="location_label" maxlength="80" placeholder="Adyar, Chennai"></label>
+        <label>Full address<input name="address" maxlength="200" placeholder="12 Beach Rd, Adyar"></label>
+        <label>Website<input name="website" type="url" maxlength="200" placeholder="https://..."></label>
+        <label>Phone<input name="phone" maxlength="30" placeholder="+91 ..."></label>
+        <label>Opening hours (short)<input name="hours_note" maxlength="140" placeholder="Mon-Sat 6:00-22:00, Sun 7-13"></label>
+        <div class="biz-map-hint">📍 Map pin: after creating, open your channel and use Edit profile to set latitude/longitude.</div>
+        <button class="primary" type="submit">Create business channel</button></form>`);
+      bind();
+      $('#biz-form').onsubmit = async (e) => {
+        e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
+        const btn = e.currentTarget.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Creating…';
+        try {
+          const r = await api('/api/businesses', { method: 'POST', body: JSON.stringify(f) });
+          $('#modal').innerHTML = ''; toast('🏪 Business created — welcome to the ecosystem!');
+          await loadPageData('businesses'); state.bizId = r.id; state.page = 'businessChannel'; render(); await loadPageData('businessChannel'); render();
+        } catch (err) { btn.disabled = false; btn.textContent = 'Create business channel'; toast(err.message); }
+      };
+      return;
+    }
+    case 'bizOpenMine': state.bizId = id; state.page = 'businessChannel'; render(); loadPageData('businessChannel'); window.scrollTo(0, 0); return;
+    case 'bizFollow': api(`/api/businesses/${id}/follow`, { method: 'POST', body: '{}' }).then(async (r) => { await loadPageData('businessChannel'); render(); toast(r.following ? 'Following — you\'ll see their posts' : 'Unfollowed'); }).catch(e => toast(e.message)); return;
+    case 'bizEdit': {
+      (async () => {
+        const { item: b } = await api(`/api/businesses/${id}`);
+        modal(`<span class="eyebrow">OWNER TOOLS</span><h2>Edit business</h2><form class="activity-form" id="biz-edit-form">
+          <label>Name<input name="name" value="${escapeHtml(b.name || '')}" required maxlength="100"></label>
+          <label>Tagline<input name="tagline" value="${escapeHtml(b.tagline || '')}" maxlength="120"></label>
+          <label>Description<textarea name="description" rows="3" maxlength="1200">${escapeHtml(b.description || '')}</textarea></label>
+          <label>Area / locality<input name="location_label" value="${escapeHtml(b.location_label || '')}" maxlength="80"></label>
+          <label>Address<input name="address" value="${escapeHtml(b.address || '')}" maxlength="200"></label>
+          <label>Website<input name="website" value="${escapeHtml(b.website || '')}" maxlength="200"></label>
+          <label>Phone<input name="phone" value="${escapeHtml(b.phone || '')}" maxlength="30"></label>
+          <label>Opening hours (short)<input name="hours_note" value="${escapeHtml(b.hours_note || '')}" maxlength="140"></label>
+          <label>Latitude<input name="lat" type="number" step="any" value="${b.lat ?? ''}" placeholder="13.0068"></label>
+          <label>Longitude<input name="lng" type="number" step="any" value="${b.lng ?? ''}" placeholder="80.2573"></label>
+          <div class="biz-map-hint">Tip: right-click your spot on <a href="https://www.openstreetmap.org" target="_blank" rel="noopener">openstreetmap.org</a> and copy the latitude/longitude.</div>
+          <button class="primary" type="submit">Save changes</button></form>`);
+        bind();
+        $('#biz-edit-form').onsubmit = async (e) => {
+          e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
+          try { await api(`/api/businesses/${id}/edit`, { method: 'POST', body: JSON.stringify(f) }); $('#modal').innerHTML = ''; toast('Business updated'); await loadPageData('businessChannel'); render(); }
+          catch (err) { toast(err.message); }
+        };
+      })();
+      return;
+    }
+    case 'bizAddProduct': {
+      modal(`<span class="eyebrow">OWNER TOOLS</span><h2>Add product or service</h2><form class="activity-form" id="biz-prod-form">
+        <label>Name<input name="name" required maxlength="120" placeholder="Monthly strength membership"></label>
+        <label>Description<textarea name="description" rows="2" maxlength="600" placeholder="What's included?"></textarea></label>
+        <label>Price<input name="price" maxlength="40" placeholder="₹2,500 / month"></label>
+        <label>Link<input name="link" type="url" maxlength="300" placeholder="https://... (optional)"></label>
+        <label>Image<input name="img" type="file" accept="image/*"></label>
+        <button class="primary" type="submit">Add product</button></form>`);
+      bind();
+      $('#biz-prod-form').onsubmit = async (e) => {
+        e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
+        const btn = e.currentTarget.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
+        try {
+          let image = '';
+          const fileInput = e.currentTarget.querySelector('input[name=img]');
+          if (fileInput.files && fileInput.files[0]) {
+            const r = await uploadImageFile(fileInput.files[0]);
+            if (r && r.path) image = r.path;
+          }
+          await api(`/api/businesses/${id}/products`, { method: 'POST', body: JSON.stringify({ ...f, image }) });
+          $('#modal').innerHTML = ''; toast('Product added'); await loadPageData('businessChannel'); render();
+        } catch (err) { btn.disabled = false; btn.textContent = 'Add product'; toast(err.message); }
+      };
+      return;
+    }
+    case 'bizAddPhoto': {
+      modal(`<span class="eyebrow">OWNER TOOLS</span><h2>Add a photo</h2><form class="activity-form" id="biz-photo-form">
+        <label>Photo<input name="img" type="file" accept="image/*" required></label>
+        <button class="primary" type="submit">Upload photo</button></form>`);
+      bind();
+      $('#biz-photo-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const fileInput = e.currentTarget.querySelector('input[name=img]');
+        if (!fileInput.files || !fileInput.files[0]) return;
+        const btn = e.currentTarget.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Uploading…';
+        try {
+          const r = await uploadImageFile(fileInput.files[0]);
+          if (r && r.path) await api(`/api/businesses/${id}/photos`, { method: 'POST', body: JSON.stringify({ path: r.path }) });
+          $('#modal').innerHTML = ''; toast('Photo added'); await loadPageData('businessChannel'); render();
+        } catch (err) { btn.disabled = false; btn.textContent = 'Upload photo'; toast(err.message); }
+      };
+      return;
+    }
+    case 'bizSetHours': {
+      modal(`<span class="eyebrow">OWNER TOOLS</span><h2>Opening hours</h2><form class="activity-form" id="biz-hours-form">
+        <div class="biz-hours-presets"><button type="button" class="outline small" data-preset="weekday">Mon-Fri 6-22, Sat 7-14</button><button type="button" class="outline small" data-preset="daily">Every day 6-22</button><button type="button" class="outline small" data-preset="mornings">Mon-Sat 6-11</button></div>
+        <label>Short hours note (shown on your profile)<input name="hours_note" maxlength="140" placeholder="Mon-Sat 6:00-22:00"></label>
+        <button class="primary" type="submit">Save hours</button></form>`);
+      bind();
+      $$('#biz-hours-form [data-preset]').forEach(b => b.onclick = () => { $('#biz-hours-form [name=hours_note]').value = { weekday: 'Mon-Fri 6:00-22:00, Sat 7:00-14:00', daily: 'Every day 6:00-22:00', mornings: 'Mon-Sat 6:00-11:00' }[b.dataset.preset]; });
+      $('#biz-hours-form').onsubmit = async (e) => {
+        e.preventDefault(); const note = new FormData(e.currentTarget).get('hours_note');
+        try {
+          await api(`/api/businesses/${id}/hours`, { method: 'POST', body: JSON.stringify({ hours: {} }) });
+          await api(`/api/businesses/${id}/edit`, { method: 'POST', body: JSON.stringify({ hours_note: note }) });
+          $('#modal').innerHTML = ''; toast('Hours updated'); await loadPageData('businessChannel'); render();
+        } catch (err) { toast(err.message); }
+      };
+      return;
+    }
+    case 'bizCompose': {
+      modal(`<span class="eyebrow">BUSINESS CHANNEL</span><h2>Write a post</h2><form class="activity-form" id="biz-post-form">
+        <label>What's new?<textarea name="body" rows="4" maxlength="2000" required placeholder="New equipment, offers, events, tips…"></textarea></label>
+        <label>Attach photo or video<input name="media" type="file" accept="image/*,video/*"></label>
+        <button class="primary" type="submit">Publish to channel</button></form>`);
+      bind();
+      $('#biz-post-form').onsubmit = async (e) => {
+        e.preventDefault(); const body = new FormData(e.currentTarget).get('body');
+        const btn = e.currentTarget.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Publishing…';
+        try {
+          let media_url = '';
+          const fileInput = e.currentTarget.querySelector('input[name=media]');
+          if (fileInput.files && fileInput.files[0]) {
+            const isVid = fileInput.files[0].type.startsWith('video');
+            const r = await uploadImageFile(fileInput.files[0], isVid);
+            if (r && r.path) media_url = r.path;
+          }
+          await api(`/api/businesses/${id}/post`, { method: 'POST', body: JSON.stringify({ body, media_url }) });
+          $('#modal').innerHTML = ''; toast('📣 Published to your followers'); await loadPageData('businessChannel'); render();
+        } catch (err) { btn.disabled = false; btn.textContent = 'Publish to channel'; toast(err.message); }
+      };
+      return;
+    }
+    case 'dailyPlan': case 'dailyCoach': $('#modal').innerHTML = ''; state.page = 'coach'; render(); loadPageData('coach'); window.scrollTo(0, 0); return;
+    case 'stravaConnect': {
+      (async () => {
+        try {
+          const r = await api('/api/health/strava/connect', { method: 'POST', body: '{}' });
+          if (r.authorize_url) { toast('Opening Strava authorization…'); window.location.href = r.authorize_url; }
+        } catch (err) {
+          modal(`<span class="eyebrow">STRAVA</span><h2>Setup needed</h2><p>Strava connection isn't configured on this server yet. It's free:</p><ol style="line-height:1.9"><li>Create an API application at <b>strava.com/settings/api</b> (authorization callback: <span class="code">${location.origin}/api/health/strava/callback</span>)</li><li>Set environment variables: <span class="code">STRAVA_CLIENT_ID</span>, <span class="code">STRAVA_CLIENT_SECRET</span>, <span class="code">STRAVA_REDIRECT_URI</span></li><li>Restart FITVERSE and connect again</li></ol><p class="muted">FITVERSE doesn't fake health data — without your real Strava authorization there's nothing to show.</p><button class="outline" data-action="closeModal">Got it</button>`);
+          bind();
+        }
+      })();
+      return;
+    }
+    case 'stravaSync': {
+      (async () => {
+        try { toast('Syncing Strava…'); const r = await api('/api/health/strava/sync', { method: 'POST', body: '{}' });
+          toast(r.ok ? `Synced — ${r.fetched} activities found` : r.error || 'Sync failed');
+          await loadPageData('connectHealth'); render();
+        } catch (e) { toast(e.message); }
+      })();
+      return;
+    }
+    case 'stravaDisconnect': {
+      (async () => {
+        try { await api('/api/health/disconnect', { method: 'POST', body: JSON.stringify({ provider: 'strava' }) }); toast('Strava disconnected — synced data deleted'); await loadPageData('connectHealth'); render(); }
+        catch (e) { toast(e.message); }
+      })();
+      return;
+    }
+    case 'notificationsOpen': {
+      (async () => {
+        try {
+          const data = await api('/api/notifications/center');
+          const prefs = data.prefs || {};
+          const CATS = [['friend', '👥', 'Friend requests'], ['message', '💬', 'Messages'], ['achievement', '🏆', 'Achievements'], ['challenge', '⚔️', 'Challenges'], ['workout', '🏋', 'Workouts'], ['hydration', '💧', 'Hydration'], ['event', '🎉', 'Events'], ['community', '◌', 'Community'], ['business', '📣', 'Businesses'], ['ai', '🤖', 'AI coach']];
+          const ICONS = { friend: '👥', message: '💬', achievement: '🏆', challenge: '⚔️', workout: '🏋', hydration: '💧', event: '🎉', community: '◌', business: '📣', ai: '🤖', xp: '⚡', activity: '🏀' };
+          modal(`<div class="notif-center"><div class="notif-head"><span class="eyebrow">NOTIFICATION CENTER</span><h2 style="font-size:20px;margin:2px 0">All activity</h2><button class="outline small" data-action="readNotifications">Mark all read</button></div>
+          <div class="notif-list">${(data.items || []).slice(0, 30).map(n => `<div class="notif-item ${n.is_read ? 'read' : ''}"><span class="notif-ico">${ICONS[n.type] || '🔔'}</span><div><b>${escapeHtml(n.title)}</b><p>${escapeHtml(n.body)}</p><small>${timeShort(n.created_at)}</small></div>${n.is_read ? '' : '<i class="notif-dot"></i>'}</div>`).join('') || '<p class="muted">No notifications yet — they\'ll appear here.</p>'}</div>
+          <span class="eyebrow">PREFERENCES</span>
+          <div class="notif-prefs">${CATS.map(([c, ic, label]) => `<label class="notif-pref"><span>${ic} ${label}</span><input type="checkbox" data-npref="${c}" ${prefs[c] && prefs[c].enabled ? 'checked' : ''}/></label>`).join('')}</div>
+          <label class="notif-pref sound"><span>🔊 Notification sound</span><input type="checkbox" id="notif-sound-toggle" ${localStorage.getItem('fvSound') === '1' ? 'checked' : ''}/></label>
+          <p class="hc-note">Sound is a subtle tone and only plays after you've interacted with the app (browser rule). Mute categories anytime.</p></div>`);
+          bind();
+          $$('#modal [data-npref]').forEach(cb => cb.onchange = async () => {
+            await api('/api/notifications/prefs', { method: 'POST', body: JSON.stringify({ category: cb.dataset.npref, enabled: cb.checked }) });
+            toast(cb.checked ? 'Notifications on for this category' : 'Muted — you won\'t be notified');
+          });
+          const st = $('#notif-sound-toggle'); if (st) st.onchange = () => { localStorage.setItem('fvSound', st.checked ? '1' : '0'); if (st.checked) notifSound(); };
         } catch (e) { toast(e.message); }
       })();
       return;
@@ -1382,7 +1739,8 @@ async function action(a, btn) {
       pageData.coachChat.push({ role: 'user', content: q });
       render();
       try {
-        const r = await api('/api/ai/coach', { method: 'POST', body: JSON.stringify({ message: q }) });
+        const r = await api('/api/ai/companion', { method: 'POST', body: JSON.stringify({ message: q, conversationId: pageData.coachConvId }) });
+        pageData.coachConvId = r.conversationId;
         pageData.coachChat.push({ role: 'coach', content: r.reply });
       } catch (err) { pageData.coachChat.push({ role: 'coach', content: 'I hit a snag reaching the server — try again in a moment.' }); }
       render(); return;
@@ -1390,7 +1748,7 @@ async function action(a, btn) {
     case 'weeklyReview':
       $('#modal').innerHTML = ''; state.page = 'progress'; await loadPageData('progress'); render(); window.scrollTo(0, 0); return;
     case 'moreMenu': {
-      const pages = [['intelligence', '🧬', 'Fitness DNA'], ['posts', '▶', 'Posts & Reels'], ['progress', '📈', 'Progress'], ['challenges', '◉', 'Challenges'], ['communities', '◌', 'Communities'], ['events', '◫', 'Events'], ['messages', '✉', 'Messages'], ['friends', '👥', 'Friends'], ['coach', '✦', 'AI Coach'], ['businesses', '▦', 'Businesses'], ['bookings', '🎟', 'My bookings'], ['library', '📚', 'Exercise library']];
+      const pages = [['intelligence', '🧬', 'Fitness DNA'], ['connectHealth', '🔌', 'Health Data'], ['posts', '▶', 'Posts & Reels'], ['progress', '📈', 'Progress'], ['challenges', '◉', 'Challenges'], ['communities', '◌', 'Communities'], ['events', '◫', 'Events'], ['messages', '✉', 'Messages'], ['friends', '👥', 'Friends'], ['coach', '✦', 'AI Coach'], ['businesses', '▦', 'Businesses'], ['bookings', '🎟', 'My bookings'], ['library', '📚', 'Exercise library']];
       modal(`<div class="more-sheet"><span class="eyebrow">ALL OF FITVERSE</span><h2 style="font-size:19px;margin:4px 0 2px">Go to…</h2><div class="sheet-grid">${pages.map(([p, ic, label]) => `<button data-page="${p}" class="${state.page === p ? 'active' : ''}"><span>${ic}</span>${label}</button>`).join('')}</div></div>`);
       bind();
       return;
@@ -1474,7 +1832,7 @@ function startSSE() {
     });
     evtSource.addEventListener('notification', (e) => {
       const n = JSON.parse(e.data);
-      if (!pageData.notifications.some(x => x.id === n.id)) { pageData.notifications.unshift(n); toast(`${n.title} — ${n.body}`); if (state.page !== 'messages') render(); }
+      if (!pageData.notifications.some(x => x.id === n.id)) { pageData.notifications.unshift(n); toast(`${n.title} — ${n.body}`); notifSound(); if (state.page !== 'messages') render(); }
     });
     evtSource.addEventListener('typing', (e) => {
       try {

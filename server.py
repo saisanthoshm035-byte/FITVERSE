@@ -51,9 +51,14 @@ def now() -> str:
 
 
 def connect() -> sqlite3.Connection:
-    db = sqlite3.connect(DATABASE)
+    db = sqlite3.connect(DATABASE, timeout=15)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
+    try:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=15000")
+    except sqlite3.OperationalError:
+        pass
     return db
 
 
@@ -298,12 +303,73 @@ CREATE TABLE IF NOT EXISTS post_reactions (
   reaction TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(post_id, user_id, reaction)
 );
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON post_reactions(post_id);
+
+-- ===== FITVERSE 4.0: health integrations, business ecosystem, notification prefs =====
+CREATE TABLE IF NOT EXISTS health_connections (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'connected',
+  scopes TEXT NOT NULL DEFAULT '', external_user_id TEXT, access_token TEXT, refresh_token TEXT,
+  token_expires_at TEXT, connected_at TEXT NOT NULL, last_synced_at TEXT, UNIQUE(user_id, provider)
+);
+CREATE TABLE IF NOT EXISTS health_activities (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL, external_id TEXT NOT NULL, sport TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '', distance_km REAL NOT NULL DEFAULT 0, moving_s INTEGER NOT NULL DEFAULT 0,
+  elev_m REAL NOT NULL DEFAULT 0, kcal REAL NOT NULL DEFAULT 0, avg_hr INTEGER NOT NULL DEFAULT 0,
+  max_hr INTEGER NOT NULL DEFAULT 0, avg_pace_sec_km REAL NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL, raw_json TEXT, created_at TEXT NOT NULL, UNIQUE(user_id, provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_health_activities_user ON health_activities(user_id, started_at);
+CREATE TABLE IF NOT EXISTS daily_metrics (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, day TEXT NOT NULL,
+  steps INTEGER NOT NULL DEFAULT 0, sleep_min INTEGER NOT NULL DEFAULT 0, resting_hr INTEGER NOT NULL DEFAULT 0,
+  weight_kg REAL NOT NULL DEFAULT 0, hydration_ml INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'manual',
+  updated_at TEXT NOT NULL, PRIMARY KEY(user_id, day)
+);
+CREATE TABLE IF NOT EXISTS business_products (
+  id INTEGER PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', price TEXT NOT NULL DEFAULT '',
+  image TEXT NOT NULL DEFAULT '', link TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS business_photos (
+  id INTEGER PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  path TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS business_hours (
+  business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, dow INTEGER NOT NULL,
+  open_time TEXT NOT NULL DEFAULT '', close_time TEXT NOT NULL DEFAULT '', PRIMARY KEY(business_id, dow)
+);
+CREATE TABLE IF NOT EXISTS business_follows (
+  business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL, PRIMARY KEY(business_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS business_posts (
+  id INTEGER PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE, created_at TEXT NOT NULL, UNIQUE(business_id, post_id)
+);
+CREATE TABLE IF NOT EXISTS notification_prefs (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, category TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1, sound INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id, category)
+);
+CREATE INDEX IF NOT EXISTS idx_biz_products ON business_products(business_id, position);
+CREATE INDEX IF NOT EXISTS idx_biz_follows_user ON business_follows(user_id);
+CREATE INDEX IF NOT EXISTS idx_biz_posts ON business_posts(business_id);
 """
 
 
 def initialize_database() -> None:
     with connect() as db:
         db.executescript(SCHEMA)
+        # FITVERSE 4.0 additive columns (idempotent)
+        for col, typ in [("owner_id", "INTEGER"), ("tagline", "TEXT"), ("website", "TEXT"), ("phone", "TEXT"), ("address", "TEXT"), ("lat", "REAL"), ("lng", "REAL"), ("cover", "TEXT"), ("logo", "TEXT"), ("hours_note", "TEXT"), ("verified", "INTEGER DEFAULT 0")]:
+            try: db.execute(f"ALTER TABLE businesses ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError: pass
+        for col, typ in [("media_url", "TEXT"), ("media_type", "TEXT"), ("is_public", "INTEGER DEFAULT 1"), ("biz_channel", "INTEGER")]:
+            try: db.execute(f"ALTER TABLE posts ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError: pass
+        for col, typ in [("link_url", "TEXT"), ("payload", "TEXT")]:
+            try: db.execute(f"ALTER TABLE notifications ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError: pass
         stamp = now()
         db.executemany("INSERT OR IGNORE INTO achievements (id,code,name,description,icon) VALUES (?,?,?,?,?)", [
             (1,"first_activity","First Activity","Complete your first activity.","⚡"),
@@ -994,6 +1060,19 @@ class FitverseHandler(BaseHTTPRequestHandler):
         if path == "/api/notifications":
             with connect() as db: rows=db.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC",(self.current_user(),)).fetchall()
             return self.send_json(200,{"items":[dict(r) for r in rows]})
+        if path == "/api/notifications/center":
+            import platform_service
+            return self.send_json(200, platform_service.list_notifications(self.current_user()))
+        if path == "/api/notifications/prefs":
+            import platform_service
+            with connect() as db:
+                prefs = platform_service.get_prefs(db, self.current_user())
+            return self.send_json(200, {"prefs": prefs})
+        if path == "/api/businesses/mine":
+            uid = self.current_user()
+            with connect() as db:
+                rows = db.execute("SELECT * FROM businesses WHERE owner_id=? ORDER BY id", (uid,)).fetchall()
+            return self.send_json(200, {"items": [dict(r) for r in rows]})
         if path == "/api/messages":
             with connect() as db: rows=db.execute("SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=1 ORDER BY m.id",()).fetchall()
             return self.send_json(200,{"items":[dict(r) for r in rows]})
@@ -1043,6 +1122,33 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 import traceback; traceback.print_exc()
                 print(f"[stream] error: {exc!r}", flush=True)
                 return
+        if path == "/api/health/integrations":
+            import platform_service
+            return self.send_json(200, platform_service.connections_status(self.current_user()))
+        if path == "/api/health/overview":
+            import platform_service
+            return self.send_json(200, platform_service.unified_overview(self.current_user()))
+        if path == "/api/health/cardio":
+            import platform_service
+            return self.send_json(200, platform_service.cardio_analysis(self.current_user()))
+        if path == "/api/health/recommendation":
+            import platform_service
+            return self.send_json(200, platform_service.recommendation(self.current_user()))
+        if path == "/api/health/nutrition":
+            import platform_service
+            return self.send_json(200, platform_service.nutrition_intelligence(self.current_user()))
+        if path == "/api/health/strava/callback":
+            import platform_service
+            from urllib.parse import parse_qs
+            qs = parse_qs(query)
+            code = (qs.get("code") or [""])[0]
+            if not code: return self.send_json(400, {"error": "Missing OAuth code"})
+            r = platform_service.strava_exchange(self.current_user(), code)
+            ok = "✅ Strava connected and synced." if r.get("ok") else "❌ " + r.get("error", "Connection failed")
+            html = ("<!doctype html><meta charset='utf-8'><title>FITVERSE</title><style>body{font-family:system-ui;display:grid;place-items:center;height:100vh;background:#f6faf7;color:#0b1711}b{color:#3f6212}</style>"
+                    f"<div style='text-align:center'><div style='font-size:40px'>🏃</div><b>{ok}</b><p style='color:#647068'>You can close this tab and return to FITVERSE.</p>"
+                    "<script>setTimeout(()=>window.close(),2500)</script></div>")
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(html.encode()); return
         if path == "/api/notifications/since":
             since=int(urlparse(self.path).query.split("since=")[-1].split("&")[0] or 0)
             with connect() as db:
@@ -1172,6 +1278,17 @@ class FitverseHandler(BaseHTTPRequestHandler):
             item=dict(b)
             if not item.get("photo"): item["photo"]={"Gym":"gym.jpg","Sports academy":"basketball.jpg","Yoga studio":"yoga.jpg","Cycling shop":"cycling.jpg","Powerlifting gym":"gym.jpg","Running store":"running.jpg","Swim school":"workout.jpg","Climbing gym":"gym.jpg"}.get(item["category"], "workout.jpg")
             item["reviews"]=reviews
+            uid = self.current_user()
+            with connect() as db:
+                item["is_owner"] = bool(item.get("owner_id") and item["owner_id"] == uid)
+                item["is_following"] = bool(db.execute("SELECT 1 FROM business_follows WHERE business_id=? AND user_id=?",(bid,uid)).fetchone())
+                item["followers"] = db.execute("SELECT count(*) FROM business_follows WHERE business_id=?",(bid,)).fetchone()[0]
+                item["products"] = [dict(r) for r in db.execute("SELECT * FROM business_products WHERE business_id=? ORDER BY position,id",(bid,))]
+                item["photos"] = [r["path"] for r in db.execute("SELECT path FROM business_photos WHERE business_id=? ORDER BY position,id",(bid,))]
+                item["hours"] = {str(r["dow"]): [r["open_time"],r["close_time"]] for r in db.execute("SELECT * FROM business_hours WHERE business_id=?",(bid,))}
+                item["channel_posts"] = [dict(r) for r in db.execute("""SELECT p.id,p.body,p.media_url,p.media_type,p.created_at,u.name AS author_name
+                    FROM business_posts bp JOIN posts p ON p.id=bp.post_id JOIN users u ON u.id=p.author_id
+                    WHERE bp.business_id=? ORDER BY bp.id DESC LIMIT 20""",(bid,))]
             return self.send_json(200,{"item":item})
         if path.startswith("/api/athletes/"):
             aid=int(path.split("/")[3]); uid=self.current_user()
@@ -1837,6 +1954,143 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     if kind=="unblock": db.execute("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?",(uid,bid))
                     else: db.execute("INSERT OR REPLACE INTO blocks (blocker_id,blocked_id,kind,created_at) VALUES (?,?,?,?)",(uid,bid,kind,now()))
                 return self.send_json(200,{"ok":True})
+            # ===== FITVERSE 4.0 routes =====
+            if path == "/api/notifications/prefs":
+                import platform_service
+                cat = str(data.get("category","")).strip()
+                if cat not in [c for c, _ in platform_service.DEFAULT_CATEGORIES]:
+                    return self.send_json(400,{"error":"Unknown notification category"})
+                field = "sound" if data.get("field")=="sound" else "enabled"
+                val = 1 if data.get("enabled", True) else 0
+                with connect() as db:
+                    platform_service.ensure_prefs(db, self.current_user())
+                    db.execute(f"UPDATE notification_prefs SET {field}=? WHERE user_id=? AND category=?",(val,self.current_user(),cat))
+                return self.send_json(200,{"ok":True})
+            if path == "/api/businesses":
+                uid=self.current_user()
+                name=str(data.get("name","")).strip()[:100]; category=str(data.get("category","Gym")).strip()[:40]
+                if not name: return self.send_json(400,{"error":"Business name is required"})
+                with connect() as db:
+                    cur=db.execute("""INSERT INTO businesses (name,category,location_label,description,rating,owner_id,tagline,website,phone,address,lat,lng,cover,logo,hours_note,created_at)
+                                     VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (name,category,str(data.get("location_label","Chennai")).strip()[:80],str(data.get("description","")).strip()[:1200],uid,
+                         str(data.get("tagline","")).strip()[:120] or None,str(data.get("website","")).strip()[:200] or None,
+                         str(data.get("phone","")).strip()[:30] or None,str(data.get("address","")).strip()[:200] or None,
+                         float(data["lat"]) if data.get("lat") not in (None,"") else None,
+                         float(data["lng"]) if data.get("lng") not in (None,"") else None,
+                         str(data.get("cover","")).strip()[:300] or None,str(data.get("logo","")).strip()[:300] or None,
+                         str(data.get("hours_note","")).strip()[:140] or None,now()))
+                    bid=cur.lastrowid
+                return self.send_json(201,{"ok":True,"id":bid})
+            if path.startswith("/api/businesses/") and path.endswith("/edit"):
+                uid=self.current_user(); bid=int(path.split("/")[3])
+                with connect() as db:
+                    b=db.execute("SELECT owner_id FROM businesses WHERE id=?",(bid,)).fetchone()
+                    if not b or b["owner_id"]!=uid: return self.send_json(403,{"error":"Only the business owner can edit"})
+                    fields=[]; vals=[]
+                    for k in ("name","category","location_label","description","tagline","website","phone","address","hours_note"):
+                        if k in data: fields.append(f"{k}=?"); vals.append(str(data[k]).strip()[:1200] or None)
+                    for k in ("lat","lng"):
+                        if k in data: fields.append(f"{k}=?"); vals.append(float(data[k]) if data[k] not in (None,"") else None)
+                    for k in ("cover","logo"):
+                        if k in data: fields.append(f"{k}=?"); vals.append(str(data[k]).strip()[:300] or None)
+                    if fields: db.execute(f"UPDATE businesses SET {', '.join(fields)} WHERE id=?",(*vals,bid))
+                return self.send_json(200,{"ok":True})
+            if path.startswith("/api/businesses/") and path.endswith("/products"):
+                uid=self.current_user(); bid=int(path.split("/")[3])
+                name=str(data.get("name","")).strip()[:120]
+                if not name: return self.send_json(400,{"error":"Product name is required"})
+                with connect() as db:
+                    b=db.execute("SELECT owner_id FROM businesses WHERE id=?",(bid,)).fetchone()
+                    if not b or b["owner_id"]!=uid: return self.send_json(403,{"error":"Only the business owner can add products"})
+                    db.execute("INSERT INTO business_products (business_id,name,description,price,image,link,position,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                        (bid,name,str(data.get("description","")).strip()[:600],str(data.get("price","")).strip()[:40],str(data.get("image","")).strip()[:300],str(data.get("link","")).strip()[:300],int(data.get("position",0)),now()))
+                return self.send_json(201,{"ok":True})
+            if path.startswith("/api/businesses/") and path.endswith("/products/delete"):
+                uid=self.current_user(); bid=int(path.split("/")[3]); pid=int(data.get("product_id",0))
+                with connect() as db:
+                    b=db.execute("SELECT owner_id FROM businesses WHERE id=?",(bid,)).fetchone()
+                    if not b or b["owner_id"]!=uid: return self.send_json(403,{"error":"Only the business owner can remove products"})
+                    db.execute("DELETE FROM business_products WHERE id=? AND business_id=?",(pid,bid))
+                return self.send_json(200,{"ok":True})
+            if path.startswith("/api/businesses/") and path.endswith("/photos"):
+                uid=self.current_user(); bid=int(path.split("/")[3]); p=str(data.get("path","")).strip()[:300]
+                if not p: return self.send_json(400,{"error":"Photo path is required"})
+                with connect() as db:
+                    b=db.execute("SELECT owner_id FROM businesses WHERE id=?",(bid,)).fetchone()
+                    if not b or b["owner_id"]!=uid: return self.send_json(403,{"error":"Only the business owner can add photos"})
+                    db.execute("INSERT INTO business_photos (business_id,path,position,created_at) VALUES (?,?,?,?)",(bid,p,0,now()))
+                return self.send_json(201,{"ok":True})
+            if path.startswith("/api/businesses/") and path.endswith("/hours"):
+                uid=self.current_user(); bid=int(path.split("/")[3]); hours=data.get("hours",{})
+                with connect() as db:
+                    b=db.execute("SELECT owner_id FROM businesses WHERE id=?",(bid,)).fetchone()
+                    if not b or b["owner_id"]!=uid: return self.send_json(403,{"error":"Only the business owner can set hours"})
+                    db.execute("DELETE FROM business_hours WHERE business_id=?",(bid,))
+                    for d,v in (hours.items() if isinstance(hours,dict) else []):
+                        try: dow=int(d)
+                        except Exception: continue
+                        if isinstance(v,(list,tuple)) and len(v)>=2:
+                            db.execute("INSERT OR REPLACE INTO business_hours (business_id,dow,open_time,close_time) VALUES (?,?,?,?)",(bid,dow,str(v[0])[:8],str(v[1])[:8]))
+                return self.send_json(200,{"ok":True})
+            if path.startswith("/api/businesses/") and path.endswith("/follow"):
+                uid=self.current_user(); bid=int(path.split("/")[3])
+                with connect() as db:
+                    if db.execute("SELECT 1 FROM business_follows WHERE business_id=? AND user_id=?",(bid,uid)).fetchone():
+                        db.execute("DELETE FROM business_follows WHERE business_id=? AND user_id=?",(bid,uid))
+                        followed=False
+                    else:
+                        db.execute("INSERT INTO business_follows (business_id,user_id,created_at) VALUES (?,?,?)",(bid,uid,now()))
+                        followed=True
+                return self.send_json(200,{"ok":True,"following":followed})
+            if path.startswith("/api/businesses/") and path.endswith("/post"):
+                import platform_service
+                uid=self.current_user(); bid=int(path.split("/")[3]); body=str(data.get("body","")).strip()[:2000]
+                if not body: return self.send_json(400,{"error":"Post content is required"})
+                with connect() as db:
+                    b=db.execute("SELECT owner_id FROM businesses WHERE id=?",(bid,)).fetchone()
+                    if not b or b["owner_id"]!=uid: return self.send_json(403,{"error":"Only the business owner can post"})
+                    cur=db.execute("INSERT INTO posts (author_id,body,kind,media_url,media_type,created_at) VALUES (?,?,?,?,?,?)",
+                        (uid,body[:2000],"business",str(data.get("media_url","")).strip()[:300] or None,"image" if data.get("media_url") else None,now()))
+                    db.execute("INSERT INTO business_posts (business_id,post_id,created_at) VALUES (?,?,?)",(bid,cur.lastrowid,now()))
+                    for (fid,) in db.execute("SELECT user_id FROM business_follows WHERE business_id=?",(bid,)).fetchall():
+                        if fid!=uid: platform_service.notify(db,fid,"business","📣 " + (db.execute("SELECT name FROM businesses WHERE id=?",(bid,)).fetchone()["name"]), body[:120], f"business/{bid}")
+                return self.send_json(201,{"ok":True})
+            if path == "/api/health/strava/connect":
+                import platform_service
+                st = platform_service.strava_status(self.current_user())
+                if not st["configured"]: return self.send_json(501,{"error":"Strava is not configured on this server yet.","missing":st["missing"],"how":"Create a free app at strava.com/settings/api, then set STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET and STRAVA_REDIRECT_URI as environment variables."})
+                return self.send_json(200,{"ok":True,"authorize_url":st["authorize_url"]})
+            if path == "/api/health/strava/sync":
+                import platform_service
+                return self.send_json(200, platform_service.strava_sync(self.current_user()))
+            if path == "/api/health/disconnect":
+                import platform_service
+                return self.send_json(200, platform_service.health_disconnect(self.current_user(), str(data.get("provider","strava"))[:20]))
+            if path == "/api/health/metrics":
+                uid=self.current_user()
+                day=str(data.get("day",now()[:10]))[:10]
+                try:
+                    vals=(int(data["steps"]) if data.get("steps") not in (None,"") else 0,
+                          int(data["sleep_min"]) if data.get("sleep_min") not in (None,"") else 0,
+                          int(data["resting_hr"]) if data.get("resting_hr") not in (None,"") else 0,
+                          float(data["weight_kg"]) if data.get("weight_kg") not in (None,"") else 0,
+                          int(data["hydration_ml"]) if data.get("hydration_ml") not in (None,"") else 0)
+                except Exception: return self.send_json(400,{"error":"Invalid metric values"})
+                with connect() as db:
+                    db.execute("""INSERT INTO daily_metrics (user_id,day,steps,sleep_min,resting_hr,weight_kg,hydration_ml,source,updated_at)
+                                  VALUES (?,?,?,?,?,?,?,?,?)
+                                  ON CONFLICT(user_id,day) DO UPDATE SET steps=excluded.steps,sleep_min=excluded.sleep_min,
+                                    resting_hr=excluded.resting_hr,weight_kg=excluded.weight_kg,hydration_ml=excluded.hydration_ml,updated_at=excluded.updated_at""",
+                               (uid,day,*vals,"manual",now()))
+                return self.send_json(200,{"ok":True})
+            if path == "/api/ai/companion":
+                import platform_service
+                r = platform_service.chat_reply(self.current_user(), str(data.get("message","")), data.get("conversationId"))
+                return self.send_json(200, r)
+            if path == "/api/ai/daily":
+                import platform_service
+                return self.send_json(200, platform_service.daily_companion(self.current_user()))
             return self.send_json(404,{"error":"Unknown API route"})
         except ValueError as error: self.send_json(400,{"error":str(error)})
         except Exception as error:
