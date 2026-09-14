@@ -1,0 +1,2 @@
+# FITVERSE runs entirely on the Python standard library — no third-party packages.
+# This file exists so Render's default `pip install -r requirements.txt` build step succeeds.

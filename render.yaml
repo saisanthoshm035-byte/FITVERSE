@@ -4,6 +4,6 @@ services:
     name: fitverse
     runtime: python
     plan: free
-    buildCommand: ""          # stdlib only — nothing to install
+    buildCommand: pip install -r requirements.txt   # comment-only file: zero deps, always succeeds
     startCommand: python server.py
     healthCheckPath: /api/health
