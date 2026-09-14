@@ -666,6 +666,18 @@ def chat_reply(uid: int, message: str, conversation_id: int | None = None) -> di
         kind = "ai" if reply else "brief"
 
     if not reply:
+        # FITVERSE engine v5: composes the answer from the user's real data,
+        # detected constraints, and constraints stated earlier in this chat —
+        # rotating phrasings and topic-relevant details instead of canned text.
+        try:
+            import ai_engine
+            prior_user_text = " . ".join(h["content"] for h in history if h["role"] == "user")[-800:]
+            remembered = ai_engine.extract_constraints(prior_user_text) if prior_user_text else {}
+            reply, kind, _ = ai_engine.composed_reply(uid, q, history, remembered)
+        except Exception:
+            reply, kind = None, "brief"
+
+    if not reply:
         reply = _knowledge_reply(q, ctx, uid) or ""
         kind = "knowledge" if reply else "fallback"
 
