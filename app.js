@@ -80,7 +80,7 @@ function notifSound() {
   } catch (_) {}
 }
 const timeShort = (iso) => { try { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { return iso; } };
-const nav = [['home', '◈', 'Home'], ['intelligence', '🧬', 'Fitness DNA'], ['discover', '⌕', 'Discover'], ['posts', '▶', 'Posts & Reels'], ['workout', '🏋', 'Workout'], ['nutrition', '🍽', 'Nutrition'], ['progress', '📈', 'Progress'], ['challenges', '◉', 'Challenges'], ['communities', '◌', 'Communities'], ['events', '◫', 'Events'], ['messages', '✉', 'Messages'], ['friends', '👥', 'Friends'], ['coach', '✦', 'AI Coach'], ['businesses', '▦', 'Businesses']];
+const nav = [['home', '◈', 'Home'], ['intelligence', '🧬', 'Fitness DNA'], ['connectHealth', '🔌', 'Health Data'], ['discover', '⌕', 'Discover'], ['posts', '▶', 'Posts & Reels'], ['workout', '🏋', 'Workout'], ['nutrition', '🍽', 'Nutrition'], ['progress', '📈', 'Progress'], ['challenges', '◉', 'Challenges'], ['communities', '◌', 'Communities'], ['events', '◫', 'Events'], ['messages', '✉', 'Messages'], ['friends', '👥', 'Friends'], ['coach', '✦', 'AI Coach'], ['businesses', '▦', 'Businesses']];
 const mobileNav = [['home', '⌂'], ['discover', '⌕'], ['workout', '🏋'], ['nutrition', '🍽'], ['profile', '●']];
 const unread = () => pageData.notifications.filter(n => !n.is_read).length;
 // ---- free live APIs: weather (open-meteo), air quality (open-meteo), quotes (zenquotes), wikipedia ----
