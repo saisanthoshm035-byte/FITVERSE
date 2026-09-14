@@ -28,6 +28,30 @@ async function api(path, options = {}) {
   return data;
 }
 const escapeHtml = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+// Parse Google Takeout Fit export .json files into per-day {day, steps, distance_km}.
+async function parseTakeoutFiles(files) {
+  const days = {};
+  for (const f of files) {
+    if (!/\.json$/i.test(f.name)) continue;
+    try {
+      const j = JSON.parse(await f.text());
+      for (const b of (j.bucket || [])) {
+        const day = new Date(Number(b.startTimeMillis)).toISOString().slice(0, 10);
+        if (!days[day]) days[day] = { steps: 0, distance_km: 0 };
+        for (const ds of (b.dataset || [])) {
+          const id = ds.dataSourceId || '';
+          for (const pt of (ds.point || [])) {
+            const v = (pt.value || [])[0] || {};
+            if (id.includes('step_count') && v.intVal != null) days[day].steps += v.intVal;
+            if (id.includes('distance') && v.fpVal != null) days[day].distance_km += v.fpVal / 1000;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+  return Object.entries(days).filter(([, v]) => v.steps || v.distance_km)
+    .map(([day, v]) => ({ day, steps: Math.round(v.steps), distance_km: Math.round(v.distance_km * 100) / 100 }));
+}
 const avatar = (name, tone = 'coral') => `<div class="avatar ${tone}">${escapeHtml(String(name || '?').split(' ').map(x => x[0]).join('').slice(0, 2))}</div>`;
 const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600); };
 const inr = (n) => (n > 0 ? `₹${Number(n).toLocaleString('en-IN')}` : 'Free');
@@ -396,7 +420,7 @@ function profile() {
   const unlocked = pageData.achievements.filter(a => a.unlocked_at).length;
   return shell(`${pageHeader('Your profile', 'Your progress tells a story.')}
 <section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Sai Kumar')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'saikumar')} · ${escapeHtml(p.city || 'Chennai')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
-<a class="pill lime" data-page="connectHealth" style="cursor:pointer;text-decoration:none;display:inline-block;margin:0 0 14px">🔌 Connect Health Data — Strava, steps, sleep →</a>
+<a class="pill lime" data-page="connectHealth" style="cursor:pointer;text-decoration:none;display:inline-block;margin:0 0 14px">🔌 Connect Health Data — Google Fit, steps, sleep →</a>
 <div id="ptab-posts">${pageData.feed.filter(x => x.username === p.username).map(postCard).join('') || '<p class="loading">No posts yet — create one from the ＋ button.</p>'}</div>
 <div id="ptab-friends" style="display:none">${pageData.friends.map(f => `<article class="person-card" style="max-width:420px"><div class="person-info" style="padding:14px">${avatar(f.name, 'teal')}<h3>${escapeHtml(f.name)} <i>✓</i></h3><p>@${escapeHtml(f.username)} · ${escapeHtml(f.status)}</p></div></article>`).join('') || '<p class="loading">No friends yet — find matches on Discover.</p>'}</div>
 <div id="ptab-achievements" style="display:none"><div class="achievement-row">${pageData.achievements.map(a => `<article class="${a.unlocked_at ? '' : 'locked'}" style="${a.unlocked_at ? '' : 'opacity:.45'}"><span>${a.icon}</span><b>${escapeHtml(a.name)}</b><small>${escapeHtml(a.description)}</small></article>`).join('')}</div><p class="loading">${unlocked}/${pageData.achievements.length} unlocked</p></div>`);
@@ -646,7 +670,7 @@ function connectHealth() {
   const ov = pageData.healthOverview || {};
   const cardio = pageData.healthCardio || {};
   const rec = pageData.healthRec || {};
-  const strava = integ.items.find(i => i.provider === 'strava') || {};
+  const gf = integ.items.find(i => i.provider === 'google_fit') || {};
   const hc = integ.items.find(i => i.provider === 'health_connect') || { connected: false };
   const s = ov.today || {};
   const week = ov.week || {};
@@ -658,12 +682,19 @@ function connectHealth() {
   return shell(`${pageHeader('Connect Health Data', 'Bring your real training data into FITVERSE — always your choice, always private.')}
 <section class="hc-hero"><div><span class="pill lime">🔒 PRIVATE BY DESIGN</span><h2>Your data, <em>your control.</em></h2><p>Health data stays on your account, is never public, and is used only for your own insights. Disconnect anytime to delete synced data.</p></div></section>
 <section class="hc-connections">
-  <article class="hc-card ${strava.connected ? 'connected' : ''}"><div class="hc-card-head"><span class="hc-logo">🏃</span><div><h3>Strava</h3><p>${strava.connected ? 'Connected' + (strava.last_synced_at ? ' · last synced ' + timeShort(strava.last_synced_at) : '') : 'Sync runs, rides and walks with distance, pace, elevation and heart rate where available.'}</p></div>${strava.connected ? '<span class="hc-state on">Connected</span>' : '<span class="hc-state">Not connected</span>'}</div>
-    ${strava.connected
-      ? `<div class="hc-actions"><button class="primary small" data-action="stravaSync">Sync now</button><button class="outline small" data-action="stravaDisconnect">Disconnect</button></div>`
-      : strava.configured
-        ? `<div class="hc-actions"><button class="primary small" data-action="stravaConnect">Connect Strava</button><small class="hc-scope">You'll approve read-only access to your activities on Strava's own site.</small></div>`
-        : `<div class="hc-setup"><p><b>Strava connection isn't configured on this server yet.</b></p><p>To enable it (free): create an API app at <span class="code">strava.com/settings/api</span>, then set these environment variables and restart:</p><ul><li><span class="code">STRAVA_CLIENT_ID</span></li><li><span class="code">STRAVA_CLIENT_SECRET</span></li><li><span class="code">STRAVA_REDIRECT_URI</span> <small>(your site URL + /api/health/strava/callback)</small></li></ul><p class="hc-note">FITVERSE never fakes health data — until configured, this shows the honest setup state.</p></div>`}
+  <article class="hc-card ${gf.connected ? 'connected' : ''}"><div class="hc-card-head"><span class="hc-logo">❤️</span><div><h3>Google Fit</h3><p>${gf.connected ? 'Connected' + (gf.last_synced_at ? ' · last synced ' + timeShort(gf.last_synced_at) : '') : 'Free, read-only connection to your Google Fit workouts — runs, walks, rides and training sessions. Sign in with Google; revoke anytime.'}</p></div>${gf.connected ? '<span class="hc-state on">Connected</span>' : '<span class="hc-state">Not connected</span>'}</div>
+    ${gf.connected
+      ? `<div class="hc-actions"><button class="primary small" data-action="googleSync">Sync now</button><button class="outline small" data-action="googleDisconnect">Disconnect</button></div>`
+      : gf.configured
+        ? `<div class="hc-actions"><button class="primary small" data-action="googleConnect">Connect Google Fit</button><small class="hc-scope">You'll approve read-only fitness access on Google's own sign-in page.</small></div>`
+        : `<div class="hc-setup"><p><b>One-tap sign-in isn't configured on this server yet</b> — but you have two free ways to bring real data in:</p>
+            <p><b>Way 1 · zero setup, works right now:</b> import your history with the Google Takeout importer below 👇</p>
+            <p><b>Way 2 · full auto-sync (free, ~5 min):</b> at <span class="code">console.cloud.google.com</span> create a project → enable <b>Fitness API</b> → create an OAuth client (Web) with redirect <span class="code">${location.origin}/api/health/google/callback</span> → set <span class="code">GOOGLE_FIT_CLIENT_ID</span> and <span class="code">GOOGLE_FIT_CLIENT_SECRET</span>.</p>
+            <p class="hc-note">FITVERSE never fakes health data — real data only arrives through these two paths.</p></div>`}
+  </article>
+  <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">📥</span><div><h3>Import from Google Takeout</h3><p>No accounts, no setup: export your Google Fit history from Google and upload it here. Works instantly on desktop and mobile.</p></div></div>
+    <div class="hc-actions"><label class="hc-import-btn">📎 Choose Takeout file(s)<input id="takeout-input" type="file" accept=".json" multiple style="display:none"/></label><small class="hc-scope">From <span class="code">takeout.google.com</span> → select only <b>Fit</b> → export → unzip → pick the .json files.</small></div>
+    <p class="hc-note" id="takeout-status"></p>
   </article>
   <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">🤖</span><div><h3>Health Connect (Android)</h3><p>Steps, sleep, heart rate, hydration and more — from your phone's health hub.</p></div>${hc.connected ? '<span class="hc-state on">Connected</span>' : '<span class="hc-state">Bridge pending</span>'}</div>
     <div class="hc-setup"><p>Health Connect is a device-local Android API — a web page can't read it directly. FITVERSE's data model, sync pipeline and this UI are <b>ready</b>; the remaining step is the native Android bridge (FITVERSE app) that will pass your data through with your explicit permission per type.</p><p class="hc-note">In the meantime you can log weight, steps and hydration manually below — it feeds the same insights.</p></div>
@@ -672,7 +703,7 @@ function connectHealth() {
 <section class="hc-section"><div class="section-head"><div><span class="eyebrow">UNIFIED VIEW</span><h2>Your fitness data today</h2></div></div>
   <div class="hc-stats wide"><div><b>${ov.streak ?? 0}</b><small>day streak</small></div><div><b>${week.sessions ?? 0}</b><small>workouts this week</small></div><div><b>${week.kcal ?? 0}</b><small>kcal burned (7d)</small></div><div><b>${s.kcal ?? 0}<em>/${s.kcal_target || '—'}</em></b><small>kcal today</small></div><div><b>${s.protein ?? 0}<em>/${s.protein_target || '—'}g</em></b><small>protein today</small></div><div><b>${s.water_ml != null ? (s.water_ml / 1000).toFixed(1) : '—'}<em>/${s.water_target_ml ? (s.water_target_ml / 1000).toFixed(1) : '—'}L</em></b><small>hydration</small></div></div>
 </section>
-<section class="hc-section"><div class="section-head"><div><span class="eyebrow">CARDIO ANALYSIS</span><h2>Heart & legs, in numbers</h2></div><small class="hc-note">From your logged distance workouts${strava.connected ? ' + Strava' : ''}</small></div>
+<section class="hc-section"><div class="section-head"><div><span class="eyebrow">CARDIO ANALYSIS</span><h2>Heart & legs, in numbers</h2></div><small class="hc-note">From your logged distance workouts${gf.connected ? ' + Google Fit' : ''}</small></div>
   ${cardioBody}
 </section>
 <section class="hc-section"><div class="section-head"><div><span class="eyebrow">SMART RECOMMENDATION</span><h2>Today's smart suggestion</h2></div></div>
@@ -1061,6 +1092,21 @@ function bind() {
     try { await api('/api/health/metrics', { method: 'POST', body: JSON.stringify(f) }); toast('Saved — your unified view updates instantly'); }
     catch (err) { toast(err.message); }
   };
+  // FITVERSE 4.0: Google Takeout import (zero-setup real health data)
+  const ti = $('#takeout-input');
+  if (ti) ti.onchange = async () => {
+    const st = $('#takeout-status');
+    if (!ti.files || !ti.files.length) return;
+    try {
+      if (st) st.textContent = 'Parsing your export…';
+      const days = await parseTakeoutFiles([...ti.files]);
+      if (!days.length) { if (st) st.textContent = 'No Google Fit data found in those files — pick the .json files from a Fit export.'; return; }
+      if (st) st.textContent = `Importing ${days.length} days…`;
+      const r = await api('/api/health/import/takeout', { method: 'POST', body: JSON.stringify({ days }) });
+      if (st) st.textContent = `✅ Imported ${r.days} days of steps and ${r.activities} days of distance.`;
+      toast('Google Fit data imported');
+    } catch (e) { if (st) st.textContent = e.message; }
+  };
   // FITVERSE 4.0: business channel Leaflet map (free OpenStreetMap tiles, no API key)
   const mapEl = $('#biz-map');
   if (mapEl && !mapEl._init && window.L) {
@@ -1439,30 +1485,30 @@ async function action(a, btn) {
       return;
     }
     case 'dailyPlan': case 'dailyCoach': $('#modal').innerHTML = ''; state.page = 'coach'; render(); loadPageData('coach'); window.scrollTo(0, 0); return;
-    case 'stravaConnect': {
+    case 'googleConnect': {
       (async () => {
         try {
-          const r = await api('/api/health/strava/connect', { method: 'POST', body: '{}' });
-          if (r.authorize_url) { toast('Opening Strava authorization…'); window.location.href = r.authorize_url; }
+          const r = await api('/api/health/google/connect', { method: 'POST', body: '{}' });
+          if (r.authorize_url) { toast('Opening Google sign-in…'); window.location.href = r.authorize_url; }
         } catch (err) {
-          modal(`<span class="eyebrow">STRAVA</span><h2>Setup needed</h2><p>Strava connection isn't configured on this server yet. It's free:</p><ol style="line-height:1.9"><li>Create an API application at <b>strava.com/settings/api</b> (authorization callback: <span class="code">${location.origin}/api/health/strava/callback</span>)</li><li>Set environment variables: <span class="code">STRAVA_CLIENT_ID</span>, <span class="code">STRAVA_CLIENT_SECRET</span>, <span class="code">STRAVA_REDIRECT_URI</span></li><li>Restart FITVERSE and connect again</li></ol><p class="muted">FITVERSE doesn't fake health data — without your real Strava authorization there's nothing to show.</p><button class="outline" data-action="closeModal">Got it</button>`);
+          modal(`<span class="eyebrow">GOOGLE FIT</span><h2>Pick your path</h2><p><b>Right now, no setup:</b> scroll to <b>Import from Google Takeout</b> on the Health page — export from <span class="code">takeout.google.com</span> (select <b>Fit</b>) and upload the .json files.</p><p><b>Full auto-sync (free):</b> at <span class="code">console.cloud.google.com</span> enable the Fitness API, create an OAuth web client with redirect <span class="code">${location.origin}/api/health/google/callback</span>, then set <span class="code">GOOGLE_FIT_CLIENT_ID</span> and <span class="code">GOOGLE_FIT_CLIENT_SECRET</span> on the server and restart.</p><p class="muted">FITVERSE never fakes health data — these are the two real paths.</p><button class="outline" data-action="closeModal">Got it</button>`);
           bind();
         }
       })();
       return;
     }
-    case 'stravaSync': {
+    case 'googleSync': {
       (async () => {
-        try { toast('Syncing Strava…'); const r = await api('/api/health/strava/sync', { method: 'POST', body: '{}' });
-          toast(r.ok ? `Synced — ${r.fetched} activities found` : r.error || 'Sync failed');
+        try { toast('Syncing Google Fit…'); const r = await api('/api/health/google/sync', { method: 'POST', body: '{}' });
+          toast(r.ok ? `Synced — ${r.fetched} sessions found` : r.error || 'Sync failed');
           await loadPageData('connectHealth'); render();
         } catch (e) { toast(e.message); }
       })();
       return;
     }
-    case 'stravaDisconnect': {
+    case 'googleDisconnect': {
       (async () => {
-        try { await api('/api/health/disconnect', { method: 'POST', body: JSON.stringify({ provider: 'strava' }) }); toast('Strava disconnected — synced data deleted'); await loadPageData('connectHealth'); render(); }
+        try { await api('/api/health/disconnect', { method: 'POST', body: JSON.stringify({ provider: 'google_fit' }) }); toast('Google Fit disconnected — synced data deleted'); await loadPageData('connectHealth'); render(); }
         catch (e) { toast(e.message); }
       })();
       return;

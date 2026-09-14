@@ -8,7 +8,7 @@ Honesty rules enforced throughout:
 - No fake health data. If an integration lacks credentials, the API reports
   exactly what configuration is missing.
 - No medical claims. All guidance is general fitness/wellness advice.
-- Strava tokens are stored server-side and never sent to the frontend.
+- Google Fit tokens are stored server-side and never sent to the frontend.
 - Optional LLM: only used when FITVERSE_LLM_API / FITVERSE_LLM_KEY env vars are
   set (OpenAI-compatible). Everything degrades gracefully to the deterministic
   engine, which always works.
@@ -20,7 +20,7 @@ import os
 import sqlite3
 import urllib.request
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from server import connect, now  # shared DB helpers
 
@@ -87,138 +87,180 @@ def unread_count(uid: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Strava integration (OAuth authorization-code flow, server-side tokens)
+# Google Fit integration (free OAuth, read-only scope; tokens stay server-side)
 # ---------------------------------------------------------------------------
 
-def strava_config() -> dict:
+GOOGLE_ACTIVITY_NAMES = {1: "Cycling", 7: "Walking", 8: "Running", 10: "Hiking",
+                         28: "Aerobics", 82: "Swimming (open water)", 83: "Swimming (pool)",
+                         88: "Treadmill", 96: "Rowing", 103: "Strength training",
+                         106: "Stair climbing", 109: "Yoga", 119: "Basketball", 120: "Soccer"}
+
+
+def google_fit_config(base_url: str = "") -> dict:
+    env_redirect = os.environ.get("GOOGLE_FIT_REDIRECT_URI", "")
     return {
-        "client_id": os.environ.get("STRAVA_CLIENT_ID", ""),
-        "client_secret": os.environ.get("STRAVA_CLIENT_SECRET", ""),
-        "redirect_uri": os.environ.get("STRAVA_REDIRECT_URI", ""),
+        "client_id": os.environ.get("GOOGLE_FIT_CLIENT_ID", ""),
+        "client_secret": os.environ.get("GOOGLE_FIT_CLIENT_SECRET", ""),
+        "redirect_uri": env_redirect or ((base_url.rstrip("/") + "/api/health/google/callback") if base_url else ""),
     }
 
 
-def strava_status(uid: int) -> dict:
-    cfg = strava_config()
+def google_fit_status(uid: int, base_url: str = "") -> dict:
+    cfg = google_fit_config(base_url)
     with connect() as db:
         row = db.execute(
-            "SELECT status,scopes,connected_at,last_synced_at,external_user_id FROM health_connections WHERE user_id=? AND provider='strava'",
+            "SELECT status,scopes,connected_at,last_synced_at FROM health_connections WHERE user_id=? AND provider='google_fit'",
             (uid,)).fetchone()
     connected = bool(row and row["status"] == "connected")
     return {
-        "provider": "strava",
+        "provider": "google_fit",
         "connected": connected,
         "configured": bool(cfg["client_id"] and cfg["client_secret"]),
-        "missing": [k for k, v in (("STRAVA_CLIENT_ID", cfg["client_id"]), ("STRAVA_CLIENT_SECRET", cfg["client_secret"]), ("STRAVA_REDIRECT_URI", cfg["redirect_uri"] or "auto")) if not v],
+        "missing": [k for k, v in (("GOOGLE_FIT_CLIENT_ID", cfg["client_id"]), ("GOOGLE_FIT_CLIENT_SECRET", cfg["client_secret"])) if not v],
         "scopes": row["scopes"] if row else "",
         "connected_at": row["connected_at"] if row else None,
         "last_synced_at": row["last_synced_at"] if row else None,
-        "authorize_url": _strava_authorize_url(cfg) if (cfg["client_id"] and cfg["client_secret"]) else None,
+        "authorize_url": _google_authorize_url(cfg) if (cfg["client_id"] and cfg["client_secret"] and cfg["redirect_uri"]) else None,
     }
 
 
-def _strava_authorize_url(cfg: dict) -> str:
+def _google_authorize_url(cfg: dict) -> str:
     params = urllib.parse.urlencode({
         "client_id": cfg["client_id"],
+        "redirect_uri": cfg["redirect_uri"],
         "response_type": "code",
-        "redirect_uri": cfg["redirect_uri"] or "",
-        "approval_prompt": "auto",
-        "scope": "read,activity:read_all",
+        "scope": "https://www.googleapis.com/auth/fitness.activity.read",
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
     })
-    return f"https://www.strava.com/oauth/authorize?{params}"
+    return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
 
 
-def strava_exchange(uid: int, code: str) -> dict:
+def google_fit_exchange(uid: int, code: str, base_url: str = "") -> dict:
     """Exchange an OAuth code for tokens. Tokens stay server-side."""
-    cfg = strava_config()
+    cfg = google_fit_config(base_url)
     if not (cfg["client_id"] and cfg["client_secret"]):
-        return {"ok": False, "error": "Strava is not configured on this server. Set STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET environment variables."}
+        return {"ok": False, "error": "Google Fit is not configured on this server. Set GOOGLE_FIT_CLIENT_ID and GOOGLE_FIT_CLIENT_SECRET environment variables."}
     data = urllib.parse.urlencode({
-        "client_id": cfg["client_id"], "client_secret": cfg["client_secret"],
-        "code": code, "grant_type": "authorization_code",
+        "code": code, "client_id": cfg["client_id"], "client_secret": cfg["client_secret"],
+        "redirect_uri": cfg["redirect_uri"], "grant_type": "authorization_code",
     }).encode()
     try:
-        req = urllib.request.Request("https://www.strava.com/oauth/token", data=data, method="POST")
+        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
         with urllib.request.urlopen(req, timeout=15) as resp:
             tok = json.loads(resp.read().decode())
     except Exception as exc:
-        return {"ok": False, "error": f"Strava token exchange failed: {exc}"}
-    scopes = "read,activity:read_all"
+        return {"ok": False, "error": f"Google token exchange failed: {exc}"}
     with connect() as db:
         db.execute(
             """INSERT INTO health_connections (user_id,provider,status,scopes,external_user_id,access_token,refresh_token,token_expires_at,connected_at,last_synced_at)
                VALUES (?,?,?,?,?,?,?,?,?,NULL)
                ON CONFLICT(user_id,provider) DO UPDATE SET status='connected',scopes=excluded.scopes,
-                 external_user_id=excluded.external_user_id,access_token=excluded.access_token,
-                 refresh_token=excluded.refresh_token,token_expires_at=excluded.token_expires_at""",
-            (uid, "strava", "connected", scopes, str(tok.get("athlete", {}).get("id", "")),
+                 access_token=excluded.access_token,refresh_token=excluded.refresh_token,
+                 token_expires_at=excluded.token_expires_at""",
+            (uid, "google_fit", "connected", "fitness.activity.read", "",
              tok.get("access_token", ""), tok.get("refresh_token", ""),
-             datetime.fromtimestamp(tok.get("expires_at", 0), tz=timezone.utc).isoformat(timespec="seconds") if tok.get("expires_at") else None,
-             now(), now()))
-    sync_stats = strava_sync(uid)
+             (datetime.now(timezone.utc) + timedelta(seconds=int(tok.get("expires_in", 3600)))).isoformat(timespec="seconds"), now()))
+    sync_stats = google_fit_sync(uid)
     return {"ok": True, "synced": sync_stats}
 
 
-def _strava_token(uid: int) -> str | None:
+def _google_token(uid: int) -> str | None:
     with connect() as db:
-        row = db.execute("SELECT access_token,refresh_token,token_expires_at FROM health_connections WHERE user_id=? AND provider='strava' AND status='connected'", (uid,)).fetchone()
+        row = db.execute("SELECT access_token,refresh_token,token_expires_at FROM health_connections WHERE user_id=? AND provider='google_fit' AND status='connected'", (uid,)).fetchone()
     if not row:
         return None
     exp = row["token_expires_at"]
     if exp:
         try:
             if datetime.fromisoformat(exp) <= datetime.now(timezone.utc) and row["refresh_token"]:
-                cfg = strava_config()
+                cfg = google_fit_config()
                 data = urllib.parse.urlencode({"client_id": cfg["client_id"], "client_secret": cfg["client_secret"], "grant_type": "refresh_token", "refresh_token": row["refresh_token"]}).encode()
-                req = urllib.request.Request("https://www.strava.com/oauth/token", data=data, method="POST")
+                req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     tok = json.loads(resp.read().decode())
                 with connect() as db:
-                    db.execute("UPDATE health_connections SET access_token=?,refresh_token=?,token_expires_at=? WHERE user_id=? AND provider='strava'",
+                    db.execute("UPDATE health_connections SET access_token=?,refresh_token=?,token_expires_at=? WHERE user_id=? AND provider='google_fit'",
                                (tok.get("access_token"), tok.get("refresh_token"),
-                                datetime.fromtimestamp(tok.get("expires_at", 0), tz=timezone.utc).isoformat(timespec="seconds"), uid))
+                                (datetime.now(timezone.utc) + timedelta(seconds=int(tok.get("expires_in", 3600)))).isoformat(timespec="seconds"), uid))
                 return tok.get("access_token")
         except Exception:
             pass
     return row["access_token"] or None
 
 
-def strava_sync(uid: int, per_page: int = 30) -> dict:
-    """Fetch authorized activities into health_activities (dedup by external id)."""
-    token = _strava_token(uid)
+def google_fit_sync(uid: int) -> dict:
+    """Fetch authorized Google Fit workout sessions into health_activities."""
+    token = _google_token(uid)
     if not token:
         return {"ok": False, "error": "Not connected"}
     try:
-        url = f"https://www.strava.com/api/v3/athlete/activities?per_page={per_page}"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        req = urllib.request.Request(
+            "https://www.googleapis.com/fitness/v1/users/me/sessions?maxResults=200",
+            headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=20) as resp:
-            acts = json.loads(resp.read().decode())
+            data = json.loads(resp.read().decode())
     except Exception as exc:
-        return {"ok": False, "error": f"Strava sync failed: {exc}"}
+        return {"ok": False, "error": f"Google Fit sync failed: {exc}"}
+    sessions = data.get("session", [])
     inserted = 0
     with connect() as db:
-        for a in acts:
+        for s in sessions:
+            start = s.get("startTime", "") or ""
+            end = s.get("endTime", "") or ""
+            dur = 0
+            if start and end:
+                try:
+                    dur = int((datetime.fromisoformat(end.replace("Z", "+00:00")) - datetime.fromisoformat(start.replace("Z", "+00:00"))).total_seconds())
+                except Exception:
+                    dur = 0
+            eid = str(s.get("id") or start or now())
             db.execute(
                 """INSERT OR IGNORE INTO health_activities
                    (user_id,provider,external_id,sport,name,distance_km,moving_s,elev_m,kcal,avg_hr,max_hr,avg_pace_sec_km,started_at,raw_json,created_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (uid, "strava", str(a.get("id")), str(a.get("sport_type") or a.get("type") or "Activity"),
-                 str(a.get("name") or ""), round((a.get("distance") or 0) / 1000, 2), int(a.get("moving_time") or 0),
-                 round(a.get("total_elevation_gain") or 0, 1), round(a.get("calories") or 0, 0),
-                 int(a.get("average_heartrate") or 0), int(a.get("max_heartrate") or 0),
-                 round(a.get("average_speed") and (1000 / a["average_speed"]) or 0, 1),
-                 (a.get("start_date_local") or a.get("start_date") or now())[:19],
-                 json.dumps({"map": bool(a.get("map"))}), now()))
+                (uid, "google_fit", eid, GOOGLE_ACTIVITY_NAMES.get(s.get("activityType"), "Workout"),
+                 str(s.get("name") or ""), 0, max(0, dur), 0, 0, 0, 0, 0, (start or now())[:19], "{}", now()))
             inserted += 1
-        db.execute("UPDATE health_connections SET last_synced_at=? WHERE user_id=? AND provider='strava'", (now(), uid))
-    return {"ok": True, "fetched": len(acts), "stored": inserted}
+        db.execute("UPDATE health_connections SET last_synced_at=? WHERE user_id=? AND provider='google_fit'", (now(), uid))
+    return {"ok": True, "fetched": len(sessions), "stored": inserted}
+
+
+def import_takeout_days(uid: int, days: list) -> dict:
+    """Zero-setup import: Google Takeout Fit export (daily steps + distance)."""
+    n_steps = n_act = 0
+    with connect() as db:
+        for d in days[:400]:
+            try:
+                day = str(d.get("day", ""))[:10]
+                steps = int(d.get("steps") or 0)
+                km = round(float(d.get("distance_km") or 0), 2)
+            except Exception:
+                continue
+            if not day or len(day) != 10:
+                continue
+            if steps > 0:
+                db.execute(
+                    """INSERT INTO daily_metrics (user_id,day,steps,source,updated_at) VALUES (?,?,?,?,?)
+                       ON CONFLICT(user_id,day) DO UPDATE SET steps=MAX(steps,excluded.steps),source=excluded.source,updated_at=excluded.updated_at""",
+                    (uid, day, steps, "google_fit_takeout", now()))
+                n_steps += 1
+            if km > 0:
+                cur = db.execute(
+                    """INSERT OR IGNORE INTO health_activities
+                       (user_id,provider,external_id,sport,name,distance_km,moving_s,elev_m,kcal,avg_hr,max_hr,avg_pace_sec_km,started_at,raw_json,created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (uid, "google_fit", f"takeout-{day}", "Imported", "Google Fit daily distance", km, 0, 0, 0, 0, 0, 0, day + "T00:00:00", "{}", now()))
+                n_act += cur.rowcount
+    return {"ok": True, "days": n_steps, "activities": n_act}
 
 
 def health_disconnect(uid: int, provider: str) -> dict:
     with connect() as db:
         db.execute("UPDATE health_connections SET status='disconnected',access_token='',refresh_token='' WHERE user_id=? AND provider=?", (uid, provider))
-        if provider == "strava":
-            db.execute("DELETE FROM health_activities WHERE user_id=? AND provider='strava'", (uid,))
+        if provider == "google_fit":
+            db.execute("DELETE FROM health_activities WHERE user_id=? AND provider='google_fit'", (uid,))
     return {"ok": True}
 
 
@@ -226,7 +268,7 @@ def connections_status(uid: int) -> dict:
     """All integrations + what the web app can/cannot do today (honest)."""
     return {
         "items": [
-            strava_status(uid),
+            google_fit_status(uid),
             {
                 "provider": "health_connect",
                 "connected": False,
@@ -293,11 +335,11 @@ def cardio_analysis(uid: int) -> dict:
         if r["duration_min"] and r["distance_km"]:
             acts.append({"day": r["day"][:10], "sport": "workout", "min": r["duration_min"], "km": r["distance_km"], "hr": 0})
     for r in hrows:
-        if r["moving_s"] and r["distance_km"]:
+        if r["moving_s"] or r["distance_km"]:
             acts.append({"day": r["day"][:10], "sport": r["sport"], "min": round(r["moving_s"] / 60), "km": r["distance_km"], "hr": r["avg_hr"] or 0})
     if len(acts) < 2:
         return {"insufficient": True,
-                "need": "Log cardio workouts with distance (running, cycling, walking) — or connect Strava — and I'll analyze pace, duration and consistency here.",
+                "need": "Log cardio workouts with distance (running, cycling, walking) — or connect Google Fit — and I'll analyze pace, duration and consistency here.",
                 "have": len(acts)}
     import datetime as _dt
     today = _dt.date.today().isoformat()
@@ -307,8 +349,8 @@ def cardio_analysis(uid: int) -> dict:
     recent_km = sum(a["km"] for a in recent)
     recent_min = sum(a["min"] for a in recent)
     weeks = max(1, round(len(recent) / 7, 1))
-    pace_now = (recent_min / recent_km) if recent_km else 0
-    pace_prior = (sum(a["min"] for a in prior) / sum(a["km"] for a in prior)) if prior and sum(a["km"] for a in prior) else 0
+    pace_now = (recent_min / recent_km) if (recent_km and recent_min) else 0
+    pace_prior = (sum(a["min"] for a in prior) / sum(a["km"] for a in prior)) if (prior and sum(a["km"] for a in prior) and sum(a["min"] for a in prior)) else 0
     pace_trend = None
     if pace_prior and pace_now:
         pace_trend = round((pace_prior - pace_now) / pace_prior * 100, 1)  # + = faster

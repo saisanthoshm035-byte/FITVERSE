@@ -1137,16 +1137,18 @@ class FitverseHandler(BaseHTTPRequestHandler):
         if path == "/api/health/nutrition":
             import platform_service
             return self.send_json(200, platform_service.nutrition_intelligence(self.current_user()))
-        if path == "/api/health/strava/callback":
+        if path == "/api/health/google/callback":
             import platform_service
             from urllib.parse import parse_qs
             qs = parse_qs(query)
             code = (qs.get("code") or [""])[0]
             if not code: return self.send_json(400, {"error": "Missing OAuth code"})
-            r = platform_service.strava_exchange(self.current_user(), code)
-            ok = "✅ Strava connected and synced." if r.get("ok") else "❌ " + r.get("error", "Connection failed")
+            host = self.headers.get("Host") or "127.0.0.1:4173"
+            proto = self.headers.get("X-Forwarded-Proto") or ("https" if ".onrender.com" in host else "http")
+            r = platform_service.google_fit_exchange(self.current_user(), code, f"{proto}://{host}")
+            ok = "✅ Google Fit connected and synced." if r.get("ok") else "❌ " + r.get("error", "Connection failed")
             html = ("<!doctype html><meta charset='utf-8'><title>FITVERSE</title><style>body{font-family:system-ui;display:grid;place-items:center;height:100vh;background:#f6faf7;color:#0b1711}b{color:#3f6212}</style>"
-                    f"<div style='text-align:center'><div style='font-size:40px'>🏃</div><b>{ok}</b><p style='color:#647068'>You can close this tab and return to FITVERSE.</p>"
+                    f"<div style='text-align:center'><div style='font-size:40px'>❤️</div><b>{ok}</b><p style='color:#647068'>You can close this tab and return to FITVERSE.</p>"
                     "<script>setTimeout(()=>window.close(),2500)</script></div>")
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(html.encode()); return
         if path == "/api/notifications/since":
@@ -2056,17 +2058,27 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     for (fid,) in db.execute("SELECT user_id FROM business_follows WHERE business_id=?",(bid,)).fetchall():
                         if fid!=uid: platform_service.notify(db,fid,"business","📣 " + (db.execute("SELECT name FROM businesses WHERE id=?",(bid,)).fetchone()["name"]), body[:120], f"business/{bid}")
                 return self.send_json(201,{"ok":True})
-            if path == "/api/health/strava/connect":
+            if path == "/api/health/google/connect":
                 import platform_service
-                st = platform_service.strava_status(self.current_user())
-                if not st["configured"]: return self.send_json(501,{"error":"Strava is not configured on this server yet.","missing":st["missing"],"how":"Create a free app at strava.com/settings/api, then set STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET and STRAVA_REDIRECT_URI as environment variables."})
-                return self.send_json(200,{"ok":True,"authorize_url":st["authorize_url"]})
-            if path == "/api/health/strava/sync":
+                host = self.headers.get("Host") or "127.0.0.1:4173"
+                proto = self.headers.get("X-Forwarded-Proto") or ("https" if ".onrender.com" in host else "http")
+                st = platform_service.google_fit_status(self.current_user(), f"{proto}://{host}")
+                if not st["configured"]:
+                    return self.send_json(501, {"error": "Google Fit sign-in is not configured on this server yet.", "missing": st["missing"],
+                                                "how": "Zero-setup option: use 'Import from Google Takeout' on the Health page (works right now). Full auto-sync (free): console.cloud.google.com -> enable Fitness API -> OAuth web client with redirect /api/health/google/callback -> set GOOGLE_FIT_CLIENT_ID and GOOGLE_FIT_CLIENT_SECRET."})
+                return self.send_json(200, {"ok": True, "authorize_url": st["authorize_url"]})
+            if path == "/api/health/google/sync":
                 import platform_service
-                return self.send_json(200, platform_service.strava_sync(self.current_user()))
+                return self.send_json(200, platform_service.google_fit_sync(self.current_user()))
+            if path == "/api/health/import/takeout":
+                import platform_service
+                days = data.get("days")
+                if not isinstance(days, list) or not days:
+                    return self.send_json(400, {"error": "No days to import"})
+                return self.send_json(200, platform_service.import_takeout_days(self.current_user(), days))
             if path == "/api/health/disconnect":
                 import platform_service
-                return self.send_json(200, platform_service.health_disconnect(self.current_user(), str(data.get("provider","strava"))[:20]))
+                return self.send_json(200, platform_service.health_disconnect(self.current_user(), str(data.get("provider","google_fit"))[:20]))
             if path == "/api/health/metrics":
                 uid=self.current_user()
                 day=str(data.get("day",now()[:10]))[:10]
