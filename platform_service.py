@@ -461,16 +461,25 @@ INJURY_TERMS = ("injur", "pain", "hurts", "ache", "sprain", "strain", "tendon", 
 
 
 def _llm(messages: list[dict]) -> str | None:
-    """Optional OpenAI-compatible LLM. Only if env configured. Returns None otherwise."""
+    """Optional LLM (OpenAI-compatible). Only if env configured. Returns None otherwise.
+    Works with OpenRouter (FITVERSE_LLM_KEY starting sk-or-) or any OpenAI-compatible API."""
     api = os.environ.get("FITVERSE_LLM_API", "").rstrip("/")
     key = os.environ.get("FITVERSE_LLM_KEY", "")
     model = os.environ.get("FITVERSE_LLM_MODEL", "gpt-4o-mini")
     if not (api and key):
         return None
+    if not api:  # key given without API: default by key shape
+        api = "https://openrouter.ai/api/v1" if key.startswith("sk-or-") else "https://api.openai.com/v1"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+    if "openrouter.ai" in api:
+        # OpenRouter best practice: honest attribution headers
+        headers["HTTP-Referer"] = "https://fitverse.onrender.com"
+        headers["X-Title"] = "FITVERSE"
+        if "/" not in model:
+            model = "meta-llama/llama-3.3-70b-instruct:free"  # free default unless a full OpenRouter model id is set
     try:
         body = json.dumps({"model": model, "messages": messages, "max_tokens": 500, "temperature": 0.6}).encode()
-        req = urllib.request.Request(f"{api}/chat/completions", data=body,
-                                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+        req = urllib.request.Request(f"{api}/chat/completions", data=body, headers=headers)
         with urllib.request.urlopen(req, timeout=12) as resp:
             return json.loads(resp.read().decode())["choices"][0]["message"]["content"].strip()
     except Exception:

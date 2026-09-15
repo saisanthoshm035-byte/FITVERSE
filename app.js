@@ -140,11 +140,16 @@ const me = () => pageData.profile || {};
 async function hydrate() {
   if (!apiEnabled) return;
   const safe = (p, fb) => api(p).then(d => d).catch(() => fb);
+  const signedIn = !!sessionToken;
+  const guestItems = (v) => Promise.resolve(v);
   const [boot, feed, notifs, convs, achievements, buddy, fitmatch, intel] = await Promise.all([
-    api('/api/bootstrap').catch(() => null), safe('/api/feed', { items: [] }), safe('/api/notifications', { items: [] }),
-    safe('/api/conversations', { items: [] }), safe('/api/achievements', { items: [] }),
-    safe('/api/ai/buddy', { items: [] }), safe('/api/fitmatch', { items: [] }),
-    safe('/api/intelligence', {}),
+    api('/api/bootstrap').catch(() => null), safe('/api/feed', { items: [] }),
+    signedIn ? safe('/api/notifications', { items: [] }) : guestItems({ items: [] }),
+    signedIn ? safe('/api/conversations', { items: [] }) : guestItems({ items: [] }),
+    signedIn ? safe('/api/achievements', { items: [] }) : guestItems({ items: [] }),
+    signedIn ? safe('/api/ai/buddy', { items: [] }) : guestItems({ items: [] }),
+    signedIn ? safe('/api/fitmatch', { items: [] }) : guestItems({ items: [] }),
+    signedIn ? safe('/api/intelligence', {}) : guestItems({}),
   ]);
   pageData.intel = (intel && intel.dna) ? intel : pageData.intel;
   if (boot) {
@@ -159,10 +164,10 @@ async function hydrate() {
   pageData.achievements = achievements.items || [];
   pageData.buddy = (buddy.items || []).map(x => ({ note: x.note }));
   pageData.fitmatch = fitmatch.items || [];
-  pageData.daily = await api('/api/ai/daily', { method: 'POST', body: '{}' }).catch(() => null);
+  pageData.daily = signedIn ? await api('/api/ai/daily', { method: 'POST', body: '{}' }).catch(() => null) : null;
   syncAvatars();
   if (pageData.conversations.length && !pageData.conversations.some(c => c.id === pageData.activeConversation)) pageData.activeConversation = pageData.conversations[0].id;
-  if (state.page === 'home') loadDashboard();
+  if (state.page === 'home' && sessionToken) loadDashboard();
 }
 async function loadDashboard() {
   const [nut, wat, wk] = await Promise.all([
@@ -209,21 +214,21 @@ async function loadPageData(page) {
     add('conversations', api('/api/conversations').then(d => d.items || []));
     add('messages', api(`/api/conversations/${pageData.activeConversation}`).then(d => d.items || []));
   }
-  if (page === 'profile') { add('xpLedger', api('/api/xp').then(d => d.items || [])); add('achievements', api('/api/achievements').then(d => d.items || [])); add('friends', api('/api/friends').then(d => d.items || [])); add('mission', api('/api/missions').then(d => d.item || {})); }
-  if (page === 'home') { add('mission', api('/api/missions').then(d => d.item || {})); add('moments', api('/api/moments').then(d => d.items || [])); add('friendsActivity', api('/api/friends/activity').then(d => d.items || [])); add('socialCtx', api('/api/social/context').then(d => d).catch(() => ({}))); }
+  if (page === 'profile' && sessionToken) { add('xpLedger', api('/api/xp').then(d => d.items || [])); add('achievements', api('/api/achievements').then(d => d.items || [])); add('friends', api('/api/friends').then(d => d.items || [])); add('mission', api('/api/missions').then(d => d.item || {})); }
+  if (page === 'home') { if (sessionToken) { add('mission', api('/api/missions').then(d => d.item || {})); add('moments', api('/api/moments').then(d => d.items || [])); } add('friendsActivity', api('/api/friends/activity').then(d => d.items || [])); add('socialCtx', api('/api/social/context').then(d => d).catch(() => ({}))); }
   if (page === 'reels' || page === 'posts') { add('reels', api('/api/reels').then(d => d.items || [])); if (!pageData.feed.length) add('feed', api('/api/feed').then(d => d.items || [])); }
   if (page === 'businesses') add('businesses', api('/api/businesses').then(d => d.items || []));
-  if (page === 'workout') { add('workouts', api('/api/workouts').then(d => d.items || [])); add('prs', api('/api/workouts/prs').then(d => d.items || [])); }
-  if (page === 'intelligence') {
+  if (page === 'workout' && sessionToken) { add('workouts', api('/api/workouts').then(d => d.items || [])); add('prs', api('/api/workouts/prs').then(d => d.items || [])); }
+  if (page === 'intelligence' && sessionToken) {
     add('intel', api('/api/intelligence').then(d => d));
     add('mission', api('/api/missions').then(d => d.item || {}));
     add('missionHistory', api('/api/missions').then(d => d.history || []));
     add('teams', api('/api/teams').then(d => d.items || []));
     add('trajectory', api('/api/intelligence/trajectory?scenario=' + (pageData.trajScenario || 'current')).then(d => d.item || {}));
   }
-  if (page === 'nutrition') { add('nutrition', api('/api/nutrition').then(d => d).catch(() => ({}))); add('water', api('/api/water').then(d => d).catch(() => ({}))); }
-  if (page === 'progress') { add('progressEntries', api('/api/progress').then(d => d.items || [])); add('review', api('/api/ai/review').then(d => d.item || {}).catch(() => ({}))); }
-  if (page === 'friends') { add('fitmatch', api('/api/fitmatch').then(d => d.items || [])); add('friendsData', api('/api/friends').then(d => d).catch(() => ({}))); }
+  if (page === 'nutrition' && sessionToken) { add('nutrition', api('/api/nutrition').then(d => d).catch(() => ({}))); add('water', api('/api/water').then(d => d).catch(() => ({}))); }
+  if (page === 'progress' && sessionToken) { add('progressEntries', api('/api/progress').then(d => d.items || [])); add('review', api('/api/ai/review').then(d => d.item || {}).catch(() => ({}))); }
+  if (page === 'friends') { if (sessionToken) add('fitmatch', api('/api/fitmatch').then(d => d.items || [])); add('friendsData', api('/api/friends').then(d => d).catch(() => ({}))); }
   if (page === 'library') add('exercises', api('/api/exercises').then(d => d.items || []));
   if (page === 'coach') add('coachChat', api('/api/ai/coach').then(d => d.items || []).catch(() => []));
   if (page === 'connectHealth') {
@@ -256,14 +261,15 @@ async function loadMessages() {
 
 function shell(content) {
   const u = unread();
+  const dmUnread = (pageData.conversations || []).reduce((t, c) => t + (Number(c.unread) || 0), 0);
   return `<div class="app-shell">
-  <aside class="sidebar"><a class="brand" data-page="home"><i>F</i> FITVERSE</a><p class="eyebrow">PLAY TOGETHER</p><nav>${nav.map(([id, icon, label]) => `<button class="nav-item ${state.page === id ? 'active' : ''}" data-page="${id}"><span>${icon}</span>${label}${id === 'messages' && u ? `<b>${u}</b>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="mini-profile">${photoAvatar(me().name, 1)}<div><strong>${escapeHtml(me().name || 'Sai Kumar')}</strong><small>Level ${level()} · ${levelName()}</small></div></div><button class="create-btn" data-action="create">＋ Create</button></div></aside>
+  <aside class="sidebar"><a class="brand" data-page="home"><i>F</i> FITVERSE</a><p class="eyebrow">PLAY TOGETHER</p><nav>${nav.map(([id, icon, label]) => `<button class="nav-item ${state.page === id ? 'active' : ''}" data-page="${id}"><span>${icon}</span>${label}${id === 'messages' && dmUnread ? `<b>${dmUnread}</b>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="mini-profile">${photoAvatar(me().name, 1)}<div><strong>${escapeHtml(me().name || 'Welcome')}</strong><small>${me().name ? `Level ${level()} · ${levelName()}` : 'Sign in to personalize'}</small></div></div><button class="create-btn" data-action="create">＋ Create</button></div></aside>
   <main>${content}</main><nav class="mobile-nav" aria-label="Primary">${mobileNav.map(([p, i]) => `<button data-page="${p}" class="${state.page === p ? 'active' : ''}" aria-label="${p}"><span aria-hidden="true">${i}</span><small>${p}</small></button>`).join('')}<button class="mobile-more-btn" data-action="moreMenu" aria-label="All pages" style="align-self:center">⊞</button></nav><div id="toast" role="status" aria-live="polite"></div><div id="modal"></div></div>`;
 }
 function pageHeader(title, sub = 'Your fitness world, in motion.') {
   const u = unread();
   const topRight = sessionToken
-    ? `<button class="icon-btn" data-action="notificationsOpen" title="Notification center">🔔${u ? `<em>${u}</em>` : ''}</button><button class="icon-btn" data-action="cmdk" title="Search (Ctrl+K)">⌕</button><button class="profile-chip" data-page="profile">${photoAvatar(me().name, 1)}<span>Sai</span><i>⌄</i></button><button class="outline auth-btn" data-action="logout" title="Log out">Logout</button>`
+    ? `<button class="icon-btn" data-action="notificationsOpen" title="Notification center">🔔${u ? `<em>${u}</em>` : ''}</button><button class="icon-btn" data-action="cmdk" title="Search (Ctrl+K)">⌕</button><button class="profile-chip" data-page="profile">${photoAvatar(me().name, 1)}<span>${escapeHtml((me().name || 'You').split(' ')[0])}</span><i>⌄</i></button><button class="outline auth-btn" data-action="logout" title="Log out">Logout</button>`
     : `<button class="outline auth-btn" data-action="account">Log in</button><button class="primary auth-btn" data-action="register">Sign up</button>`;
   return `<header class="top"><div><span class="eyebrow">FITVERSE / ${state.page.toUpperCase()}</span><h1>${title}</h1><p>${sub}</p></div><div class="top-actions">${topRight}</div></header>`;
 }
@@ -277,7 +283,8 @@ function home() {
   const dsc = dna.scores || {};
   const debt = (intel.debt || {});
   const mission = pageData.mission || ({});
-  return shell(`${pageHeader(`Good ${greeting()}, ${escapeHtml((me().name || 'Sai').split(' ')[0])} 👋`, s.today_line || 'Here’s your day at a glance.')}
+  const heroTitle = me().name ? `Good ${greeting()}, ${escapeHtml(me().name.split(' ')[0])} 👋` : 'Welcome to FITVERSE 👋';
+  return shell(`${pageHeader(heroTitle, me().name ? (s.today_line || 'Here’s your day at a glance.') : 'Fitness is more fun together. Sign in to start your streak.')}
 <section class="hero photo" style="background-image:linear-gradient(100deg, rgba(8,18,13,.96) 42%, rgba(8,18,13,.62) 100%), url('${PHOTOS.heroBasketball}')"><div><span class="pill lime">● WEEK ${weekNumber()}</span><h2>Fitness is better<br/>when it’s a <span>game.</span></h2><p id="wx-advice">${wx ? workoutAdvice() : 'Keep your streak alive. You’re one activity away from your weekly goal.'}</p><div id="wx-chip" class="wx-chip">${wx ? weatherChipHtml() : 'Loading live weather…'}</div><div class="hero-actions"><button class="primary" data-page="workout">Start today’s session <b>→</b></button><button class="text-btn" data-page="coach">Ask FITVERSE AI</button></div></div><div class="hero-orbit"><div class="orbit-core">${state.streak}<small>DAY STREAK</small></div><div class="float-card one">🔥<strong>${pageData.counts.friends || 0} friends</strong><small>in your circle</small></div><div class="float-card two">⚡<strong>Level ${level()}</strong><small>${levelName()}</small></div></div></section>
 <section class="dash-grid">
   <article class="stat-card"><span>🍽</span><div><small>CALORIES</small><strong>${s.kcal ? `${s.kcal.eaten.toLocaleString()} <em>/ ${s.kcal.target.toLocaleString()}</em>` : '—'}</strong></div><i>${s.kcal ? `${Math.round(s.kcal.eaten / Math.max(1, s.kcal.target) * 100)}%` : ''}</i><div class="bar slim"><i style="width:${s.kcal ? Math.min(100, s.kcal.eaten / Math.max(1, s.kcal.target) * 100) : 0}%"></i></div></article>
@@ -362,7 +369,7 @@ function discover() {
 }
 function personCard(p) {
   const score = p.score ?? (80 + (p.id * 3) % 18);
-  return `<article class="person-card" data-person="${p.id}"><div class="person-cover photo" style="background-image:linear-gradient(rgba(20,40,60,.15), rgba(20,40,60,.55)), url('${p.photo || sportPhoto(p.activity || p.favorite_activity)}')"><span>${score}% match</span></div><div class="person-info">${photoAvatar(p.name, p.id)}<h3>${escapeHtml(p.name)} <i>✓</i></h3><p>${escapeHtml(p.activity || p.favorite_activity || '')} · ${escapeHtml(p.fitnessLevel || p.fitness_level || '')}</p><div><button class="outline" data-action="friend" data-id="${p.id}">Add friend</button><button class="more" data-action="personMenu" data-id="${p.id}">•••</button></div></div></article>`;
+  return `<article class="person-card" data-person="${p.id}"><div class="person-cover photo" style="background-image:linear-gradient(rgba(20,40,60,.15), rgba(20,40,60,.55)), url('${p.photo || sportPhoto(p.activity || p.favorite_activity)}')"><span>${score}% match</span></div><div class="person-info">${photoAvatar(p.name, p.id)}<h3>${escapeHtml(p.name)} <i>✓</i></h3><p>${escapeHtml(p.activity || p.favorite_activity || '')} · ${escapeHtml(p.fitnessLevel || p.fitness_level || '')}</p><div><button class="outline" data-action="friend" data-id="${p.id}">Add friend</button><button class="primary" data-action="messageUser" data-id="${p.id}">Message</button><button class="more" data-action="personMenu" data-id="${p.id}">•••</button></div></div></article>`;
 }
 function challenges() {
   const c = pageData.challenges[0];
@@ -401,16 +408,20 @@ function events() {
 ${hero ? `<div class="event-hero photo" style="background-image:linear-gradient(90deg, rgba(10,16,20,.94) 45%, rgba(10,16,20,.45) 100%), url('${sportPhoto(hero.category)}')"><div><span class="pill coral">FEATURED · ${dayShort(hero.starts_at).toUpperCase()}</span><h2>${escapeHtml(hero.name.split(' ').slice(0, -1).join(' '))} <em>${escapeHtml(hero.name.split(' ').slice(-1))}</em></h2><p>${escapeHtml(hero.description)}</p><div class="event-details"><span>◷ ${dayShort(hero.starts_at)} · ${timeShort(hero.starts_at)}</span><span>⌖ ${escapeHtml(hero.location_label)}</span></div><button class="primary" data-action="bookEvent" data-id="${hero.id}">${hero.booked ? 'Booked ✓' : `Book ${inr(hero.price_inr)}`} <b>→</b></button></div><div class="event-art"><div class="moon"></div><span>RUN<br/>THE<br/>NIGHT</span><small>${escapeHtml(hero.category.toUpperCase())}</small></div></div>` : '<p class="loading">Loading events…</p>'}<section class="section-head"><div><span class="eyebrow">UP NEXT</span><h2>More ways to show up</h2></div><button class="filter" data-action="eventFilter">All categories ⌄</button></section><div class="event-grid">${rest.map(eventCard).join('')}</div>`);
 }
 function messages() {
-  const convs = pageData.conversations.length ? pageData.conversations : [{ id: 1, title: 'Rahul Menon', kind: 'direct' }];
+  const convs = pageData.conversations;
+  if (!sessionToken) return shell(`${pageHeader('Messages', 'Private chats between real FITVERSE athletes.')}
+<section class="hero photo" style="background-image:linear-gradient(100deg, rgba(8,18,13,.94) 45%, rgba(8,18,13,.55) 100%), url('${PHOTOS.heroRun}')"><div><span class="pill lime">✉ REAL MESSAGES</span><h2>Chat with real athletes,<br/>not bots.</h2><p>Messages are private, stored in your account and delivered instantly. Sign in to open your inbox.</p><div class="hero-actions"><button class="primary" data-action="register">Create your account <b>→</b></button><button class="outline" data-action="account">Log in</button></div></div></section>`);
+  if (!convs.length) return shell(`${pageHeader('Messages', 'Private chats between real FITVERSE athletes.')}
+${emptyState('✉', 'No conversations yet', 'Open any athlete’s profile and tap Message — your chat stays private between the two of you.', 'discover', 'Find athletes')}`);
   const active = convs.find(c => c.id === pageData.activeConversation) || convs[0];
   const msgs = pageData.messages;
   // Group consecutive messages by sender; day dividers; photo avatars.
   const bubbles = msgs.map((m, i) => {
     const prev = msgs[i - 1];
-    const mine = m.sender_id === 1;
+    const mine = me().id ? m.sender_id === me().id : m.sender_id === 1;
     const grouped = prev && prev.sender_id === m.sender_id;
     const showDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
-    return `${showDay ? `<div class="day-divider"><span>${dayShort(m.created_at)}</span></div>` : ''}<div class="msg-row ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}">${!grouped ? photoAvatar(m.name || (mine ? 'Sai' : 'Rahul'), m.sender_id) : '<span class="pavatar-spacer"></span>'}<p class="${mine ? 'sent' : 'received'}">${escapeHtml(m.body)}<time>${m.created_at?.includes('T') ? timeShort(m.created_at) : escapeHtml(m.created_at || 'now')}</time></p></div>`;
+    return `${showDay ? `<div class="day-divider"><span>${dayShort(m.created_at)}</span></div>` : ''}<div class="msg-row ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}">${!grouped ? photoAvatar(m.name || (mine ? (me().name || 'You') : (active.title || 'Athlete')), m.sender_id) : '<span class="pavatar-spacer"></span>'}<p class="${mine ? 'sent' : 'received'}">${escapeHtml(m.body)}<time>${m.created_at?.includes('T') ? timeShort(m.created_at) : escapeHtml(m.created_at || 'now')}</time></p></div>`;
   }).join('') || '<p style="opacity:.6">Say hi 👋</p>';
   return shell(`${pageHeader('Messages', 'Real conversations, stored in your database.')}
 <div class="message-layout"><aside class="conversation-list"><div class="message-search">⌕ <input id="chat-search" placeholder="Search chats" style="border:0;background:none;outline:0;width:80%"/></div>${convs.map(c => `<button class="conversation ${c.id === pageData.activeConversation ? 'selected' : ''}" data-conv="${c.id}">${photoAvatar(c.title, c.id)}<div><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml((c.last_message || 'Say hi').slice(0, 34))}</small></div><time>${c.last_at ? timeShort(c.last_at) : ''}</time></button>`).join('')}</aside><section class="chat"><div class="chat-head">${photoAvatar(active.title, active.id)}<div><strong>${escapeHtml(active.title)}</strong><small>${escapeHtml(active.kind)} · <span class="live-dot">●</span> live</small></div><button data-action="convMenu" data-id="${active.id}">•••</button></div><div class="bubbles" id="bubbles">${bubbles}</div><div class="typing" id="typing" style="display:none"><span></span><span></span><span></span></div><form class="composer" data-form="message" data-conv="${active.id}"><input id="composer-input" placeholder="Message ${escapeHtml(String(active.title).split(' ')[0])}..." maxlength="1000" required/><button aria-label="Send message">➤</button></form></section></div>`);
@@ -419,7 +430,7 @@ function profile() {
   const p = me();
   const unlocked = pageData.achievements.filter(a => a.unlocked_at).length;
   return shell(`${pageHeader('Your profile', 'Your progress tells a story.')}
-<section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Sai Kumar')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'saikumar')} · ${escapeHtml(p.city || 'Chennai')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
+<section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Your profile')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'you')} · ${escapeHtml(p.city || 'Your city')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
 <a class="pill lime" data-page="connectHealth" style="cursor:pointer;text-decoration:none;display:inline-block;margin:0 0 14px">🔌 Connect Health Data — Google Fit, steps, sleep →</a>
 <div id="ptab-posts">${pageData.feed.filter(x => x.username === p.username).map(postCard).join('') || '<p class="loading">No posts yet — create one from the ＋ button.</p>'}</div>
 <div id="ptab-friends" style="display:none">${pageData.friends.map(f => `<article class="person-card" style="max-width:420px"><div class="person-info" style="padding:14px">${avatar(f.name, 'teal')}<h3>${escapeHtml(f.name)} <i>✓</i></h3><p>@${escapeHtml(f.username)} · ${escapeHtml(f.status)}</p></div></article>`).join('') || '<p class="loading">No friends yet — find matches on Discover.</p>'}</div>
@@ -496,7 +507,7 @@ ${incoming.length ? `<section class="req-strip"><span class="pill coral">${incom
 <section class="section-head"><div><span class="eyebrow">✦ AI MATCHING</span><h2>FIT MATCH</h2></div></section>
 ${fm.length ? `<div class="people-grid">${fm.map(p => personCard(p)).join('')}</div>` : emptyState('🧬', 'No matches yet', 'Set your goals in onboarding so FIT MATCH can find your training partners.')}
 <section class="section-head"><div><span class="eyebrow">YOUR CIRCLE</span><h2>${friends.length} friend${friends.length === 1 ? '' : 's'}</h2></div></section>
-${friends.length ? `<div class="friend-rows">${friends.map(f => `<div class="req-row" data-action="athlete" data-id="${f.id}" style="cursor:pointer">${photoAvatar(f.name, f.id)}<div><b>${escapeHtml(f.name)}</b><small>${escapeHtml(f.favorite_activity || '')} · ${f.streak}-day streak</small></div><button class="outline small" data-action="challenge" data-id="${f.id}">Challenge</button></div>`).join('')}</div>` : emptyState('👥', 'No friends yet', 'Send friend requests from Discover or FIT MATCH — fitness is better together.')}`);
+${friends.length ? `<div class="friend-rows">${friends.map(f => `<div class="req-row" data-action="athlete" data-id="${f.id}" style="cursor:pointer">${photoAvatar(f.name, f.id)}<div><b>${escapeHtml(f.name)}</b><small>${escapeHtml(f.favorite_activity || '')} · ${f.streak}-day streak</small></div><button class="outline small" data-action="challenge" data-id="${f.id}">Challenge</button><button class="primary small" data-action="messageUser" data-id="${f.id}">Message</button></div>`).join('')}</div>` : emptyState('👥', 'No friends yet', 'Send friend requests from Discover or FIT MATCH — fitness is better together.')}`);
 }
 function libraryPage() {
   const ex = pageData.exercises || [];
@@ -819,11 +830,11 @@ function communityDetail() {
 }
 function athleteProfile() {
   const a = pageData.detailData; if (!a || !a.badges) return shell('<p class="loading">Loading athlete…</p>');
-  const isMe = a.id === (me().id || 1);
+  const isMe = me().id ? a.id === me().id : false;
   return shell(`${pageHeader(a.name, '@' + (a.username || '') + ' · ' + (a.city || 'Chennai'))}
 <section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${a.photo || sportPhoto(a.favorite_activity)}')"></div>
 <div class="profile-info">${photoAvatar(a.name, a.id)}<div><span class="pill lime">LEVEL ${Math.floor((a.xp || 0) / 500) + 1} · ${['Rookie', 'Mover', 'Athlete', 'Warrior', 'Legend'][Math.min(4, Math.floor((a.xp || 0) / 500))]}</span><h2>${escapeHtml(a.name)} <i>✓</i></h2><p class="bio">${escapeHtml(a.bio || 'No bio yet.')}</p><p>${escapeHtml(a.favorite_activity || '')} · ${escapeHtml(a.fitness_level || '')} · ${escapeHtml(a.preferred_time || '')}</p></div>
-<div class="profile-actions">${isMe ? '<button class="outline" data-page="profile">Your profile</button>' : `<button class="primary" data-action="friend" data-id="${a.id}">Add friend</button><button class="outline" data-action="challenge" data-id="${a.id}">Challenge</button><button class="outline" data-action="messageUser" data-id="${a.id}">Message</button>`}</div></div>
+<div class="profile-actions">${isMe ? '<button class="outline" data-page="profile">Your profile</button>' : sessionToken ? `<button class="primary" data-action="friend" data-id="${a.id}">Add friend</button><button class="outline" data-action="challenge" data-id="${a.id}">Challenge</button><button class="outline" data-action="messageUser" data-id="${a.id}">Message</button>` : `<button class="primary" data-action="register">Sign up to connect</button><button class="outline" data-action="account">Log in</button>`}</div></div>
 <div class="profile-stats"><span><b>${a.streak || 0}</b> day streak</span><span><b>${(a.xp || 0).toLocaleString()}</b> XP</span><span><b>${a.activities || 0}</b> activities</span><span><b>${a.badges.length}</b> badges</span></div></section>
 <div class="tabs" id="athlete-tabs">${['Posts', 'Activities', 'Badges'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-atab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
 <div id="atab-posts">${a.posts.map(postCard).join('') || '<p class="loading">No posts yet.</p>'}</div>
@@ -964,7 +975,7 @@ let lastMsgId = 0, pollTimer = null, lastOwnType = 0;
 function startPolling() {
   if (pollTimer) return;
   pollTimer = setInterval(async () => {
-    if (!apiEnabled || document.hidden) return;
+    if (!apiEnabled || document.hidden || !sessionToken) return;
     try {
       const n = await api(`/api/notifications/since?since=${pageData.notifications[0]?.id || 0}`);
       if (n.items?.length) { pageData.notifications = [...n.items, ...pageData.notifications]; n.items.slice(0, 2).forEach(x => toast(`${x.title} — ${x.body}`)); if (state.page !== 'messages') render(); }
@@ -1015,7 +1026,7 @@ function bind() {
   $$('[data-bcat]').forEach(b => b.onclick = () => { state.bizCat = b.dataset.bcat; render(); const inp = $('#biz-search'); if (inp) { inp.focus(); inp.value = state.bizQuery || ''; } });
   const bizSearch = $('#biz-search');
   if (bizSearch) { let t; bizSearch.oninput = () => { clearTimeout(t); t = setTimeout(() => { state.bizQuery = bizSearch.value; render(); const inp = $('#biz-search'); if (inp) { inp.focus(); inp.value = state.bizQuery; } }, 250); }; }
-  $$('[data-conv]').forEach(b => b.onclick = async () => { pageData.activeConversation = Number(b.dataset.conv); await loadMessages(); window.scrollTo(0, 0); });
+  $$('[data-conv]').forEach(b => b.onclick = async () => { pageData.activeConversation = Number(b.dataset.conv); await loadMessages(); api('/api/conversations').then(d => { pageData.conversations = d.items || []; if (state.page === 'messages') render(); }).catch(() => {}); window.scrollTo(0, 0); });
   $$('[data-action]').forEach(b => b.onclick = () => action(b.dataset.action, b));
   $$('[data-tab]').forEach(b => b.onclick = () => {
     $$('[data-tab]').forEach(x => x.classList.toggle('active', x === b));
@@ -1133,7 +1144,7 @@ function bind() {
     try {
       if (f.dataset.form === 'coach') { const result = await api('/api/coach?q=' + encodeURIComponent(message)); pageData.coach = result.reply; render(); return; }
       // Optimistic send: show instantly, then sync with the server (which may auto-reply).
-      pageData.messages.push({ sender_id: 1, body: message, created_at: new Date().toISOString() });
+      pageData.messages.push({ sender_id: me().id || 1, name: me().name || 'You', body: message, created_at: new Date().toISOString() });
       render(); scrollBubbles();
       await api('/api/messages', { method: 'POST', body: JSON.stringify({ body: message, conversation_id: f.dataset.conv || 1 }) });
       await new Promise(r => setTimeout(r, 600));
@@ -1175,18 +1186,19 @@ async function action(a, btn) {
   const done = (msg, fn) => api('/api/actions', { method: 'POST', body: JSON.stringify({ action: a === 'joinActivity' ? 'join' : a, state: {} }) }).then(async (d) => { if (d.state) applyServerState(d.state); if (fn) await fn(); await hydrate(); render(); toast(msg); }).catch(e => toast(e.message));
   switch (a) {
     case 'account': {
-      modal(`<span class="eyebrow">YOUR ACCOUNT</span><h2>Sign in to FITVERSE</h2><p>Use the demo account or create a new profile. Your session is stored only in this browser.</p><form class="activity-form" id="account-form"><label>Username or email<input name="username" value="saikumar" required></label><label>Password<input name="password" type="password" value="demo1234" required></label><button class="primary" type="submit">Sign in</button></form><p class="auth-hint">New here? <button class="text-btn" data-action="register">Create an account</button></p>`);
+      modal(`<span class="eyebrow">YOUR ACCOUNT</span><h2>Sign in to FITVERSE</h2><p>Welcome back — your session is stored only in this browser.</p><button class="google-btn" data-action="googleLogin"><span class="g-logo">G</span>Continue with Google</button><div class="auth-divider"><span>or sign in with email</span></div><form class="activity-form" id="account-form"><label>Username or email<input name="username" required autocomplete="username"></label><label>Password<input name="password" type="password" required autocomplete="current-password"></label><button class="primary" type="submit">Sign in</button></form><p class="auth-hint">New here? <button class="text-btn" data-action="register">Create an account</button></p>`);
       $('#account-form').onsubmit = async (e) => {
         e.preventDefault(); const f = new FormData(e.currentTarget);
         try {
           const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: f.get('username'), password: f.get('password') }) });
           sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken);
+          evtSource?.close(); evtSource = null; startSSE();
           $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render(); toast(`Welcome back, ${result.user.name}`);
         } catch (error) { toast(error.message); }
       }; bind(); return;
     }
     case 'register': {
-      modal(`<span class="eyebrow">JOIN FITVERSE</span><h2>Create your account</h2><p>Track workouts, compete with friends and grow your Fitness DNA.</p><form class="activity-form" id="register-form" novalidate><label>Full name<input name="name" autocomplete="name" required placeholder="e.g. Arjun Rao"></label><label>Email<input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></label><label>Username<input name="username" autocomplete="username" required minlength="3" placeholder="lowercase, no spaces"></label><label>Password<input name="password" type="password" id="reg-pw" autocomplete="new-password" required placeholder="min 8 chars, letters + numbers"><small class="pw-hint">At least 8 characters, including a letter and a number.</small><div class="pw-meter"><i></i></div></label><label>Confirm password<input name="confirm" type="password" autocomplete="new-password" required placeholder="retype your password"></label><div class="form-error" id="reg-error" hidden></div><button class="primary" type="submit">Create account</button></form><p class="auth-hint">Already training with us? <button class="text-btn" data-action="account">Log in</button></p>`);
+      modal(`<span class="eyebrow">JOIN FITVERSE</span><h2>Create your account</h2><p>Track workouts, compete with friends and grow your Fitness DNA.</p><button class="google-btn" data-action="googleLogin" type="button"><span class="g-logo">G</span>Continue with Google</button><div class="auth-divider"><span>or sign up with email</span></div><form class="activity-form" id="register-form" novalidate><label>Full name<input name="name" autocomplete="name" required placeholder="e.g. Arjun Rao"></label><label>Email<input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></label><label>Username<input name="username" autocomplete="username" required minlength="3" placeholder="lowercase, no spaces"></label><label>Password<input name="password" type="password" id="reg-pw" autocomplete="new-password" required placeholder="min 8 chars, letters + numbers"><small class="pw-hint">At least 8 characters, including a letter and a number.</small><div class="pw-meter"><i></i></div></label><label>Confirm password<input name="confirm" type="password" autocomplete="new-password" required placeholder="retype your password"></label><div class="form-error" id="reg-error" hidden></div><button class="primary" type="submit">Create account</button></form><p class="auth-hint">Already training with us? <button class="text-btn" data-action="account">Log in</button></p>`);
       const form = $('#register-form'); const errBox = $('#reg-error'); const pw = $('#reg-pw'); const meter = form.querySelector('.pw-meter i');
       const pwOk = (v) => v.length >= 8 && /[a-zA-Z]/.test(v) && /\d/.test(v);
       const fail = (msg) => { errBox.textContent = msg; errBox.hidden = false; };
@@ -1203,12 +1215,14 @@ async function action(a, btn) {
         try {
           const result = await api('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, email, username, password: pass }) });
           sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken);
+          evtSource?.close(); evtSource = null; startSSE();
           $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render();
           toast(`🎉 Welcome to FITVERSE, ${name.split(' ')[0]}! Your account is ready.`);
         } catch (error) { btn.disabled = false; btn.textContent = 'Create account'; fail(error.message); }
       }; bind(); return;
     }
-    case 'logout': sessionToken = ''; localStorage.removeItem('fitverse-session'); $('#modal').innerHTML = ''; hydrate().then(render); toast('Signed out of this browser session'); return;
+    case 'googleLogin': authWithGoogle(); return;
+    case 'logout': sessionToken = ''; localStorage.removeItem('fitverse-session'); evtSource?.close(); evtSource = null; $('#modal').innerHTML = ''; hydrate().then(render); toast('Signed out of this browser session'); return;
     case 'notifications': {
       modal(`<span class="eyebrow">NOTIFICATIONS</span><h2>Your fitness loop</h2>${pageData.notifications.length ? pageData.notifications.map(n => `<div class="notice" style="${n.is_read ? 'opacity:.5' : ''}"><b>${escapeHtml(n.title)}</b><p>${escapeHtml(n.body)}</p><small>${timeShort(n.created_at)}</small></div>`).join('') : '<p>No notifications.</p>'}<button class="outline" data-action="readNotifications">Mark all read</button>`);
       bind(); return;
@@ -1309,8 +1323,17 @@ async function action(a, btn) {
     }
     case 'messageUser': {
       $('#modal').innerHTML = '';
-      state.page = 'messages'; render(); loadPageData('messages');
-      toast('Pick a chat and say hi');
+      if (!sessionToken) { action('account', btn); return; }
+      const uid = id;
+      state.page = 'messages'; render();
+      (async () => {
+        try {
+          const r = await api('/api/dm/start', { method: 'POST', body: JSON.stringify({ to_user_id: uid }) });
+          pageData.activeConversation = r.conversation_id;
+          pageData.conversations = (await api('/api/conversations')).items || [];
+          render(); loadMessages(); window.scrollTo(0, 0);
+        } catch (e) { toast(e.message); }
+      })();
       return;
     }
     case 'athlete': {
@@ -1867,7 +1890,7 @@ async function action(a, btn) {
 // ---- Server-Sent Events: instant chat & notification push (replaces polling for chat) ----
 let evtSource = null;
 function startSSE() {
-  if (!apiEnabled || evtSource) return;
+  if (!apiEnabled || evtSource || !sessionToken) return;
   try {
     evtSource = new EventSource(`/api/stream?since=${pageData.notifications[0]?.id || 0}`);
     evtSource.addEventListener('message', (e) => {
@@ -1875,6 +1898,7 @@ function startSSE() {
       if (state.page === 'messages' && Number(m.conversation_id) === Number(pageData.activeConversation)) {
         pageData.messages.push(m); render(); scrollBubbles();
       }
+      api('/api/conversations').then(d => { pageData.conversations = d.items || []; if (state.page === 'messages') render(); }).catch(() => {});
     });
     evtSource.addEventListener('notification', (e) => {
       const n = JSON.parse(e.data);
@@ -1890,6 +1914,15 @@ function startSSE() {
     });
     evtSource.onerror = () => { /* browser auto-reconnects */ };
   } catch (_) { /* SSE unsupported — polling still runs */ }
+}
+// ---- Google sign-in: opens the official OAuth page; the callback stores the session ----
+async function authWithGoogle() {
+  try {
+    const r = await api('/api/auth/google/url');
+    if (!r.configured) { modal(`<span class="eyebrow">GOOGLE SIGN-IN</span><h2>One free setup step</h2><p style="white-space:pre-wrap">${escapeHtml(r.setup)}</p><div class="hero-actions" style="margin-top:10px"><button class="outline" data-action="close">Got it</button></div>`); bind(); return; }
+    if (evtSource) { evtSource.close(); evtSource = null; }
+    location.href = r.url;
+  } catch (e) { toast(e.message); }
 }
 // Onboarding: multi-step profile setup for new users
 function runOnboarding() {
@@ -1937,10 +1970,13 @@ function runOnboarding() {
 render();
 hydrate().then(async () => {
   render(); loadPageData(state.page); startPolling(); startSSE(); loadWeather(); loadQuote();
-  try {
+  if (sessionToken) try {
     const s = await api('/api/me/settings');
     if (s.item && !s.item.onboarded) runOnboarding();
   } catch (_) {}
+  // Welcome toast after returning from Google sign-in (callback redirects here with ?welcome=Name)
+  const w = new URLSearchParams(location.search).get('welcome');
+  if (w) { toast(`Welcome to FITVERSE, ${decodeURIComponent(w).split(' ')[0]}!`); history.replaceState({}, '', '/'); }
 });
 document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); cmdk(); }

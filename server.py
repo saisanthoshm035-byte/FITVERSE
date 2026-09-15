@@ -22,7 +22,25 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).parent.resolve()
 DATABASE = ROOT / "fitverse.db"
+
+# Load .env (gitignored) at boot: KEY=VALUE lines, without overriding real env vars.
+# Local development uses this file; Render uses dashboard environment variables.
+try:
+    _env_file = ROOT / ".env"
+    if _env_file.exists():
+        for _line in _env_file.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _v = _line.split("=", 1)
+            _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
+            if _k and _k not in os.environ:
+                os.environ[_k] = _v
+except Exception:
+ pass  # .env is optional — real environment variables still work
+
 SESSIONS: dict[str, int] = {}
+OAUTH_STATES: dict[str, float] = {}
 TYPING: dict[int, tuple] = {}  # conversation_id -> (last typing timestamp, user_id)
 DEMO_USER_ID = 1
 
@@ -305,6 +323,12 @@ CREATE TABLE IF NOT EXISTS post_reactions (
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON post_reactions(post_id);
 
 -- ===== FITVERSE 4.0: health integrations, business ecosystem, notification prefs =====
+CREATE TABLE IF NOT EXISTS dm_participants (
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  last_read INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (conversation_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS health_connections (
   id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   provider TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'connected',
@@ -522,6 +546,17 @@ def initialize_database() -> None:
             (3, 3, "Morning run tomorrow? Easy pace, 5K around the loop.", stamp),
             (4, 4, "Weekend ride plan is up — ECR, Sunday 6:30 AM.", stamp),
         ])
+        # FITVERSE 5.0 migration (idempotent): backfill direct-chat membership from real
+        # message history so the participant-based inbox shows every thread each user
+        # genuinely exchanged messages in. Group/community demo chats stay out of
+        # personal inboxes — private conversations belong to their real participants only.
+        for r in db.execute("SELECT conversation_id, sender_id FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.kind='direct' GROUP BY conversation_id, sender_id").fetchall():
+            db.execute("INSERT OR IGNORE INTO dm_participants (conversation_id,user_id,last_read) VALUES (?,?,0)", (r["conversation_id"], r["sender_id"]))
+        for r in db.execute("SELECT conversation_id, group_concat(DISTINCT sender_id) senders FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.kind='direct' GROUP BY conversation_id").fetchall():
+            ids = [int(x) for x in (r["senders"] or "").split(",") if x]
+            if len(ids) == 2:
+                for uid2 in ids:
+                    db.execute("INSERT OR IGNORE INTO dm_participants (conversation_id,user_id,last_read) VALUES (?,?,0)", (r["conversation_id"], uid2))
         db.execute("INSERT OR IGNORE INTO events (id,name,category,starts_at,location_label,price_inr,capacity,organizer,description,created_at) "
                    "SELECT 4,'East Coast Ride','Cycling','2026-09-22T06:00:00+05:30','East Coast Road',299,200,'Chennai Cycling Club','A scenic group ride down the coast with chai stops.',? "
                    "WHERE NOT EXISTS (SELECT 1 FROM events WHERE id=4)", (stamp,))
@@ -629,6 +664,20 @@ def friend_ids(db: sqlite3.Connection, user_id: int) -> list[int]:
 
 def read_bootstrap(user_id: int) -> dict:
     with connect() as db:
+        if user_id <= 0:
+            """Signed-out visitors get a generic public experience: no personal identity,
+            no personal data — public community counts and the real leaderboard only."""
+            leaderboard = [dict(r) for r in db.execute("""SELECT u.name, g.xp, g.streak, g.activities
+              FROM user_game_state g JOIN users u ON u.id=g.user_id ORDER BY g.xp DESC LIMIT 10""")]
+            counts = {
+                "friends": 0,
+                "activities": db.execute("SELECT count(*) FROM activities").fetchone()[0],
+                "communities": db.execute("SELECT count(*) FROM communities").fetchone()[0],
+                "events": db.execute("SELECT count(*) FROM events").fetchone()[0],
+            }
+            return {"user": {"id": 0, "name": "", "username": "", "guest": True},
+                    "state": {"xp": 0, "streak": 0, "activities": 0, "challenge": "pending"},
+                    "leaderboard": leaderboard, "counts": counts, "guest": True}
         user = dict(db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,p.avatar_url,p.onboarding_completed FROM users u JOIN profiles p ON p.user_id=u.id WHERE u.id=?", (user_id,)).fetchone())
         game = user_state(db, user_id)
         leaderboard = [dict(r) for r in db.execute("""SELECT u.name, g.xp, g.streak, g.activities
@@ -902,13 +951,22 @@ class FitverseHandler(BaseHTTPRequestHandler):
         return value
 
     def current_user(self) -> int:
+        """0 = anonymous guest. A visitor without a valid session must never be demo
+        user 1 — that leaked a real person's name and data to every signed-out visitor."""
         token = self.headers.get("X-Session", "")
-        return SESSIONS.get(token, DEMO_USER_ID)
+        return SESSIONS.get(token, 0)
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         query = urlparse(self.path).query
         if path == "/api/health": return self.send_json(200,{"ok":True,"database":"sqlite","time":now()})
+        # Signed-out visitors may browse PUBLIC content only; personal endpoints need a session.
+        _GUEST_OK = ("/api/auth/", "/api/health", "/api/bootstrap", "/api/leaderboard", "/api/users",
+                     "/api/feed", "/api/reels", "/api/activities", "/api/events", "/api/communities",
+                     "/api/community", "/api/businesses", "/api/challenges", "/api/search",
+                     "/api/stream", "/api/friends/activity", "/api/social/context")
+        if self.current_user() <= 0 and path.startswith("/api/") and not path.startswith(_GUEST_OK):
+            return self.send_json(401, {"error": "Sign in to see that"})
         if path == "/api/bootstrap": return self.send_json(200, read_bootstrap(self.current_user()))
         if path == "/api/leaderboard": return self.send_json(200,{"items":read_bootstrap(self.current_user())["leaderboard"]})
         if path == "/api/recommendations": return self.send_json(200,{"items":recommendations(self.current_user()),"model":"deterministic compatibility service"})
@@ -1074,7 +1132,21 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 rows = db.execute("SELECT * FROM businesses WHERE owner_id=? ORDER BY id", (uid,)).fetchall()
             return self.send_json(200, {"items": [dict(r) for r in rows]})
         if path == "/api/messages":
-            with connect() as db: rows=db.execute("SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=1 ORDER BY m.id",()).fetchall()
+            """Legacy endpoint, now privacy-scoped: without ?conversation_id= it serves the
+            caller's most recent thread; with one, it enforces membership like every route."""
+            uid=self.current_user()
+            if uid <= 0: return self.send_json(200,{"items":[]})
+            q=urlparse(self.path).query
+            try: cid=int(q.split("conversation_id=")[-1].split("&")[0] or 0)
+            except ValueError: cid=0
+            with connect() as db:
+                if not cid:
+                    row=db.execute("SELECT conversation_id id FROM dm_participants WHERE user_id=? ORDER BY conversation_id DESC LIMIT 1",(uid,)).fetchone()
+                    cid=row["id"] if row else 0
+                if not cid: return self.send_json(200,{"items":[]})
+                if not db.execute("SELECT 1 FROM dm_participants WHERE conversation_id=? AND user_id=?",(cid,uid)).fetchone():
+                    return self.send_json(403,{"error":"This conversation is private"})
+                rows=db.execute('SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.id',(cid,)).fetchall()
             return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/reports":
             with connect() as db: rows=db.execute("SELECT * FROM reports ORDER BY id DESC LIMIT 50").fetchall()
@@ -1088,6 +1160,69 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 results["communities"]=[dict(r) for r in db.execute("SELECT id,name,description FROM communities WHERE lower(name) LIKE ? OR lower(description) LIKE ? LIMIT 6",(qstr,qstr))]
                 results["events"]=[dict(r) for r in db.execute("SELECT id,name,category,starts_at,price_inr FROM events WHERE lower(name) LIKE ? OR lower(category) LIKE ? LIMIT 6",(qstr,qstr))]
             return self.send_json(200,{"items":results})
+        if path == "/api/auth/google/url":
+            """Start Google sign-in. Honest states: exact free setup steps when unconfigured."""
+            import os as _os
+            client_id=_os.environ.get("GOOGLE_CLIENT_ID","")
+            if not client_id:
+                return self.send_json(200,{"configured":False,"setup":"Free setup (~5 min, no billing): console.cloud.google.com → APIs & Services → OAuth consent screen (External) → Credentials → Create OAuth client ID (Web application) → add Authorized redirect URI <your-site-url>/api/auth/google/callback → then set environment variables GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."})
+            import secrets as _s
+            st=_s.token_urlsafe(16); OAUTH_STATES[st]=time.time()+600
+            host=self.headers.get("Host") or "127.0.0.1:4173"
+            proto=self.headers.get("X-Forwarded-Proto") or ("https" if ".onrender.com" in host else "http")
+            from urllib.parse import quote as _q
+            redirect=f"{proto}://{host}/api/auth/google/callback"
+            url=("https://accounts.google.com/o/oauth2/v2/auth?response_type=code&scope="+_q("openid email profile")
+                 +"&redirect_uri="+_q(redirect)+"&client_id="+_q(client_id)+"&state="+st+"&prompt=select_account")
+            return self.send_json(200,{"configured":True,"url":url})
+        if path == "/api/auth/google/callback":
+            """Official Google OAuth code exchange. Creates or signs into the matching
+            FITVERSE account by verified Google email; the secret never leaves the server."""
+            import os as _os, base64 as _b64, html as _html
+            from urllib.parse import parse_qs as _pqs, quote as _q
+            from urllib.request import Request as _Req, urlopen as _open
+            qs=_pqs(query); code=(qs.get("code") or [""])[0]; st=(qs.get("state") or [""])[0]
+            if not code or not st or OAUTH_STATES.pop(st,0)<time.time():
+                return self.send_json(400,{"error":"Invalid or expired sign-in state — please try again"})
+            client_id=_os.environ.get("GOOGLE_CLIENT_ID",""); client_secret=_os.environ.get("GOOGLE_CLIENT_SECRET","")
+            if not client_id or not client_secret: return self.send_json(500,{"error":"Google sign-in is not configured on this server"})
+            host=self.headers.get("Host") or "127.0.0.1:4173"
+            proto=self.headers.get("X-Forwarded-Proto") or ("https" if ".onrender.com" in host else "http")
+            redirect=f"{proto}://{host}/api/auth/google/callback"
+            try:
+                req=_Req("https://oauth2.googleapis.com/token",
+                    data=json.dumps({"code":code,"client_id":client_id,"client_secret":client_secret,"redirect_uri":redirect,"grant_type":"authorization_code"}).encode(),
+                    headers={"Content-Type":"application/json"})
+                tok=json.loads(_open(req,timeout=10).read().decode())
+                payload=tok.get("id_token","").split(".")[1]; payload+="="*(-len(payload)%4)
+                info=json.loads(_b64.urlsafe_b64decode(payload).decode())
+                email=str(info.get("email","")).lower(); gname=str(info.get("name") or email.split("@")[0]); pic=str(info.get("picture") or "")
+                if not email: raise ValueError("no email in Google profile")
+            except Exception as _e:
+                return self.send_json(401,{"error":f"Google sign-in failed: {_e}"})
+            with connect() as db:
+                row=db.execute("SELECT id,name FROM users WHERE email=?",(email,)).fetchone()
+                if row:
+                    uid=row["id"]; greeting=row["name"]
+                else:
+                    base="".join(ch for ch in email.split("@")[0].lower() if ch.isalnum() or ch=="_")[:20] or "athlete"
+                    username=base; n=1
+                    while db.execute("SELECT 1 FROM users WHERE username=?",(username,)).fetchone(): username=f"{base}{n}"; n+=1
+                    salt=secrets.token_hex(16)
+                    cur=db.execute("INSERT INTO users (name,username,email,password_salt,password_hash,created_at) VALUES (?,?,?,?,?,?)",
+                                   (gname,username,email,salt,hash_password(secrets.token_urlsafe(32),salt),now()))
+                    uid=cur.lastrowid
+                    stamp=now()
+                    db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",(uid,0,0,0,0,0,"pending",0,0,0,stamp))
+                    db.execute("INSERT INTO profiles (user_id,avatar_url,updated_at,onboarding_completed) VALUES (?,?,?,0)",(uid,pic,stamp))
+                    greeting=gname
+            token=secrets.token_urlsafe(32); SESSIONS[token]=uid
+            disp=_html.escape(greeting); safe_name=_q(greeting)
+            html=("<!doctype html><meta charset='utf-8'><title>Signing in…</title><style>body{font-family:system-ui;display:grid;place-items:center;height:100vh;background:#f6faf7;color:#0b1711}</style>"
+                  f"<div style='text-align:center'><div style='font-size:40px'>✅</div><b>Signed in as {disp}</b><p style='color:#647068'>Opening FITVERSE…</p></div>"
+                  f"<script>try{{localStorage.setItem('fitverse-session','{token}')}}catch(e){{}};location.replace('/?welcome={safe_name}');</script>")
+            body=html.encode(); self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+            return
         if path == "/api/stream":
             """Server-Sent Events stream: instant chat + notification push."""
             self.send_response(200)
@@ -1098,20 +1233,24 @@ class FitverseHandler(BaseHTTPRequestHandler):
             uid = self.current_user(); last_msg = 0; last_notif = int(urlparse(self.path).query.split("since=")[-1].split("&")[0] or 0)
             try:
                 with connect() as db:
-                    row = db.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE conversation_id=?", (1,)).fetchone()
-                last_msg = row[0] if row else 0
+                    last_msg = db.execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0]
                 self.wfile.write(b"retry: 3000\n\n"); self.wfile.flush()
                 while True:
                     with connect() as db:
-                        new = db.execute("SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id>? ORDER BY m.id", (last_msg,)).fetchall()
-                        for m in new:
-                            payload = json.dumps(dict(m), ensure_ascii=False)
-                            self.wfile.write(f"event: message\ndata: {payload}\n\n".encode()); last_msg = m["id"]
+                        # Real DM push: only messages in conversations THIS user participates in.
+                        if uid > 0:
+                            conv_ids = [r["id"] for r in db.execute("SELECT conversation_id id FROM dm_participants WHERE user_id=?", (uid,))]
+                            if conv_ids:
+                                marks = ",".join("?" for _ in conv_ids)
+                                new = db.execute(f"SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id IN ({marks}) AND m.id>? ORDER BY m.id", (*conv_ids, last_msg)).fetchall()
+                                for m in new:
+                                    payload = json.dumps(dict(m), ensure_ascii=False)
+                                    self.wfile.write(f"event: message\ndata: {payload}\n\n".encode()); last_msg = m["id"]
                         notes = db.execute("SELECT * FROM notifications WHERE user_id=? AND id>? ORDER BY id", (uid, last_notif)).fetchall()
                         for n in notes:
                             self.wfile.write(f"event: notification\ndata: {json.dumps(dict(n), ensure_ascii=False)}\n\n".encode()); last_notif = n["id"]
-                    # Typing indicator: someone OTHER than the viewer typed in the last 2.5s.
-                    active_now = [cid for cid, (ts, who) in TYPING.items() if time.time() - ts < 2.5 and who != uid]
+                    # Typing indicator (signed-in only): someone OTHER than the viewer typed in the last 2.5s.
+                    active_now = [cid for cid, (ts, who) in TYPING.items() if uid > 0 and time.time() - ts < 2.5 and who != uid]
                     if active_now:
                         self.wfile.write(f"event: typing\ndata: {json.dumps({'conversations': active_now})}\n\n".encode())
                     self.wfile.write(b": ping\n\n"); self.wfile.flush()
@@ -1205,16 +1344,38 @@ class FitverseHandler(BaseHTTPRequestHandler):
               WHERE f.requester_id=? OR f.addressee_id=?""",(uid,uid,uid)).fetchall()
             return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/conversations":
+            """Real per-user inbox: direct threads the caller participates in, titled by the
+            other real user, with unread counts. Guests get an empty inbox."""
             uid=self.current_user()
+            if uid <= 0: return self.send_json(200,{"items":[]})
             with connect() as db:
-                rows=db.execute("""SELECT c.*, (SELECT body FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
+                rows=db.execute("""SELECT c.id,c.kind,c.created_at,
+                  (SELECT body FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
                   (SELECT created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_at,
-                  (SELECT count(*) FROM messages m WHERE m.conversation_id=c.id) AS message_count
-                  FROM conversations c ORDER BY c.id""").fetchall()
-            return self.send_json(200,{"items":[dict(r) for r in rows]})
+                  (SELECT count(*) FROM messages m WHERE m.conversation_id=c.id) AS message_count,
+                  (SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND m.sender_id<>? AND m.id>COALESCE(rp.last_read,0)) AS unread,
+                  (SELECT u2.name FROM dm_participants dp JOIN users u2 ON u2.id=dp.user_id WHERE dp.conversation_id=c.id AND dp.user_id<>?) AS other_name
+                  FROM conversations c
+                  JOIN dm_participants rp ON rp.conversation_id=c.id AND rp.user_id=?
+                  ORDER BY COALESCE((SELECT m.created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1), c.created_at) DESC""",(uid,uid,uid)).fetchall()
+            items=[]
+            for r in rows:
+                d=dict(r)
+                d["title"]=d["other_name"] or "Direct chat"
+                d.pop("other_name",None)
+                items.append(d)
+            return self.send_json(200,{"items":items})
         if path.startswith("/api/conversations/"):
-            cid=int(path.split("/")[3])
-            with connect() as db: rows=db.execute('SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.id',(cid,)).fetchall()
+            """Thread history — members only. Opening the thread marks it read."""
+            uid=self.current_user()
+            if uid <= 0: return self.send_json(401,{"error":"Sign in to read your conversations"})
+            try: cid=int(path.split("/")[3])
+            except ValueError: return self.send_json(404,{"error":"Conversation not found"})
+            with connect() as db:
+                if not db.execute("SELECT 1 FROM dm_participants WHERE conversation_id=? AND user_id=?",(cid,uid)).fetchone():
+                    return self.send_json(403,{"error":"This conversation is private"})
+                rows=db.execute('SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.id',(cid,)).fetchall()
+                db.execute("UPDATE dm_participants SET last_read=(SELECT COALESCE(MAX(id),0) FROM messages WHERE conversation_id=?) WHERE conversation_id=? AND user_id=?",(cid,cid,uid))
             return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/comments":
             post_id=int(urlparse(self.path).query.split("post_id=")[-1] or 0)
@@ -1537,6 +1698,9 @@ class FitverseHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             path = urlparse(self.path).path; data = self.body()
+            # Every write needs a real account; guests get a clear sign-in prompt.
+            if self.current_user() <= 0 and not path.startswith("/api/auth/"):
+                return self.send_json(401,{"error":"Sign in to do that"})
             if path == "/api/auth/login":
                 username=str(data.get("username","")).strip().lower(); password=str(data.get("password",""))
                 with connect() as db: user=db.execute("SELECT * FROM users WHERE username=? OR email=?",(username,username)).fetchone()
@@ -1663,17 +1827,59 @@ class FitverseHandler(BaseHTTPRequestHandler):
             if path == "/api/actions":
                 action=str(data.get("action","sync")); return self.send_json(200,perform_action(self.current_user(),action,data.get("state",{})))
             if path == "/api/messages":
+                """Real user-to-user direct message. Body: {to_user_id} starts/continues a
+                private thread with that real registered user; {conversation_id} continues one."""
+                uid = self.current_user()
+                if uid <= 0: return self.send_json(401,{"error":"Sign in to send messages"})
                 body=str(data.get("body","")).strip()
-                if not body or len(body)>1000:return self.send_json(400,{"error":"Message must be 1–1000 characters"})
-                cid=int(data.get("conversation_id",1))
+                if not body or len(body)>1000: return self.send_json(400,{"error":"Message must be 1–1000 characters"})
                 with connect() as db:
-                    db.execute("INSERT INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)",(cid,self.current_user(),body,now()))
-                    kind=db.execute("SELECT kind FROM conversations WHERE id=?",(cid,)).fetchone()
-                    if kind and kind["kind"]=="direct":
-                        other=db.execute("SELECT sender_id FROM messages WHERE conversation_id=? AND sender_id<>? ORDER BY id DESC LIMIT 1",(cid,self.current_user())).fetchone()
-                        mate=other["sender_id"] if other else 2
-                        schedule_auto_reply(cid, mate)
-                return self.send_json(201,{"ok":True})
+                    to_uid=int(data.get("to_user_id",0) or 0)
+                    cid=int(data.get("conversation_id",0) or 0)
+                    if to_uid==uid: return self.send_json(400,{"error":"You cannot message yourself"})
+                    if cid:
+                        if not db.execute("SELECT 1 FROM dm_participants WHERE conversation_id=? AND user_id=?",(cid,uid)).fetchone():
+                            return self.send_json(403,{"error":"This conversation is private"})
+                        other=db.execute("SELECT user_id FROM dm_participants WHERE conversation_id=? AND user_id<>?",(cid,uid)).fetchone()
+                        if not other: return self.send_json(400,{"error":"This conversation has no other participant"})
+                        other_id=other["user_id"]
+                    elif to_uid:
+                        if not db.execute("SELECT 1 FROM users WHERE id=?",(to_uid,)).fetchone(): return self.send_json(404,{"error":"Athlete not found"})
+                        row=db.execute("""SELECT dp.conversation_id id FROM dm_participants dp JOIN conversations c ON c.id=dp.conversation_id
+                          WHERE c.kind='direct' AND dp.user_id IN (?,?) GROUP BY dp.conversation_id HAVING count(*)=2""",(uid,to_uid)).fetchone()
+                        if row: cid=row["id"]
+                        else:
+                            stamp=now()
+                            cid=db.execute("INSERT INTO conversations (kind,title,created_at) VALUES ('direct',?,?)",("",stamp)).lastrowid
+                            db.executemany("INSERT INTO dm_participants (conversation_id,user_id,last_read) VALUES (?,?,0)",[(cid,uid),(cid,to_uid)])
+                    else:
+                        return self.send_json(400,{"error":"Recipient is required"})
+                    # Notify only when the recipient isn't already caught up in this thread.
+                    prev_max=db.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE conversation_id=?",(cid,)).fetchone()[0]
+                    lr=db.execute("SELECT last_read FROM dm_participants WHERE conversation_id=? AND user_id=?",(cid,other_id)).fetchone()
+                    caught_up=bool(lr and lr["last_read"]>=prev_max)
+                    db.execute("INSERT INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)",(cid,uid,body,now()))
+                    if not caught_up:
+                        sender=db.execute("SELECT name FROM users WHERE id=?",(uid,)).fetchone()
+                        import platform_service
+                        platform_service.notify(db, other_id, "message", f"💬 {sender['name']}", body[:120], link=f"conversation:{cid}")
+                return self.send_json(201,{"ok":True,"conversation_id":cid})
+            if path == "/api/dm/start":
+                """Open (or reuse) a private thread with another registered user."""
+                uid=self.current_user()
+                if uid<=0: return self.send_json(401,{"error":"Sign in to message athletes"})
+                to_uid=int(data.get("to_user_id",0) or 0)
+                if not to_uid or to_uid==uid: return self.send_json(400,{"error":"Pick another athlete to message"})
+                with connect() as db:
+                    if not db.execute("SELECT 1 FROM users WHERE id=?",(to_uid,)).fetchone(): return self.send_json(404,{"error":"Athlete not found"})
+                    row=db.execute("""SELECT dp.conversation_id id FROM dm_participants dp JOIN conversations c ON c.id=dp.conversation_id
+                      WHERE c.kind='direct' AND dp.user_id IN (?,?) GROUP BY dp.conversation_id HAVING count(*)=2""",(uid,to_uid)).fetchone()
+                    if row: cid=row["id"]
+                    else:
+                        stamp=now()
+                        cid=db.execute("INSERT INTO conversations (kind,title,created_at) VALUES ('direct',?,?)",("",stamp)).lastrowid
+                        db.executemany("INSERT INTO dm_participants (conversation_id,user_id,last_read) VALUES (?,?,0)",[(cid,uid),(cid,to_uid)])
+                return self.send_json(200,{"conversation_id":cid})
             if path == "/api/typing":
                 TYPING[int(data.get("conversation_id",1))] = (time.time(), self.current_user())
                 return self.send_json(200,{"ok":True})

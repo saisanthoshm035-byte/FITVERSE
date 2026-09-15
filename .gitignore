@@ -8,3 +8,4 @@ fitverse.db
 fitverse.db-shm
 fitverse.db-wal
 server.log
+.env
