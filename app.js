@@ -1932,7 +1932,11 @@ function startSSE() {
 async function authWithGoogle() {
   try {
     const r = await api('/api/auth/google/url');
-    if (!r.configured) { modal(`<span class="eyebrow">GOOGLE SIGN-IN</span><h2>One free setup step</h2><p style="white-space:pre-wrap">${escapeHtml(r.setup)}</p><div class="hero-actions" style="margin-top:10px"><button class="outline" data-action="close">Got it</button></div>`); bind(); return; }
+    if (!r.configured) {
+      const redirect = `${location.origin}/api/auth/google/callback`;
+      modal(`<span class="eyebrow">GOOGLE SIGN-IN</span><h2>One free setup step</h2><p>Google requires FITVERSE to be registered in a (free) Google Cloud project before it can vouch for sign-ins. About 5 minutes, no billing, one time:</p><ol class="setup-steps"><li>Open <b>console.cloud.google.com</b> → <b>APIs &amp; Services</b> → <b>OAuth consent screen</b> → pick <b>External</b> → fill only the app name + your email → Save.</li><li>Still in <b>APIs &amp; Services</b> → <b>Credentials</b> → <b>Create credentials</b> → <b>OAuth client ID</b> → type <b>Web application</b>.</li><li>Under <b>Authorized redirect URIs</b>, paste exactly:<div class="code">${escapeHtml(redirect)}</div></li><li>Copy the <b>Client ID</b> and <b>Client secret</b> it shows you.</li><li>Set environment variables <b>GOOGLE_CLIENT_ID</b> and <b>GOOGLE_CLIENT_SECRET</b> (local: the <b>.env</b> file · Render: dashboard → Environment) and restart.</li></ol><p class="loading">Until then, email + password sign-in works fully — Google just can't verify visitors yet.</p><div class="hero-actions" style="margin-top:10px"><button class="outline" data-action="close">Got it</button></div>`);
+      bind(); return;
+    }
     if (evtSource) { evtSource.close(); evtSource = null; }
     location.href = r.url;
   } catch (e) { toast(e.message); }
