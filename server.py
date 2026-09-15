@@ -1146,7 +1146,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 if not cid: return self.send_json(200,{"items":[]})
                 if not db.execute("SELECT 1 FROM dm_participants WHERE conversation_id=? AND user_id=?",(cid,uid)).fetchone():
                     return self.send_json(403,{"error":"This conversation is private"})
-                rows=db.execute('SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.id',(cid,)).fetchall()
+                rows=db.execute('SELECT m.*,u.name,p.avatar_url FROM messages m JOIN users u ON u.id=m.sender_id LEFT JOIN profiles p ON p.user_id=m.sender_id WHERE m.conversation_id=? ORDER BY m.id',(cid,)).fetchall()
             return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/reports":
             with connect() as db: rows=db.execute("SELECT * FROM reports ORDER BY id DESC LIMIT 50").fetchall()
@@ -1242,7 +1242,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
                             conv_ids = [r["id"] for r in db.execute("SELECT conversation_id id FROM dm_participants WHERE user_id=?", (uid,))]
                             if conv_ids:
                                 marks = ",".join("?" for _ in conv_ids)
-                                new = db.execute(f"SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id IN ({marks}) AND m.id>? ORDER BY m.id", (*conv_ids, last_msg)).fetchall()
+                                new = db.execute(f"SELECT m.*,u.name,p.avatar_url FROM messages m JOIN users u ON u.id=m.sender_id LEFT JOIN profiles p ON p.user_id=m.sender_id WHERE m.conversation_id IN ({marks}) AND m.id>? ORDER BY m.id", (*conv_ids, last_msg)).fetchall()
                                 for m in new:
                                     payload = json.dumps(dict(m), ensure_ascii=False)
                                     self.wfile.write(f"event: message\ndata: {payload}\n\n".encode()); last_msg = m["id"]
@@ -1316,7 +1316,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 items=[dict(r) for r in db.execute("SELECT b.booking_code,b.status,b.quantity,e.name,e.starts_at,e.location_label FROM bookings b JOIN events e ON e.id=b.event_id WHERE b.user_id=? ORDER BY b.id DESC",(self.current_user(),))]
             return self.send_json(200,{"items":items})
         if path == "/api/users":
-            with connect() as db: rows=db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,g.xp,g.streak FROM users u JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id ORDER BY g.xp DESC").fetchall()
+            with connect() as db: rows=db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,p.avatar_url,g.xp,g.streak FROM users u JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id ORDER BY g.xp DESC").fetchall()
             items=[]
             for r in rows:
                 d=dict(r); d["photo"]=f"img/p{1 + (d['id'] % 12)}.jpg"; items.append(d)
@@ -1354,15 +1354,17 @@ class FitverseHandler(BaseHTTPRequestHandler):
                   (SELECT created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_at,
                   (SELECT count(*) FROM messages m WHERE m.conversation_id=c.id) AS message_count,
                   (SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND m.sender_id<>? AND m.id>COALESCE(rp.last_read,0)) AS unread,
-                  (SELECT u2.name FROM dm_participants dp JOIN users u2 ON u2.id=dp.user_id WHERE dp.conversation_id=c.id AND dp.user_id<>?) AS other_name
+                  (SELECT u2.name FROM dm_participants dp JOIN users u2 ON u2.id=dp.user_id WHERE dp.conversation_id=c.id AND dp.user_id<>?) AS other_name,
+                  (SELECT pr.avatar_url FROM dm_participants dp JOIN profiles pr ON pr.user_id=dp.user_id WHERE dp.conversation_id=c.id AND dp.user_id<>?) AS other_avatar
                   FROM conversations c
                   JOIN dm_participants rp ON rp.conversation_id=c.id AND rp.user_id=?
-                  ORDER BY COALESCE((SELECT m.created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1), c.created_at) DESC""",(uid,uid,uid)).fetchall()
+                  ORDER BY COALESCE((SELECT m.created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1), c.created_at) DESC""",(uid,uid,uid,uid)).fetchall()
             items=[]
             for r in rows:
                 d=dict(r)
                 d["title"]=d["other_name"] or "Direct chat"
-                d.pop("other_name",None)
+                if d.get("other_avatar"): d["other_avatar_url"]=d["other_avatar"]
+                d.pop("other_name",None); d.pop("other_avatar",None)
                 items.append(d)
             return self.send_json(200,{"items":items})
         if path.startswith("/api/conversations/"):
@@ -1374,7 +1376,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
             with connect() as db:
                 if not db.execute("SELECT 1 FROM dm_participants WHERE conversation_id=? AND user_id=?",(cid,uid)).fetchone():
                     return self.send_json(403,{"error":"This conversation is private"})
-                rows=db.execute('SELECT m.*,u.name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.id',(cid,)).fetchall()
+                rows=db.execute('SELECT m.*,u.name,p.avatar_url FROM messages m JOIN users u ON u.id=m.sender_id LEFT JOIN profiles p ON p.user_id=m.sender_id WHERE m.conversation_id=? ORDER BY m.id',(cid,)).fetchall()
                 db.execute("UPDATE dm_participants SET last_read=(SELECT COALESCE(MAX(id),0) FROM messages WHERE conversation_id=?) WHERE conversation_id=? AND user_id=?",(cid,cid,uid))
             return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/comments":
@@ -1577,7 +1579,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
         if path == "/api/friends":
             uid=self.current_user()
             with connect() as db:
-                friends=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.favorite_activity,g.streak,g.xp,p.bio
+                friends=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.favorite_activity,g.streak,g.xp,p.bio,p.avatar_url
                   FROM friendships f JOIN users u ON u.id=CASE WHEN f.requester_id=? THEN f.addressee_id ELSE f.requester_id END
                   JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id
                   WHERE f.status='accepted' AND (f.requester_id=? OR f.addressee_id=?) ORDER BY u.name""",(uid,uid,uid))]

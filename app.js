@@ -10,9 +10,22 @@ const PHOTOS = {
 };
 const sportPhoto = (sport) => PHOTOS[String(sport || '').toLowerCase()] || PHOTOS.workout;
 const AVATARS = {};
-function syncAvatars() { if (me().avatar_url) AVATARS[me().id || 1] = me().avatar_url; if (pageData.profile?.avatar_url) AVATARS[pageData.profile.id || 1] = pageData.profile.avatar_url; }
-const photoAvatar = (name, i, size = 36) => {
-  const custom = AVATARS[Number(i)];
+function syncAvatars() {
+  if (me().avatar_url) AVATARS[me().id || 1] = me().avatar_url;
+  if (pageData.profile?.avatar_url) AVATARS[pageData.profile.id || 1] = pageData.profile.avatar_url;
+  // Real uploaded photos win over stock placeholders — collect them from every payload.
+  const collect = (arr) => (arr || []).forEach(x => { const id = Number(x.sender_id || x.author_id || x.user_id || x.id); if (id && x.avatar_url) AVATARS[id] = x.avatar_url; });
+  collect(pageData.feed); collect(pageData.reels); collect(pageData.messages); collect(pageData.users);
+  collect(pageData.friends); collect(pageData.fitmatch); collect(pageData.recommendations); collect(pageData.notifications);
+  (pageData.conversations || []).forEach(c => {
+    if (c.kind !== 'direct' || !c.other_avatar_url) return;
+    // Resolve the other participant's id from the thread's messages (they share the title).
+    const other = (pageData.messages || []).find(m => !me().id || m.sender_id !== me().id) || (pageData.messages || []).find(m => m.name === c.title);
+    if (other && other.avatar_url) AVATARS[Number(other.sender_id)] = other.avatar_url;
+  });
+}
+const photoAvatar = (name, i, size = 36, url = '') => {
+  const custom = url || AVATARS[Number(i)];
   const src = custom || PHOTOS['p' + (1 + (Math.abs(Number(i) || 1) - 1) % 12)];
   return `<span class="pavatar" style="background-image:url('${src}')"></span>`;
 };
@@ -424,7 +437,7 @@ ${emptyState('✉', 'No conversations yet', 'Open any athlete’s profile and ta
     return `${showDay ? `<div class="day-divider"><span>${dayShort(m.created_at)}</span></div>` : ''}<div class="msg-row ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}">${!grouped ? photoAvatar(m.name || (mine ? (me().name || 'You') : (active.title || 'Athlete')), m.sender_id) : '<span class="pavatar-spacer"></span>'}<p class="${mine ? 'sent' : 'received'}">${escapeHtml(m.body)}<time>${m.created_at?.includes('T') ? timeShort(m.created_at) : escapeHtml(m.created_at || 'now')}</time></p></div>`;
   }).join('') || '<p style="opacity:.6">Say hi 👋</p>';
   return shell(`${pageHeader('Messages', 'Real conversations, stored in your database.')}
-<div class="message-layout"><aside class="conversation-list"><div class="message-search">⌕ <input id="chat-search" placeholder="Search chats" style="border:0;background:none;outline:0;width:80%"/></div>${convs.map(c => `<button class="conversation ${c.id === pageData.activeConversation ? 'selected' : ''}" data-conv="${c.id}">${photoAvatar(c.title, c.id)}<div><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml((c.last_message || 'Say hi').slice(0, 34))}</small></div><time>${c.last_at ? timeShort(c.last_at) : ''}</time></button>`).join('')}</aside><section class="chat"><div class="chat-head">${photoAvatar(active.title, active.id)}<div><strong>${escapeHtml(active.title)}</strong><small>${escapeHtml(active.kind)} · <span class="live-dot">●</span> live</small></div><button data-action="convMenu" data-id="${active.id}">•••</button></div><div class="bubbles" id="bubbles">${bubbles}</div><div class="typing" id="typing" style="display:none"><span></span><span></span><span></span></div><form class="composer" data-form="message" data-conv="${active.id}"><input id="composer-input" placeholder="Message ${escapeHtml(String(active.title).split(' ')[0])}..." maxlength="1000" required/><button aria-label="Send message">➤</button></form></section></div>`);
+<div class="message-layout"><aside class="conversation-list"><div class="message-search">⌕ <input id="chat-search" placeholder="Search chats" style="border:0;background:none;outline:0;width:80%"/></div>${convs.map(c => `<button class="conversation ${c.id === pageData.activeConversation ? 'selected' : ''}" data-conv="${c.id}">${photoAvatar(c.title, c.id, 36, c.other_avatar_url)}<div><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml((c.last_message || 'Say hi').slice(0, 34))}</small></div><time>${c.last_at ? timeShort(c.last_at) : ''}</time></button>`).join('')}</aside><section class="chat"><div class="chat-head">${photoAvatar(active.title, active.id, 36, active.other_avatar_url)}<div><strong>${escapeHtml(active.title)}</strong><small>${escapeHtml(active.kind)} · <span class="live-dot">●</span> live</small></div><button data-action="convMenu" data-id="${active.id}">•••</button></div><div class="bubbles" id="bubbles">${bubbles}</div><div class="typing" id="typing" style="display:none"><span></span><span></span><span></span></div><form class="composer" data-form="message" data-conv="${active.id}"><input id="composer-input" placeholder="Message ${escapeHtml(String(active.title).split(' ')[0])}..." maxlength="1000" required/><button aria-label="Send message">➤</button></form></section></div>`);
 }
 function profile() {
   const p = me();
@@ -1898,7 +1911,7 @@ function startSSE() {
       if (state.page === 'messages' && Number(m.conversation_id) === Number(pageData.activeConversation)) {
         pageData.messages.push(m); render(); scrollBubbles();
       }
-      api('/api/conversations').then(d => { pageData.conversations = d.items || []; if (state.page === 'messages') render(); }).catch(() => {});
+      api('/api/conversations').then(d => { pageData.conversations = d.items || []; syncAvatars(); if (state.page === 'messages') render(); }).catch(() => {});
     });
     evtSource.addEventListener('notification', (e) => {
       const n = JSON.parse(e.data);
