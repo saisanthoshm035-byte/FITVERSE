@@ -120,31 +120,130 @@ def fitness_dna(uid: int) -> dict:
             "SELECT COUNT(*) FROM missions WHERE user_id=? AND status='completed' AND completed_at>=date('now','-28 days')",
             (uid,)).fetchone()[0] if _table_exists(db, "missions") else 0
 
-    target_days = max(2, int(s.get("days_per_week") or 4) * 4 * 0.9)  # 28d target, slight grace
-    consistency = 100.0 * days_trained / target_days
+    # ================================================================
+    # FITVERSE FITNESS DNA - SCORING SYSTEM v3 (pure functions of real data)
+    # ----------------------------------------------------------------
+    # Every score = an independent BASELINE + a bounded function of the
+    # user's REAL logged activity. The function is PURE: recomputing with
+    # unchanged data yields identical scores (no drift, no double-counting),
+    # and scores only move when real activity changes.
+    #
+    # Baselines (independent per metric — a beginner is not equally strong,
+    # disciplined and social on day one):
+    #   strength 15 · consistency 5 · cardio 10 · social 8
+    #   discipline 12 · nutrition 8 · intensity 5
+    #
+    # Data windows are fixed (28 days for behavior, 90 days for PRs) and all
+    # inputs come from real workout_logs / nutrition_logs / water_logs /
+    # posts / challenges / activities tables. PRs are genuine by
+    # construction: workout logger sets is_pr only when a logged weight
+    # beats that exercise's previous maximum.
+    # ================================================================
+    BASE = {"strength": 15.0, "consistency": 5.0, "cardio": 10.0, "social": 8.0,
+            "discipline": 12.0, "nutrition": 8.0, "intensity": 5.0}
 
-    pr_count = _recent_prs(uid)
-    strength = _clamp(40 + min(30, volume / 500) + min(18, pr_count * 6))
-    cardio = _clamp(min(100, 18 + cardio_min * 1.1 + (15 if split["cardio"] else 0)))
-    social_score = _clamp(20 + social * 5)
-    discipline = _clamp(consistency * 0.55 + min(30, days_logged_meals * 4) + min(15, days_logged_water * 3))
-    intensity = _clamp(35 + (rpe or 5) * 8 + (10 if sessions_28 >= 8 else 0))
-    nutrition = _clamp(min(100, days_logged_meals * 11 + days_logged_water * 4))
-    consistency = _clamp(consistency + min(15, game["streak"] * 2) + min(10, mission_done * 5))
-    # challenge participation nudges discipline & social
-    if challenge_rows:
-        discipline = _clamp(discipline + 4)
-        social_score = _clamp(social_score + 4)
+    # ---- CONSISTENCY: real training days vs YOUR weekly target (28d window)
+    target_week = max(2, int(s.get("days_per_week") or 4))
+    target_days28 = target_week * 4
+    consistency = BASE["consistency"] \
+        + min(50.0, 50.0 * days_trained / max(1, target_days28)) \
+        + min(15.0, game["streak"] * 1.5) \
+        + min(10.0, mission_done * 2.5)
+    consistency = _clamp(consistency)
+
+    # ---- STRENGTH: real lifting volume + GENUINE PRs (90d) + lifetime PRs
+    pr_count = _recent_prs(uid, days=90)
+    pr_total = db.execute(
+        "SELECT COUNT(*) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id "
+        "WHERE ws.user_id=? AND wl.is_pr=1 AND wl.weight>0", (uid,)).fetchone()[0]
+    strength = BASE["strength"] \
+        + min(15.0, volume / 1000) \
+        + min(24.0, pr_count * 3.0) \
+        + min(16.0, pr_total * 0.8) \
+        + (6.0 if (split["upper"] and split["lower"]) else 0.0)
+    strength = _clamp(strength)
+
+    # ---- CARDIO: real logged cardio minutes (28d + this week), capped
+    cardio_min_week = db.execute(
+        "SELECT COALESCE(SUM(wl.duration_min),0) FROM workout_logs wl "
+        "JOIN workout_sessions ws ON ws.id=wl.session_id JOIN exercises e ON e.id=wl.exercise_id "
+        "WHERE ws.user_id=? AND e.muscle='Cardio' AND ws.created_at>=date('now','-7 days')",
+        (uid,)).fetchone()[0]
+    cardio = BASE["cardio"] \
+        + min(45.0, cardio_min * 0.9) \
+        + min(20.0, cardio_min_week * 0.7) \
+        + (5.0 if split["cardio"] else 0.0)
+    cardio = _clamp(cardio)
+
+    # ---- SOCIAL: real fitness participation WITH others (28d).
+    # Friend count deliberately does NOT count.
+    social_ev = db.execute(
+        "SELECT "
+        "(SELECT COUNT(*) FROM posts WHERE author_id=? AND created_at>=date('now','-28 days')) + "
+        "(SELECT COUNT(*) FROM comments WHERE author_id=? AND created_at>=date('now','-28 days')) + "
+        "(SELECT COUNT(*) FROM community_members WHERE user_id=?) + "
+        "(SELECT COUNT(*) FROM challenge_participants WHERE user_id=?) + "
+        "(SELECT COUNT(*) FROM activity_participants ap "
+        "WHERE ap.user_id=? AND ap.joined_at>=date('now','-28 days') AND "
+        "(SELECT COUNT(*) FROM activity_participants ap2 "
+        "WHERE ap2.activity_id=ap.activity_id AND ap2.user_id<>ap.user_id) > 0)",
+        (uid, uid, uid, uid, uid)).fetchone()[0]
+    social_score = BASE["social"] + min(42.0, social_ev * 3.0)
+    social_score = _clamp(social_score)
+
+    # ---- DISCIPLINE: following YOUR plan (sessions vs target + logging habits)
+    discipline = BASE["discipline"] \
+        + min(25.0, 25.0 * days_trained / max(1, target_days28)) \
+        + min(20.0, days_logged_meals * 0.8) \
+        + min(15.0, days_logged_water * 0.6) \
+        + min(8.0, mission_done * 2.0) \
+        + (4.0 if challenge_rows else 0.0)
+    discipline = _clamp(discipline)
+
+    # ---- NUTRITION: logging consistency + staying near YOUR calorie target
+    kcal_hit = db.execute(
+        "SELECT COUNT(*) FROM ("
+        "SELECT logged_on, SUM(kcal) k FROM nutrition_logs "
+        "WHERE user_id=? AND logged_on>=date('now','-28 days') GROUP BY logged_on"
+        ") WHERE k>0 AND k>=0.8*(SELECT COALESCE(kcal_target,2000) FROM user_settings WHERE user_id=?) "
+        "AND k<=1.1*(SELECT COALESCE(kcal_target,2000) FROM user_settings WHERE user_id=?)",
+        (uid, uid, uid)).fetchone()[0]
+    nutrition = BASE["nutrition"] \
+        + min(40.0, days_logged_meals * 1.6) \
+        + min(20.0, days_logged_water * 0.8) \
+        + min(12.0, kcal_hit * 1.5)
+    nutrition = _clamp(nutrition)
+
+    # ---- INTENSITY: real effort (RPE, volume, PRs) + overtraining guard
+    intensity = BASE["intensity"] \
+        + ((rpe or 0) - 5) * 6.0 \
+        + min(20.0, volume / 2000) \
+        + min(15.0, pr_count * 2.5) \
+        - (8.0 if sessions_28 > 20 else 0.0)
+    intensity = _clamp(intensity)
 
     scores = {
-        "strength": strength,
-        "consistency": consistency,
-        "cardio": cardio,
-        "social": social_score,
-        "discipline": discipline,
-        "nutrition": nutrition,
-        "intensity": intensity,
+        "strength": round(strength),
+        "consistency": round(consistency),
+        "cardio": round(cardio),
+        "social": round(social_score),
+        "discipline": round(discipline),
+        "nutrition": round(nutrition),
+        "intensity": round(intensity),
     }
+
+    # ---- persist a snapshot (informational: feeds history surfaces later).
+    # Scores themselves are always recomputed pure, so the cache never drifts.
+    if uid > 0:
+        try:
+            with connect() as _db3:
+                _db3.execute("INSERT OR IGNORE INTO user_settings (user_id,updated_at) VALUES (?,?)", (uid, now()))
+                _db3.execute("UPDATE user_settings SET dna_cache=?,target_week=?,updated_at=? WHERE user_id=?",
+                             (_json.dumps(scores), target_week, now(), uid))
+                _db3.commit()
+        except Exception as _e:
+            print("dna persist:", repr(_e))
+
     personality, focus = _personality(scores, split, s)
     strengths = [k.capitalize() for k, v in sorted(scores.items(), key=lambda kv: -kv[1])[:2] if v >= 40]
     improve = [k.capitalize() for k, v in sorted(scores.items(), key=lambda kv: kv[1])[:2] if v < 70]

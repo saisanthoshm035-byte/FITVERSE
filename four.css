@@ -4,7 +4,7 @@
    ============================================================ */
 
 /* ---- Notification center ---- */
-.notif-center{min-width:min(560px,92vw);max-height:78vh;overflow:auto}
+.notif-center{width:100%;max-height:none;overflow:visible}
 .notif-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
 .notif-list{display:flex;flex-direction:column;gap:8px;margin:10px 0 16px}
 .notif-item{display:flex;gap:12px;align-items:flex-start;background:#f6faf7;border:1px solid #e4ece6;border-radius:14px;padding:12px 14px;position:relative}
@@ -158,3 +158,33 @@
 /* Google sign-in setup steps modal */
 .setup-steps { margin: 10px 0; padding-left: 20px; display: grid; gap: 10px; font-size: 14px; line-height: 1.5; }
 .setup-steps .code { display: block; margin-top: 6px; padding: 8px 10px; background: #f2f7f2; border: 1px solid #dfe8df; border-radius: 8px; font-family: var(--mono, monospace); font-size: 12px; word-break: break-all; user-select: all; }
+
+
+/* ===== FITVERSE v5.2 fixes ===== */
+/* Initial-based avatars (no random stock faces) */
+.pavatar.init-avatar{display:grid;place-items:center;font:800 13px/1 'DM Sans',sans-serif;color:#132a1d;background:#e7f3d8;text-shadow:none}
+.pavatar.init-avatar.mint{background:#d9f2c9}.pavatar.init-avatar.blue{background:#d7e6f7}
+.pavatar.init-avatar.purple{background:#eadff7}.pavatar.init-avatar.teal{background:#d3eeea}
+.pavatar.init-avatar.orange{background:#fde8d2}.pavatar.init-avatar.coral{background:#fbdcdc}
+/* Back button */
+.icon-btn.back-btn{font-weight:700}
+/* Notification center: fits the panel, scrolls internally */
+.modal-card.wide{width:min(700px,calc(100vw - 30px));max-height:min(86vh,760px);overflow:auto}
+.notif-scroll{max-height:none}
+/* Workout logging: labeled, roomy numeric inputs */
+.wo-head{display:grid;grid-template-columns:2.2fr 1fr 1fr 1.2fr;gap:8px;font:700 9px 'DM Mono',monospace;letter-spacing:.6px;color:#758078;margin-bottom:4px}
+.wo-row input{min-width:0;font-size:15px;font-weight:700;text-align:center;-moz-appearance:textfield}
+.wo-row input::-webkit-outer-spin-button,.wo-row input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.wo-row{grid-template-columns:minmax(0,2.2fr) minmax(64px,1fr) minmax(64px,1fr) minmax(78px,1.2fr)}
+.wo-row + .wo-head{display:none}
+.wo-head{grid-template-columns:minmax(0,2.2fr) minmax(64px,1fr) minmax(64px,1fr) minmax(78px,1.2fr)}
+/* Calorie bar color contract (per-user target) */
+.bar.kcal-bar i{transition:width .3s,background .3s}
+.bar.kcal-bar.empty i{background:#f87171}
+.bar.kcal-bar.low i{background:#fb923c}
+.bar.kcal-bar.mid i{background:#facc15}
+.bar.kcal-bar.ok i{background:#84cc16}
+.bar.kcal-bar.warn i{background:#fb923c}
+.bar.kcal-bar.over i{background:#ef4444;box-shadow:0 0 14px 2px rgba(239,68,68,.55)}
+/* Water custom unit row */
+.water-unit-row{display:grid;grid-template-columns:2fr 1fr;gap:8px}

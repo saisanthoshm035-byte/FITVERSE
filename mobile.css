@@ -251,3 +251,17 @@ button:active{transform:scale(.97);transition:transform .08s}
 .social-chip{display:inline-flex;align-items:center;gap:4px;background:#eef6d6;color:#33691d;border-radius:99px;padding:3px 9px;font-size:10.5px;font-weight:700;margin:4px 0 2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:760px){.fa-row time{display:none}.fa-list{padding:8px}}
 @media(prefers-reduced-motion:reduce){.fa-row{transition:none}}
+
+
+/* ===== v5.2: workout tab matches the other tabs (no raised circle) ===== */
+@media (max-width:760px){
+  .mobile-nav button:nth-child(3){background:none;border-radius:0;width:auto;height:auto;margin-top:0;box-shadow:none;display:grid}
+  .mobile-nav button:nth-child(3) small{display:block}
+  .mobile-nav{overflow-x:auto;justify-content:flex-start;gap:2px;scrollbar-width:none}
+  .mobile-nav::-webkit-scrollbar{display:none}
+  .mobile-nav button{flex:0 0 auto}
+  .wo-head{font-size:8px}
+  .wo-row{grid-template-columns:1.6fr 1fr 1fr 1.2fr}
+  .wo-row input{font-size:14px}
+  .water-actions{flex-wrap:wrap}
+}

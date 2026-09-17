@@ -45,25 +45,6 @@ TYPING: dict[int, tuple] = {}  # conversation_id -> (last typing timestamp, user
 DEMO_USER_ID = 1
 
 
-def schedule_auto_reply(cid: int, mate: int) -> None:
-    """Insert a canned reply ~2.2s later on a worker thread so the client sees a typing indicator first."""
-    canned = ["Let's do it! 💪", "Just finished my warm-up — see you there.", "Nice! I'll bring the extra ball 🏀",
-              "What time works for you tomorrow?", "Great session today. Same time next week?", "Count me in 🔥",
-              "On my way — save me a spot!", "That pace was insane today 🔥", "Bringing snacks, you bring the energy 😄",
-              "Can we push it 30 minutes later?", "New PR today! 42.5 kg 💪", "Rest day tomorrow? My legs disagree 😅"]
-    def _later() -> None:
-        time.sleep(0.9)
-        TYPING[cid] = (time.time(), mate)  # partner is "composing" — client shows the typing dots
-        time.sleep(1.3)
-        try:
-            with connect() as db:
-                count = db.execute("SELECT count(*) FROM messages WHERE conversation_id=?", (cid,)).fetchone()[0]
-                db.execute("INSERT INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)", (cid, mate, canned[count % len(canned)], now()))
-        except Exception:
-            pass
-    threading.Thread(target=_later, daemon=True).start()
-
-
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -272,7 +253,8 @@ CREATE TABLE IF NOT EXISTS user_settings (
   days_per_week INTEGER NOT NULL DEFAULT 4, session_minutes INTEGER NOT NULL DEFAULT 45,
   equipment TEXT NOT NULL DEFAULT 'Full gym', kcal_target INTEGER, protein_target INTEGER,
   water_target_ml INTEGER NOT NULL DEFAULT 2500, is_private INTEGER NOT NULL DEFAULT 0,
-  discoverable INTEGER NOT NULL DEFAULT 1, onboarded INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+  discoverable INTEGER NOT NULL DEFAULT 1, onboarded INTEGER NOT NULL DEFAULT 0,
+  dna_cache TEXT, target_week INTEGER, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS ai_conversations (
   id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -393,6 +375,18 @@ def initialize_database() -> None:
             except sqlite3.OperationalError: pass
         for col, typ in [("link_url", "TEXT"), ("payload", "TEXT")]:
             try: db.execute(f"ALTER TABLE notifications ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError: pass
+        for col, typ in [("owner_id", "INTEGER")]:
+            try: db.execute(f"ALTER TABLE exercises ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError: pass
+        for col, typ in [("owner_id", "INTEGER")]:
+            try: db.execute(f"ALTER TABLE exercises ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError: pass
+        for col, typ in [("owner_id", "INTEGER")]:
+            try: db.execute(f"ALTER TABLE exercises ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError: pass
+        for col, typ in [("dna_cache", "TEXT"), ("target_week", "INTEGER")]:
+            try: db.execute(f"ALTER TABLE user_settings ADD COLUMN {col} {typ}")
             except sqlite3.OperationalError: pass
         stamp = now()
         db.executemany("INSERT OR IGNORE INTO achievements (id,code,name,description,icon) VALUES (?,?,?,?,?)", [
@@ -780,6 +774,9 @@ def recommendations(user_id: int) -> list[dict]:
 
 
 def list_feed(user_id: int) -> list[dict]:
+    """Signed-in: the real feed. Guests: the same real posts but with author
+    names anonymized to display initials — a visitor must never see a specific
+    member's identity or any personal user data before signing in."""
     with connect() as db:
         try: db.execute("ALTER TABLE posts ADD COLUMN photo TEXT")
         except sqlite3.OperationalError: pass
@@ -797,6 +794,9 @@ def list_feed(user_id: int) -> list[dict]:
                 d["my_reactions"]=[r[0] for r in db.execute("SELECT reaction FROM post_reactions WHERE post_id=? AND user_id=?",(d["id"],user_id))]
             except sqlite3.OperationalError:
                 d["reactions"]=[]; d["my_reactions"]=[]
+            if user_id == 0:  # anonymous visitor: anonymize the author
+                d["name"] = "Community athlete"
+                d["username"] = "athlete"
             out.append(d)
     return out
 
@@ -968,8 +968,16 @@ class FitverseHandler(BaseHTTPRequestHandler):
         if self.current_user() <= 0 and path.startswith("/api/") and not path.startswith(_GUEST_OK):
             return self.send_json(401, {"error": "Sign in to see that"})
         if path == "/api/bootstrap": return self.send_json(200, read_bootstrap(self.current_user()))
-        if path == "/api/leaderboard": return self.send_json(200,{"items":read_bootstrap(self.current_user())["leaderboard"]})
-        if path == "/api/recommendations": return self.send_json(200,{"items":recommendations(self.current_user()),"model":"deterministic compatibility service"})
+        if path == "/api/leaderboard":
+            lb=read_bootstrap(self.current_user())["leaderboard"]
+            if self.current_user() == 0:  # guests see initials, not identities
+                for r in lb: r["name"]="Athlete "+str(r.get("name","?"))[:1]+"."
+            return self.send_json(200,{"items":lb})
+        if path == "/api/recommendations":
+            recs=recommendations(self.current_user())
+            if self.current_user() == 0:
+                for r in recs: r["name"]="Athlete"
+            return self.send_json(200,{"items":recs,"model":"deterministic compatibility service"})
         if path == "/api/coach":
             from urllib.parse import parse_qs
             return self.send_json(200,coach_reply(self.current_user(),parse_qs(query).get("q",[""])[0]))
@@ -1214,7 +1222,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     uid=cur.lastrowid
                     stamp=now()
                     db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",(uid,0,0,0,0,0,"pending",0,0,0,stamp))
-                    db.execute("INSERT INTO profiles (user_id,avatar_url,updated_at,onboarding_completed) VALUES (?,?,?,0)",(uid,pic,stamp))
+                    db.execute("INSERT INTO profiles (user_id,avatar_url,updated_at,onboarding_completed) VALUES (?,?,?,0)",(uid,pic or None,stamp))
                     greeting=gname
             token=secrets.token_urlsafe(32); SESSIONS[token]=uid
             disp=_html.escape(greeting); safe_name=_q(greeting)
@@ -1316,10 +1324,21 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 items=[dict(r) for r in db.execute("SELECT b.booking_code,b.status,b.quantity,e.name,e.starts_at,e.location_label FROM bookings b JOIN events e ON e.id=b.event_id WHERE b.user_id=? ORDER BY b.id DESC",(self.current_user(),))]
             return self.send_json(200,{"items":items})
         if path == "/api/users":
-            with connect() as db: rows=db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,p.avatar_url,g.xp,g.streak FROM users u JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id ORDER BY g.xp DESC").fetchall()
+            """Real registered users. ?q= does partial, case-insensitive search over
+            name and username. ?include_self=1 keeps your own account in the list.
+            avatar_url is the user's real uploaded photo when they have one."""
+            from urllib.parse import parse_qs as _pqs_u, unquote as _unq_u
+            prms=_pqs_u(urlparse(self.path).query)
+            qq=(prms.get("q") or [""])[0].strip().lower()
+            include_self=(prms.get("include_self") or ["0"])[0]=="1"
+            uid=self.current_user()
+            with connect() as db: rows=db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,p.avatar_url,g.xp,g.streak FROM users u JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id ORDER BY u.name").fetchall()
             items=[]
             for r in rows:
-                d=dict(r); d["photo"]=f"img/p{1 + (d['id'] % 12)}.jpg"; items.append(d)
+                d=dict(r)
+                if not include_self and uid and d["id"]==uid: continue
+                if qq and qq not in str(d["name"]).lower() and qq not in str(d["username"]).lower(): continue
+                d["photo"]=f"img/p{1 + (d['id'] % 12)}.jpg"; items.append(d)
             return self.send_json(200,{"items":items})
         if path == "/api/challenges":
             uid=self.current_user()
@@ -1337,12 +1356,6 @@ class FitverseHandler(BaseHTTPRequestHandler):
                   JOIN users u ON u.id=c.winner_id WHERE c.winner_id IS NOT NULL
                   GROUP BY c.winner_id ORDER BY wins DESC LIMIT 5""")]
             return self.send_json(200,{"items":[dict(r) for r in rows],"friends":friends,"leaderboard":board})
-        if path == "/api/friends":
-            uid=self.current_user()
-            with connect() as db: rows=db.execute("""SELECT u.id,u.name,u.username,f.status, f.requester_id FROM friendships f
-              JOIN users u ON u.id=CASE WHEN f.requester_id=? THEN f.addressee_id ELSE f.requester_id END
-              WHERE f.requester_id=? OR f.addressee_id=?""",(uid,uid,uid)).fetchall()
-            return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/conversations":
             """Real per-user inbox: direct threads the caller participates in, titled by the
             other real user, with unread counts. Guests get an empty inbox."""
@@ -1355,10 +1368,11 @@ class FitverseHandler(BaseHTTPRequestHandler):
                   (SELECT count(*) FROM messages m WHERE m.conversation_id=c.id) AS message_count,
                   (SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND m.sender_id<>? AND m.id>COALESCE(rp.last_read,0)) AS unread,
                   (SELECT u2.name FROM dm_participants dp JOIN users u2 ON u2.id=dp.user_id WHERE dp.conversation_id=c.id AND dp.user_id<>?) AS other_name,
-                  (SELECT pr.avatar_url FROM dm_participants dp JOIN profiles pr ON pr.user_id=dp.user_id WHERE dp.conversation_id=c.id AND dp.user_id<>?) AS other_avatar
+                  (SELECT pr.avatar_url FROM dm_participants dp JOIN profiles pr ON pr.user_id=dp.user_id WHERE dp.conversation_id=c.id AND dp.user_id<>?) AS other_avatar,
+                  (SELECT dp2.user_id FROM dm_participants dp2 WHERE dp2.conversation_id=c.id AND dp2.user_id<>?) AS other_id
                   FROM conversations c
                   JOIN dm_participants rp ON rp.conversation_id=c.id AND rp.user_id=?
-                  ORDER BY COALESCE((SELECT m.created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1), c.created_at) DESC""",(uid,uid,uid,uid)).fetchall()
+                  ORDER BY COALESCE((SELECT m.created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1), c.created_at) DESC""",(uid,uid,uid,uid,uid)).fetchall()
             items=[]
             for r in rows:
                 d=dict(r)
@@ -1492,17 +1506,26 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 s=db.execute("SELECT * FROM user_settings WHERE user_id=?",(self.current_user(),)).fetchone()
                 import ai_service
                 t=ai_service.targets_from_profile(dict(s) if s else {})
+                if s:  # user-configured targets win over the auto-estimate
+                    if s["kcal_target"]: t["kcal_target"]=s["kcal_target"]
+                    if s["protein_target"]: t["protein_target"]=s["protein_target"]
             return self.send_json(200,{"item":{**(dict(s) if s else {}), **t}})
         if path == "/api/exercises":
+            """Everyone gets the shared library plus their OWN custom exercises.
+            Guests see the shared library only."""
+            from urllib.parse import unquote as _unq_e
             q=urlparse(self.path).query.lower(); muscle=[m.split('=')[1] for m in q.split('&') if m.startswith('muscle=')]
             equip=[e.split('=')[1] for e in q.split('&') if e.startswith('equipment=')]
-            search=[s.split('=')[1] for s in q.split('&') if s.startswith('q=')]
+            search=[_unq_e(s.split('=')[1]) for s in q.split('&') if s.startswith('q=')]
+            uid=self.current_user()
             with connect() as db:
-                sql="SELECT * FROM exercises WHERE 1=1"; args=[]
-                if muscle and muscle[0]: sql+=" AND muscle=?"; args.append(muscle[0].capitalize())
-                if equip and equip[0]: sql+=" AND equipment=?"; args.append(equip[0].capitalize())
-                if search and search[0]: sql+=" AND lower(name) LIKE ?"; args.append(f"%{search[0]}%")
-                rows=db.execute(sql+" ORDER BY muscle,name",args).fetchall()
+                conds=["1=1"]; args=[]
+                if muscle and muscle[0]: conds.append("muscle=?"); args.append(muscle[0].capitalize())
+                if equip and equip[0]: conds.append("equipment=?"); args.append(equip[0].capitalize())
+                if search and search[0]: conds.append("lower(name) LIKE ?"); args.append(f"%{search[0]}%")
+                if uid: conds.append("(owner_id IS NULL OR owner_id=?)"); args.append(uid)
+                else: conds.append("owner_id IS NULL")
+                rows=db.execute("SELECT * FROM exercises WHERE "+" AND ".join(conds)+" ORDER BY muscle,name",args).fetchall()
             return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/workouts":
             uid=self.current_user()
@@ -1531,6 +1554,9 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 s=db.execute("SELECT kcal_target,protein_target,water_target_ml FROM user_settings WHERE user_id=?",(uid,)).fetchone()
                 import ai_service
                 t=ai_service.targets_from_profile(dict(s) if s else {})
+                if s:  # user-configured targets win over the auto-estimate
+                    if s["kcal_target"]: t["kcal_target"]=s["kcal_target"]
+                    if s["protein_target"]: t["protein_target"]=s["protein_target"]
             import datetime as _dt2
             totals={"kcal":sum(l['kcal'] for l in logs),"protein":round(sum(l['protein_g'] for l in logs)),"carbs":round(sum(l['carbs_g'] for l in logs)),"fat":round(sum(l['fat_g'] for l in logs)),"fiber":round(sum(l['fiber_g'] for l in logs))}
             return self.send_json(200,{"items":logs,"day":day,"totals":totals,"targets":t,"week":week})
@@ -1564,7 +1590,10 @@ class FitverseHandler(BaseHTTPRequestHandler):
             return self.send_json(200,{"items":[{"note":n} for n in ai_service.buddy_notes(self.current_user())]})
         if path == "/api/fitmatch":
             import ai_service
-            return self.send_json(200,{"items":ai_service.fit_match(self.current_user(),8)})
+            fm=ai_service.fit_match(self.current_user(),8)
+            if self.current_user() == 0:
+                for r in fm: r["name"]="Athlete"
+            return self.send_json(200,{"items":fm})
         if path == "/api/leaderboards":
             uid=self.current_user()
             with connect() as db:
@@ -1583,7 +1612,8 @@ class FitverseHandler(BaseHTTPRequestHandler):
                   FROM friendships f JOIN users u ON u.id=CASE WHEN f.requester_id=? THEN f.addressee_id ELSE f.requester_id END
                   JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id
                   WHERE f.status='accepted' AND (f.requester_id=? OR f.addressee_id=?) ORDER BY u.name""",(uid,uid,uid))]
-                incoming=[dict(r) for r in db.execute("""SELECT f.id req_id,u.id,u.name,u.username FROM friendships f JOIN users u ON u.id=f.requester_id
+                incoming=[dict(r) for r in db.execute("""SELECT f.id req_id,u.id,u.name,u.username,p.avatar_url FROM friendships f JOIN users u ON u.id=f.requester_id
+                  LEFT JOIN profiles p ON p.user_id=u.id
                   WHERE f.addressee_id=? AND f.status='pending'""",(uid,))]
                 for f_ in friends: f_["photo"]=f"img/p{1 + (f_['id'] % 12)}.jpg"
             return self.send_json(200,{"items":friends,"incoming":incoming})
@@ -1730,6 +1760,24 @@ class FitverseHandler(BaseHTTPRequestHandler):
                         if key in data: db.execute(f"UPDATE profiles SET {key}=?,updated_at=? WHERE user_id=?",(str(data[key]).strip()[:500],now(),self.current_user()))
                     db.commit()
                 return self.send_json(200,{"ok":True})
+            if path == "/api/friendships/respond":
+                """Accept/decline a pending friend request. Only the addressee decides.
+                Accepting makes the friendship mutual for BOTH users and notifies the sender."""
+                rid=int(data.get("request_id",0)); decision=str(data.get("decision",""))
+                uid=self.current_user()
+                with connect() as db:
+                    fr=db.execute("SELECT * FROM friendships WHERE id=?",(rid,)).fetchone()
+                    if not fr or fr["addressee_id"]!=uid: return self.send_json(404,{"error":"Request not found"})
+                    if fr["status"]!="pending": return self.send_json(409,{"error":"This request was already handled"})
+                    if decision=="accept":
+                        db.execute("UPDATE friendships SET status='accepted' WHERE id=?",(rid,))
+                        myname=db.execute("SELECT name FROM users WHERE id=?",(uid,)).fetchone()[0]
+                        db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(fr["requester_id"],"friend_request","Friend request accepted",f"🎉 {myname} accepted your friend request — you're in each other's circle now.",now()))
+                    elif decision=="decline":
+                        db.execute("DELETE FROM friendships WHERE id=?",(rid,))
+                    else:
+                        return self.send_json(400,{"error":"Decision must be accept or decline"})
+                return self.send_json(200,{"ok":True,"status":decision})
             if path == "/api/activities":
                 required=("title","sport","starts_at","location_label")
                 if any(not str(data.get(k,"")).strip() for k in required): return self.send_json(400,{"error":"Activity title, sport, time and location are required"})
@@ -1764,7 +1812,8 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     exists=db.execute("SELECT status FROM friendships WHERE (requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?)",(self.current_user(),recipient,recipient,self.current_user())).fetchone()
                     if exists:return self.send_json(409,{"error":"A friend relationship already exists"})
                     db.execute("INSERT INTO friendships (requester_id,addressee_id,status,created_at) VALUES (?,?,?,?)",(self.current_user(),recipient,"pending",now()))
-                    db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(recipient,"friend_request","New friend request","Someone wants to connect through FITVERSE.",now()))
+                    reqname=db.execute("SELECT name FROM users WHERE id=?",(self.current_user(),)).fetchone()[0]
+                    db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(recipient,"friend_request","New friend request",f"👥 {reqname} sent you a friend request. Open Friends to accept or decline.",now()))
                 return self.send_json(201,{"ok":True,"status":"pending"})
             if path.startswith("/api/posts/"):
                 parts=path.split("/"); post_id=int(parts[3]); operation=parts[4] if len(parts)>4 else ""
@@ -1911,13 +1960,18 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 return self.send_json(200,{"ok":True})
             if path == "/api/challenges":
                 title=str(data.get("title","Fitness challenge")).strip()[:100]; ctype=str(data.get("challenge_type","running_distance"))[:40]
-                opponent=int(data.get("opponent_id",2)); target=float(data.get("target_value",5))
-                if opponent==self.current_user(): return self.send_json(400,{"error":"Pick someone else to challenge"})
+                opponent=int(data.get("opponent_id",0)); target=float(data.get("target_value",5))
+                uid=self.current_user()
+                if opponent==uid: return self.send_json(400,{"error":"Pick someone else to challenge"})
+                if opponent<=0: return self.send_json(400,{"error":"Choose a friend to challenge"})
                 with connect() as db:
-                    cur=db.execute("INSERT INTO challenges (title,challenge_type,target_value,challenger_id,opponent_id,status,winner_id,starts_at,ends_at,created_at) VALUES (?,?,?,?,?,'active',NULL,?,?,?)",(title,ctype,target,self.current_user(),opponent,now()[:10],now()[:10],now()))
-                    db.execute("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,0)",(cur.lastrowid,self.current_user()))
+                    fr=db.execute("SELECT 1 FROM friendships WHERE status='accepted' AND ((requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?))",(uid,opponent,opponent,uid)).fetchone()
+                    if not fr: return self.send_json(403,{"error":"You can only challenge your friends — send them a friend request first"})
+                    cur=db.execute("INSERT INTO challenges (title,challenge_type,target_value,challenger_id,opponent_id,status,winner_id,starts_at,ends_at,created_at) VALUES (?,?,?,?,?,'active',NULL,?,?,?)",(title,ctype,target,uid,opponent,now()[:10],now()[:10],now()))
+                    db.execute("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,0)",(cur.lastrowid,uid))
                     db.execute("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,0)",(cur.lastrowid,opponent))
-                    db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(opponent,"challenge","New challenge",f"You were challenged: {title}",now()))
+                    myname=db.execute("SELECT name FROM users WHERE id=?",(uid,)).fetchone()[0]
+                    db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(opponent,"challenge","New challenge",f"⚔️ {myname} challenged you: {title}. Open Challenges to accept.",now()))
                 return self.send_json(201,{"ok":True,"challengeId":cur.lastrowid})
             if path.startswith("/api/challenges/"):
                 parts=path.split("/"); cid=int(parts[3]); op=parts[4] if len(parts)>4 else ""
@@ -1962,7 +2016,11 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 uid=self.current_user()
                 allowed={"age","sex","height_cm","weight_kg","activity_level","goal","diet_pref","days_per_week","session_minutes","equipment","kcal_target","protein_target","water_target_ml","is_private","discoverable","onboarded"}
                 vals={k:v for k,v in data.items() if k in allowed}
-                if not vals: return self.send_json(400,{"error":"Nothing to update"})
+                for _z in ("kcal_target","protein_target"):
+                    if _z in vals and (vals[_z] in (0,"0") or str(vals[_z]) in ("0","0.0")):
+                        vals[_z]=None  # 0 = clear back to the automatic estimate
+                if not vals or all(v is None for v in vals.values()):
+                    if not vals: return self.send_json(400,{"error":"Nothing to update"})
                 with connect() as db:
                     cols=",".join(f"{k}=?" for k in vals)
                     db.execute(f"UPDATE user_settings SET {cols},updated_at=? WHERE user_id=?",(*vals.values(),now(),uid))
@@ -1977,12 +2035,12 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     import ai_service
                     t=ai_service.targets_from_profile(vals)
                     vals["kcal_target"]=t["kcal_target"]; vals["protein_target"]=t["protein_target"]
-                    cols=" ".join(f"{k}=?" for k in vals)
+                    cols=",".join(f"{k}=?" for k in vals)
                     try:
                         db.execute(f"UPDATE user_settings SET {cols},updated_at=? WHERE user_id=?",(*vals.values(),now(),uid))
                     except sqlite3.OperationalError:
-                        db.execute("INSERT INTO user_settings (user_id,updated_at) VALUES (?,?)",(uid,now()))
-                        cols2=" ".join(f"{k}=?" for k in vals)
+                        db.execute("INSERT OR IGNORE INTO user_settings (user_id,updated_at) VALUES (?,?)",(uid,now()))
+                        cols2=",".join(f"{k}=?" for k in vals)
                         db.execute(f"UPDATE user_settings SET {cols2} WHERE user_id=?",(*vals.values(),uid))
                     db.execute("UPDATE users SET fitness_level=?,fitness_goal=? WHERE id=?",(data.get("experience","Intermediate"),data.get("goal","General fitness"),uid))
                 return self.send_json(200,{"ok":True,"targets":t})
@@ -2074,6 +2132,20 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     db.execute("INSERT OR IGNORE INTO follows (follower_id,followee_id,created_at) VALUES (?,?,?)",(uid,fid,now()))
                     db.execute("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,0,?)",(fid,'social','New follower',f"{db.execute('SELECT name FROM users WHERE id=?',(uid,)).fetchone()[0]} started following you",now()))
                 return self.send_json(200,{"ok":True,"following":True})
+            if path == "/api/exercises":
+                """Create a personal custom exercise. It appears only in YOUR library,
+                your workout logging, and your logs — never another user's."""
+                name=str(data.get("name","")).strip()[:80]
+                muscle=str(data.get("muscle","Other")).strip().capitalize()[:20]
+                if not name: return self.send_json(400,{"error":"Exercise name is required"})
+                uid=self.current_user()
+                with connect() as db:
+                    try:
+                        cur=db.execute("INSERT INTO exercises (name,muscle,equipment,difficulty,instructions,mistakes,met,owner_id) VALUES (?,?,?,?,?,?,?,?)",
+                            (name,muscle,str(data.get("equipment","Bodyweight")).strip().capitalize()[:30] or "Bodyweight",str(data.get("difficulty","Intermediate")).strip().capitalize()[:20],str(data.get("description","")).strip()[:500],"",5.0,uid))
+                    except sqlite3.IntegrityError:
+                        return self.send_json(409,{"error":"An exercise with that name already exists"})
+                return self.send_json(201,{"ok":True,"exerciseId":cur.lastrowid})
             if path == "/api/workouts":
                 uid=self.current_user()
                 title=str(data.get("title","Workout"))[:80]; notes=str(data.get("notes",""))[:500]

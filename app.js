@@ -25,14 +25,29 @@ function syncAvatars() {
   });
 }
 const photoAvatar = (name, i, size = 36, url = '') => {
+  // A real uploaded photo when we have one; otherwise a clean initial-based
+  // avatar. Random stock photos are never used as someone's face.
   const custom = url || AVATARS[Number(i)];
-  const src = custom || PHOTOS['p' + (1 + (Math.abs(Number(i) || 1) - 1) % 12)];
-  return `<span class="pavatar" style="background-image:url('${src}')"></span>`;
+  if (custom) return `<span class="pavatar" style="background-image:url('${custom}')"></span>`;
+  const initials = String(name || '?').split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
+  const tones = ['mint', 'blue', 'purple', 'teal', 'orange', 'coral'];
+  const tone = tones[Math.abs(Number(i) || 0) % tones.length];
+  return `<span class="pavatar init-avatar ${tone}">${escapeHtml(initials)}</span>`;
 };
 const sportLabel = (sport) => (String(sport || '').toLowerCase().includes('run') ? 'Run' : String(sport || '').toLowerCase().includes('cycl') ? 'Cycling' : String(sport || '').toLowerCase().includes('yoga') ? 'Yoga' : String(sport || '').toLowerCase().includes('gym') ? 'Gym' : 'Basketball');
 let sessionToken = localStorage.getItem('fitverse-session') || '';
 const state = { page: 'home', xp: 0, streak: 0, activities: 0, friends: false, joined: false, challenge: 'pending', booking: false, liked: false, comments: 0, detailId: 0 };
-const pageData = { bookings: [], businesses: [], users: [], challenges: [], communities: [], events: [], activities: [], feed: [], conversations: [], activeConversation: 1, messages: [], notifications: [], achievements: [], friends: [], reports: [], xpLedger: [], recommendations: [], counts: {}, stats: {}, coach: 'Ask about people, activities, challenges or events.', profile: {}, reels: [], dash: {}, buddy: [], fitmatch: [], exercises: [], workouts: [], nutrition: {}, water: {}, progressEntries: [], settings: {}, coachChat: [], review: {}, leaderboards: {} };
+// Back navigation: every programmatic/page navigation pushes onto navTrail so
+// the ← button in the header returns you to the PREVIOUS screen, not Home.
+const navTrail = ['home'];
+function pushTrail(p) { if (p && navTrail[navTrail.length - 1] !== p) { navTrail.push(p); if (navTrail.length > 30) navTrail.shift(); } }
+function goBack() {
+  $('#modal').innerHTML = '';
+  if (navTrail.length > 1) navTrail.pop();
+  const p = navTrail[navTrail.length - 1] || 'home';
+  state.page = p; render(); loadPageData(p); window.scrollTo(0, 0);
+}
+const pageData = { bookings: [], businesses: [], users: [], allUsers: [], challenges: [], communities: [], events: [], activities: [], feed: [], conversations: [], activeConversation: 1, messages: [], notifications: [], achievements: [], friends: [], reports: [], xpLedger: [], recommendations: [], counts: {}, stats: {}, coach: 'Ask about people, activities, challenges or events.', profile: {}, reels: [], dash: {}, buddy: [], fitmatch: [], exercises: [], workouts: [], nutrition: {}, water: {}, progressEntries: [], settings: {}, coachChat: [], review: {}, leaderboards: {} };
 const apiHeaders = () => ({ 'Content-Type': 'application/json', ...(sessionToken ? { 'X-Session': sessionToken } : {}) });
 async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...apiHeaders(), ...(options.headers || {}) } });
@@ -210,6 +225,7 @@ async function loadPageData(page) {
   const add = (p, fn) => tasks.push(fn.then(items => { pageData[p] = items; }).catch(() => {}));
   if (page === 'discover') {
     add('users', api('/api/users').then(d => d.items || []));
+    add('allUsers', api('/api/users').then(d => d.items || []).catch(() => []));
     add('recommendations', api('/api/recommendations').then(d => d.items || []));
     add('activities', api('/api/activities').then(d => d.items || []));
     add('events', api('/api/events').then(d => d.items || []));
@@ -282,9 +298,10 @@ function shell(content) {
 function pageHeader(title, sub = 'Your fitness world, in motion.') {
   const u = unread();
   const topRight = sessionToken
-    ? `<button class="icon-btn" data-action="notificationsOpen" title="Notification center">🔔${u ? `<em>${u}</em>` : ''}</button><button class="icon-btn" data-action="cmdk" title="Search (Ctrl+K)">⌕</button><button class="profile-chip" data-page="profile">${photoAvatar(me().name, 1)}<span>${escapeHtml((me().name || 'You').split(' ')[0])}</span><i>⌄</i></button><button class="outline auth-btn" data-action="logout" title="Log out">Logout</button>`
+    ? `<button class="icon-btn" data-action="notificationsOpen" title="Notification center">🔔${u ? `<em>${u}</em>` : ''}</button><button class="icon-btn" data-action="cmdk" title="Search (Ctrl+K)">⌕</button><button class="profile-chip" data-page="profile">${photoAvatar(me().name, me().id || 1)}<span>${escapeHtml((me().name || 'You').split(' ')[0])}</span><i>⌄</i></button><button class="outline auth-btn" data-action="logout" title="Log out">Logout</button>`
     : `<button class="outline auth-btn" data-action="account">Log in</button><button class="primary auth-btn" data-action="register">Sign up</button>`;
-  return `<header class="top"><div><span class="eyebrow">FITVERSE / ${state.page.toUpperCase()}</span><h1>${title}</h1><p>${sub}</p></div><div class="top-actions">${topRight}</div></header>`;
+  const backBtn = navTrail.length > 1 ? '<button class="icon-btn back-btn" data-action="goBack" title="Back" aria-label="Go back">←</button>' : '';
+  return `<header class="top"><div><span class="eyebrow">FITVERSE / ${state.page.toUpperCase()}</span><h1>${title}</h1><p>${sub}</p></div><div class="top-actions">${backBtn}${topRight}</div></header>`;
 }
 function home() {
   const s = pageData.dash || {};
@@ -320,7 +337,7 @@ ${friendsActivitySection()}
 <div id="feed-foryou">${pageData.feed.length ? pageData.feed.slice(0, 8).map(postCard).join('') : emptyState('📭', 'No posts yet', 'Share your first fitness update or follow some athletes to fill your feed.', 'create', 'Create a post')}</div>
 <div id="feed-following" style="display:none">${emptyState('👥', 'Follow more athletes', 'Posts from people you follow appear here. Find your crew on Discover.', 'discover', 'Find people')}</div>
 <div id="feed-trending" style="display:none">${pageData.feed.length ? [...pageData.feed].sort((a, b) => (b.likes || 0) - (a.likes || 0)).slice(0, 6).map(postCard).join('') : emptyState('📈', 'Nothing trending yet', 'Be the spark — post your last workout.', 'create', 'Create a post')}</div>
-<section class="home-split"><div><div class="section-head"><div><span class="eyebrow">FIT MATCH</span><h2>Your #1 training match</h2></div><button class="link" data-page="friends">See all matches <b>→</b></button></div><div class="match-card"><div class="match-art"><span>${topRec ? topRec.score : 94}%</span><small>FIT MATCH</small></div><div class="match-copy">${photoAvatar(topRec ? topRec.name : 'Rahul Menon', topRec?.id || 2)}<div><h3>${escapeHtml(topRec ? topRec.name : 'Rahul Menon')} <i>✓</i></h3><p>${escapeHtml(topRec ? `${topRec.activity} · ${topRec.fitnessLevel || topRec.fitness_level} · ${topRec.preferredTime || topRec.preferred_time}` : 'Basketball · Intermediate · 5–6 PM')}</p><div class="tag-row">${((topRec?.reasons) || ['Same sport', 'Nearby']).map(r => `<span>${escapeHtml(r)}</span>`).join('')}</div></div><button class="primary small" data-action="friend" data-id="${topRec?.id || 2}">${state.friends ? 'Friends ✓' : 'Add friend'}</button></div></div></div><div class="feed-mini"><div class="section-head"><div><span class="eyebrow">TRENDING NOW</span><h2>Popular with friends</h2></div></div>${post ? postCard(post) : '<article class="post"><p>No posts yet — be the first to share.</p></article>'}</div></section>
+<section class="home-split"><div><div class="section-head"><div><span class="eyebrow">FIT MATCH</span><h2>Your #1 training match</h2></div><button class="link" data-page="friends">See all matches <b>→</b></button></div><div class="match-card">${topRec ? `<div class="match-art"><span>${topRec.score}%</span><small>FIT MATCH</small></div><div class="match-copy">${photoAvatar(topRec.name, topRec.id)}<div><h3>${escapeHtml(topRec.name)} <i>✓</i></h3><p>${escapeHtml(`${topRec.activity} · ${topRec.fitnessLevel || topRec.fitness_level} · ${topRec.preferredTime || topRec.preferred_time}`)}</p><div class="tag-row">${(topRec.reasons || []).map(r => `<span>${escapeHtml(r)}</span>`).join('')}</div></div><button class="primary small" data-action="friend" data-id="${topRec.id}">${(state.friends || []).some(f => f.id === topRec.id) ? 'Friends ✓' : 'Add friend'}</button></div>` : `<div class="match-art"><span>🎯</span><small>FIT MATCH</small></div><div class="match-copy"><div class="avatar" style="background:var(--navy)">✨</div><div><h3>Find your training match</h3><p>We'll pair you with people who share your sport, level and schedule once you start training.</p></div><button class="primary small" data-page="discover">Browse people →</button></div>`}</div></div><div class="feed-mini"><div class="section-head"><div><span class="eyebrow">TRENDING NOW</span><h2>Popular with friends</h2></div></div>${post ? postCard(post) : '<article class="post"><p>No posts yet — be the first to share.</p></article>'}</div></section>
 <section class="quote-bar" id="quote-bar">${quote || 'Small steps every day.'}</section>`);
 }
 function momentsSection() {
@@ -374,7 +391,7 @@ function discover() {
   return shell(`${pageHeader('Discover your people', 'Matches, activities and communities around Chennai.')}
 <div class="discover-intro"><div><span class="pill lime">✦ MATCHED FOR YOU</span><h2>Find your <em>fitness people.</em></h2><p>Our matching engine considers activity preference, schedules, goals, location and intensity.</p></div><button class="filter" data-action="filters">☷ Filters <b>⌄</b></button></div><div class="tabs" id="discover-tabs">${['People', 'Activities', 'Communities', 'Events', 'Businesses'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-tab="${t.toLowerCase()}">${t}</button>`).join('')}</div><div class="search">⌕ <input id="discover-search" placeholder="Search people, activities, communities..."/><span>⌘ K</span></div>
 <div id="tab-people">${top ? `<section class="match-feature"><div class="match-big-art"><div>${top.score}<small>%</small></div><span>YOUR TOP MATCH</span></div><div class="match-feature-copy">${avatar(top.name, 'blue')}<span class="verified">${escapeHtml(top.name)} ✓</span><h2>Designed for the<br/><em>same rhythm.</em></h2><p>You both love ${escapeHtml(top.activity)} and your schedules and intensity line up well.</p><div class="compat"><b>Why ${top.score}%?</b>${(top.reasons || []).map(r => `<span>✓ ${escapeHtml(r)}</span>`).join('')}</div><div class="hero-actions"><button class="primary" data-action="friend" data-id="${top.id}">${state.friends ? 'Friends ✓' : 'Add friend'}</button><button class="outline" data-action="challenge" data-id="${top.id}">Challenge ${escapeHtml(top.name.split(' ')[0])}</button></div></div><div class="match-score"><strong>${top.score}<span>%</span></strong><small>COMPATIBILITY SCORE</small><div class="bar"><i style="width:${top.score}%"></i></div><p>Excellent match</p></div></section>` : ''}
-<section class="section-head"><div><span class="eyebrow">MORE FOR YOU</span><h2>Keep the momentum going</h2></div><button class="link" data-page="challenges">View all <b>→</b></button></section><div class="people-grid">${others.map(p => personCard(p)).join('') || '<article class="person-card"><div class="person-cover orange"><span>92% match</span></div><div class="person-info">' + avatar('Vikram Shah', 'orange') + '<h3>Vikram Shah <i>✓</i></h3><p>Basketball · Advanced</p><div><button class="outline" data-action="friend" data-id="2">Add friend</button><button class="more" data-action="personMenu" data-id="2">•••</button></div></div></article>'}</div></div>
+<section class="section-head"><div><span class="eyebrow">FIND PEOPLE</span><h2>Search the community</h2></div></section><div class="search people-search">⌕ <input id="people-search" placeholder="Search people by name or @username (press Enter)..."/></div><section class="section-head"><div><span class="eyebrow">ON FITVERSE</span><h2>${(pageData.allUsers || []).length} registered athlete${(pageData.allUsers || []).length === 1 ? '' : 's'}</h2></div><button class="link" data-page="challenges">Challenges <b>→</b></button></section><div class="people-grid" id="people-grid">${(pageData.allUsers || []).map(p => personCard(p)).join('') || '<p class="loading">No athletes found — try another name.</p>'}</div></div>
 <div id="tab-activities" style="display:none"><div class="activity-grid">${pageData.activities.map(a => activity('🏀', a.title, `${a.participant_count} people`, `${dayShort(a.starts_at)} · ${timeShort(a.starts_at)}`, a.location_label, a.sport, a.id, a.joined)).join('') || '<p class="loading">No activities yet.</p>'}</div></div>
 <div id="tab-communities" style="display:none"><div class="community-grid">${pageData.communities.map(communityCard).join('') || '<p class="loading">No communities yet.</p>'}</div></div>
 <div id="tab-events" style="display:none"><div class="event-grid">${pageData.events.map(eventCard).join('') || '<p class="loading">No events yet.</p>'}</div></div>
@@ -387,10 +404,11 @@ function personCard(p) {
 function challenges() {
   const c = pageData.challenges[0];
   const active = state.challenge === 'accepted' || state.challenge === 'won';
-  const oppProgress = c ? (c.opponent_id === 1 ? c.opponent_progress : c.challenger_progress) : 4.2;
-  const myProgress = c ? (c.challenger_id === 1 ? c.challenger_progress : c.opponent_progress) : 3.8;
+  const myId = me().id || 0;
+  const oppProgress = c ? (c.opponent_id === myId ? c.challenger_progress : c.opponent_progress) : 0;
+  const myProgress = c ? (c.challenger_id === myId ? c.challenger_progress : c.opponent_progress) : 0;
   return shell(`${pageHeader('Challenges', 'Play harder with the people who keep you going.')}
-<section class="challenge-hero"><div><span class="pill coral">HEAD TO HEAD</span><h2>${state.challenge === 'won' ? 'You took the win.' : active ? 'The run is on.' : 'Rahul challenged you.'}</h2><p>${state.challenge === 'won' ? 'Victory looks good on you. Start another challenge?' : active ? `You have until ${c ? dayShort(c.ends_at) : 'Sunday'} to make your move.` : 'A 5K race is waiting for your answer.'}</p><div class="versus"><div>${avatar(c?.challenger_name || 'Rahul Menon', 'blue')}<strong>${escapeHtml((c?.challenger_name || 'Rahul').split(' ')[0])}</strong><small>${oppProgress} km</small></div><b>VS</b><div>${avatar('Sai Kumar', 'mint')}<strong>You</strong><small>${myProgress} km</small></div></div>${state.challenge === 'pending' ? '<button class="primary" data-action="accept">Accept challenge <b>→</b></button>' : state.challenge === 'accepted' ? '<button class="primary" data-action="win">Mark activity complete +120 XP</button>' : '<button class="primary" data-action="challenge" data-id="2">New challenge vs Rahul</button>'}</div><div class="challenge-kpi"><span>🏃</span><small>5K RUN</small><strong>${active ? '4 days' : '7 days'}</strong><p>${active ? 'remaining' : 'to accept'}</p></div></section>
+<section class="challenge-hero"><div><span class="pill coral">HEAD TO HEAD</span><h2>${state.challenge === 'won' ? 'You took the win.' : active ? 'The run is on.' : c ? `${escapeHtml((c.challenger_name || 'Your rival').split(' ')[0])} challenged you.` : 'Start a head-to-head.'}</h2><p>${state.challenge === 'won' ? 'Victory looks good on you. Start another challenge?' : active && c ? `You have until ${dayShort(c.ends_at)} to make your move.` : c ? 'A challenge is waiting for your answer.' : 'Challenge a friend and make fitness more fun.'}</p><div class="versus"><div>${avatar(c ? c.challenger_name : '?', 'blue')}<strong>${escapeHtml(c ? (c.challenger_name || 'Rival').split(' ')[0] : '—')}</strong><small>${oppProgress} ${c ? (c.challenge_type || '').includes('distance') ? 'km' : 'sessions' : ''}</small></div><b>VS</b><div>${avatar(me().name || 'You', 'mint')}<strong>You</strong><small>${myProgress}</small></div></div>${state.challenge === 'pending' && c ? '<button class="primary" data-action="accept">Accept challenge <b>→</b></button>' : state.challenge === 'accepted' ? '<button class="primary" data-action="win">Mark activity complete +120 XP</button>' : '<button class="primary" data-action="challenge">New challenge</button>'}</div><div class="challenge-kpi"><span>⚔️</span><small>HEAD TO HEAD</small><strong>${(pageData.challenges || []).length}</strong><p>${(pageData.challenges || []).length === 1 ? 'challenge' : 'challenges'}</p></div></section>
 <section class="section-head"><div><span class="eyebrow">YOUR ARENA</span><h2>Active challenges</h2></div><button class="create-inline" data-action="challenge">＋ New challenge</button></section><div class="challenge-list">${(pageData.challenges || []).map(ch => {
   const myP = ch.challenger_id === (me().id || 1) ? ch.challenger_progress : ch.opponent_progress;
   const pct = Math.min(100, Math.round(((myP || 0) / (ch.target_value || 5)) * 100));
@@ -434,10 +452,10 @@ ${emptyState('✉', 'No conversations yet', 'Open any athlete’s profile and ta
     const mine = me().id ? m.sender_id === me().id : m.sender_id === 1;
     const grouped = prev && prev.sender_id === m.sender_id;
     const showDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
-    return `${showDay ? `<div class="day-divider"><span>${dayShort(m.created_at)}</span></div>` : ''}<div class="msg-row ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}">${!grouped ? photoAvatar(m.name || (mine ? (me().name || 'You') : (active.title || 'Athlete')), m.sender_id) : '<span class="pavatar-spacer"></span>'}<p class="${mine ? 'sent' : 'received'}">${escapeHtml(m.body)}<time>${m.created_at?.includes('T') ? timeShort(m.created_at) : escapeHtml(m.created_at || 'now')}</time></p></div>`;
+    return `${showDay ? `<div class="day-divider"><span>${dayShort(m.created_at)}</span></div>` : ''}<div class="msg-row ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}">${!grouped ? photoAvatar(m.name || (mine ? (me().name || 'You') : (active.title || 'Athlete')), m.sender_id, 36, m.avatar_url) : '<span class="pavatar-spacer"></span>'}<p class="${mine ? 'sent' : 'received'}">${escapeHtml(m.body)}<time>${m.created_at?.includes('T') ? timeShort(m.created_at) : escapeHtml(m.created_at || 'now')}</time></p></div>`;
   }).join('') || '<p style="opacity:.6">Say hi 👋</p>';
   return shell(`${pageHeader('Messages', 'Real conversations, stored in your database.')}
-<div class="message-layout"><aside class="conversation-list"><div class="message-search">⌕ <input id="chat-search" placeholder="Search chats" style="border:0;background:none;outline:0;width:80%"/></div>${convs.map(c => `<button class="conversation ${c.id === pageData.activeConversation ? 'selected' : ''}" data-conv="${c.id}">${photoAvatar(c.title, c.id, 36, c.other_avatar_url)}<div><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml((c.last_message || 'Say hi').slice(0, 34))}</small></div><time>${c.last_at ? timeShort(c.last_at) : ''}</time></button>`).join('')}</aside><section class="chat"><div class="chat-head">${photoAvatar(active.title, active.id, 36, active.other_avatar_url)}<div><strong>${escapeHtml(active.title)}</strong><small>${escapeHtml(active.kind)} · <span class="live-dot">●</span> live</small></div><button data-action="convMenu" data-id="${active.id}">•••</button></div><div class="bubbles" id="bubbles">${bubbles}</div><div class="typing" id="typing" style="display:none"><span></span><span></span><span></span></div><form class="composer" data-form="message" data-conv="${active.id}"><input id="composer-input" placeholder="Message ${escapeHtml(String(active.title).split(' ')[0])}..." maxlength="1000" required/><button aria-label="Send message">➤</button></form></section></div>`);
+<div class="message-layout"><aside class="conversation-list"><div class="message-search">⌕ <input id="chat-search" placeholder="Search chats" style="border:0;background:none;outline:0;width:80%"/></div>${convs.map(c => `<button class="conversation ${c.id === pageData.activeConversation ? 'selected' : ''}" data-conv="${c.id}">${photoAvatar(c.title, c.other_id || c.id, 36, c.other_avatar_url)}<div><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml((c.last_message || 'Say hi').slice(0, 34))}</small></div><time>${c.last_at ? timeShort(c.last_at) : ''}</time></button>`).join('')}</aside><section class="chat"><div class="chat-head">${photoAvatar(active.title, active.other_id || active.id, 36, active.other_avatar_url)}<div><strong>${escapeHtml(active.title)}</strong><small>${escapeHtml(active.kind)} · <span class="live-dot">●</span> live</small></div><button data-action="convMenu" data-id="${active.id}">•••</button></div><div class="bubbles" id="bubbles">${bubbles}</div><div class="typing" id="typing" style="display:none"><span></span><span></span><span></span></div><form class="composer" data-form="message" data-conv="${active.id}"><input id="composer-input" placeholder="Message ${escapeHtml(String(active.title).split(' ')[0])}..." maxlength="1000" required/><button aria-label="Send message">➤</button></form></section></div>`);
 }
 function profile() {
   const p = me();
@@ -462,7 +480,7 @@ function workoutPage() {
   const w = pageData.workouts || [];
   const prs = pageData.prs || [];
   return shell(`${pageHeader('Workout', 'Log sessions, track volume, celebrate PRs.')}
-<div class="workout-top"><button class="primary" data-action="logWorkout">＋ Log a workout</button><button class="outline" data-action="generateWorkout">✦ Generate with AI</button><button class="outline" data-page="library">Exercise library</button></div>
+<div class="workout-top"><button class="primary" data-action="logWorkout">＋ Log a workout</button><button class="outline" data-action="generateWorkout">✦ Generate with AI</button><button class="outline" data-page="library">Exercise library</button><button class="outline" data-action="customExercise">✚ Custom exercise</button></div>
 <section class="section-head"><div><span class="eyebrow">HISTORY</span><h2>Recent sessions</h2></div></section>
 ${w.length ? `<div class="session-list">${w.map(s => `<article class="session-card">
   <div class="session-date"><b>${dayShort(s.created_at)}</b><small>${timeShort(s.created_at)}</small></div>
@@ -480,14 +498,15 @@ function nutritionPage() {
   const meals = ['breakfast', 'lunch', 'dinner', 'snacks'];
   const water = pageData.water || {};
   return shell(`${pageHeader('Nutrition', 'Fuel the work. Log meals, hit your targets.')}
-<div class="macro-hero"><div class="macro-main"><span class="eyebrow">CALORIES TODAY</span><div class="macro-big"><b>${(tot.kcal || 0).toLocaleString()}</b><em>/ ${(t.kcal_target || 2200).toLocaleString()} kcal</em></div><div class="bar"><i style="width:${Math.min(100, (tot.kcal || 0) / Math.max(1, t.kcal_target || 2200) * 100)}%"></i></div><small class="est-note">${t.estimate_note || ''}</small></div>
+<div class="section-head" style="margin-top:6px"><div><span class="eyebrow">YOUR PLAN</span><h2>Daily targets</h2></div><button class="outline small" data-action="setTargets">⚙ Set Daily Targets</button></div>
+<div class="macro-hero"><div class="macro-main"><span class="eyebrow">CALORIES TODAY</span><div class="macro-big"><b>${(tot.kcal || 0).toLocaleString()}</b><em>/ ${(t.kcal_target || 2200).toLocaleString()} kcal</em></div><div class="bar kcal-bar ${kcalBarClass(tot.kcal || 0, t.kcal_target || 2200)}"><i style="width:${Math.min(100, (tot.kcal || 0) / Math.max(1, t.kcal_target || 2200) * 100)}%"></i></div><small class="est-note">${(tot.kcal || 0) > (t.kcal_target || 2200) ? `⚠ ${(tot.kcal - t.kcal_target).toLocaleString()} kcal over your daily target` : (t.estimate_note || '')}</small></div>
 <div class="macro-row">
   <div class="macro-chip p"><b>${tot.protein || 0}g</b><small>/ ${t.protein_target || 130}g protein</small><div class="bar slim"><i style="width:${Math.min(100, (tot.protein || 0) / Math.max(1, t.protein_target || 130) * 100)}%"></i></div></div>
   <div class="macro-chip c"><b>${tot.carbs || 0}g</b><small>/ ${t.carbs_target || 250}g carbs</small><div class="bar slim"><i style="width:${Math.min(100, (tot.carbs || 0) / Math.max(1, t.carbs_target || 250) * 100)}%"></i></div></div>
   <div class="macro-chip f"><b>${tot.fat || 0}g</b><small>/ ${t.fat_target || 70}g fat</small><div class="bar slim"><i style="width:${Math.min(100, (tot.fat || 0) / Math.max(1, t.fat_target || 70) * 100)}%"></i></div></div>
 </div></div>
 <div class="water-card"><div><span class="eyebrow">HYDRATION</span><div class="macro-big"><b>${((water.today_ml || 0) / 1000).toFixed(2)}L</b><em>/ ${((water.target_ml || 2500) / 1000).toFixed(1)}L</em></div><div class="bar"><i style="width:${Math.min(100, (water.today_ml || 0) / Math.max(1, water.target_ml || 2500) * 100)}%"></i></div></div>
-<div class="water-actions"><button class="outline" data-action="addWater" data-ml="250">+250ml</button><button class="outline" data-action="addWater" data-ml="500">+500ml</button><button class="primary small" data-action="addWater" data-ml="750">+750ml</button></div></div>
+<div class="water-actions"><button class="outline" data-action="addWater" data-ml="250">+250ml</button><button class="outline" data-action="addWater" data-ml="500">+500ml</button><button class="primary small" data-action="addWater" data-ml="750">+750ml</button><button class="outline small" data-action="addWaterCustom">＋ Add Water</button></div></div>
 <div class="section-head" style="margin-top:22px"><div><span class="eyebrow">FOOD DIARY</span><h2>Today's meals</h2></div><button class="primary small" data-action="logMeal">＋ Log food</button><button class="outline small" data-action="scanMeal">✦ AI meal scan</button></div>
 ${meals.map(m => {
   const items = (n.items || []).filter(x => x.meal === m);
@@ -495,6 +514,37 @@ ${meals.map(m => {
   return `<div class="meal-block"><h4>${m[0].toUpperCase() + m.slice(1)} <small>${mkcal ? mkcal + ' kcal' : ''}</small></h4>
   ${items.length ? items.map(i => `<div class="meal-item"><span>${escapeHtml(i.name)}</span><b>${i.kcal} kcal · ${Math.round(i.protein_g)}g protein</b><button class="more" data-action="delMeal" data-id="${i.id}" aria-label="Delete">×</button></div>`).join('') : '<p class="loading">Nothing logged yet.</p>'}</div>`;
 }).join('')}`);
+}
+// Calorie bar color contract (uses each user's OWN configured target):
+// <50% red · 51–70% orange · 71–90% yellow · 91–100% green · >target+300 red + glow.
+function kcalBarClass(eaten, target) {
+  const pct = eaten / Math.max(1, target) * 100;
+  if (eaten > target + 300) return 'over';
+  if (pct > 100) return 'warn';           // over target but ≤ +300: amber, no glow
+  if (pct >= 91) return 'ok';
+  if (pct >= 71) return 'mid';
+  if (pct >= 51) return 'low';
+  return 'empty';
+}
+function setTargetsModal() {
+  const t = (pageData.nutrition && pageData.nutrition.targets) || {};
+  const water = pageData.water || {};
+  modal(`<span class="eyebrow">NUTRITION</span><h2>Set Daily Targets</h2><p>Your targets are yours alone — changing them never affects anyone else. Leave calories/protein as 0 to keep the automatic estimate.</p><form class="activity-form" id="targets-form">
+  <label>Calories (kcal/day)<input name="kcal_target" type="number" min="0" max="6000" value="${t.kcal_target || 0}"></label>
+  <label>Protein (g/day)<input name="protein_target" type="number" min="0" max="400" value="${t.protein_target || 0}"></label>
+  <label>Carbs (g/day)<input name="carbs_target" type="number" min="0" max="800" value="${t.carbs_target || 0}"></label>
+  <label>Fats (g/day)<input name="fat_target" type="number" min="0" max="300" value="${t.fat_target || 0}"></label>
+  <label>Water (ml/day)<input name="water_target_ml" type="number" min="500" max="10000" step="50" value="${water.target_ml || 2500}"></label>
+  <button class="primary" type="submit">Save targets</button></form>`);
+  $('#targets-form').onsubmit = async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
+    try {
+      await api('/api/settings', { method: 'POST', body: JSON.stringify({ kcal_target: Number(f.kcal_target) || 0, protein_target: Number(f.protein_target) || 0, water_target_ml: Number(f.water_target_ml) || 2500 }) });
+      await api('/api/nutrition/targets', { method: 'POST', body: JSON.stringify({ carbs_target: Number(f.carbs_target) || 0, fat_target: Number(f.fat_target) || 0 }) }).catch(() => {});
+      $('#modal').innerHTML = ''; await hydrate(); await loadPageData('nutrition'); render(); toast('Daily targets saved');
+    } catch (err) { toast(err.message); }
+  };
+  bind();
 }
 function progressPage() {
   const entries = pageData.progressEntries || [];
@@ -526,7 +576,7 @@ function libraryPage() {
   const ex = pageData.exercises || [];
   const muscles = ['All', 'Chest', 'Back', 'Shoulders', 'Arms', 'Legs', 'Glutes', 'Core', 'Cardio', 'Full Body'];
   return shell(`${pageHeader('Exercise library', 'Technique, mistakes and alternatives for ${ex.length} movements.')}
-<div class="search">⌕ <input id="lib-search" placeholder="Search exercises..."/></div>
+<div class="search">⌕ <input id="lib-search" placeholder="Search exercises..."/></div><button class="primary small" data-action="customExercise" style="margin:10px 0">＋ Add Custom Exercise</button>
 <div class="tabs" id="lib-tabs">${muscles.map((m, i) => `<button class="${i === 0 ? 'active' : ''}" data-muscle="${m}">${m}</button>`).join('')}</div>
 <div class="lib-grid">${ex.length ? ex.map(e => `<article class="lib-card" data-action="exerciseDetail" data-id="${e.id}">
   <span class="lib-muscle">${escapeHtml(e.muscle)}</span><h3>${escapeHtml(e.name)}</h3>
@@ -860,6 +910,7 @@ function render() {
   bind();
 }
 function modal(content) { $('#modal').innerHTML = `<div class="modal-backdrop" data-action="close"></div><section class="modal-card">${content}<button class="modal-x" data-action="close">×</button></section>`; }
+function modalWide(content) { $('#modal').innerHTML = `<div class="modal-backdrop" data-action="close"></div><section class="modal-card wide">${content}<button class="modal-x" data-action="close">×</button></section>`; }
 // Unified post/reel composer with types and optional photo
 function openComposer(mode = 'post', presetKind = '') {
   const isReel = mode === 'reel';
@@ -1035,7 +1086,7 @@ async function activityDetail(id) {
   } catch (e) { toast(e.message); }
 }
 function bind() {
-  $$('[data-page]').forEach(b => b.onclick = async () => { if (b.dataset.bizid) state.bizId = Number(b.dataset.bizid); state.page = b.dataset.page; render(); loadPageData(state.page); window.scrollTo(0, 0); });
+  $$('[data-page]').forEach(b => b.onclick = async () => { if (b.dataset.bizid) state.bizId = Number(b.dataset.bizid); pushTrail(b.dataset.page); state.page = b.dataset.page; render(); loadPageData(state.page); window.scrollTo(0, 0); });
   $$('[data-bcat]').forEach(b => b.onclick = () => { state.bizCat = b.dataset.bcat; render(); const inp = $('#biz-search'); if (inp) { inp.focus(); inp.value = state.bizQuery || ''; } });
   const bizSearch = $('#biz-search');
   if (bizSearch) { let t; bizSearch.oninput = () => { clearTimeout(t); t = setTimeout(() => { state.bizQuery = bizSearch.value; render(); const inp = $('#biz-search'); if (inp) { inp.focus(); inp.value = state.bizQuery; } }, 250); }; }
@@ -1173,6 +1224,12 @@ function bind() {
     const term = search.value.toLowerCase();
     $$('.person-card, .activity-card, .community-card, .event-card').forEach(card => { card.style.display = card.textContent.toLowerCase().includes(term) ? '' : 'none'; });
   };
+  const psearch = $('#people-search');
+  if (psearch) {
+    const applyPeople = (items) => { const g = $('#people-grid'); if (g) g.innerHTML = items.length ? items.map(p => personCard(p)).join('') : '<p class="loading">No athletes found — try another name.</p>'; bind(); };
+    psearch.oninput = () => { const term = psearch.value.trim().toLowerCase(); applyPeople((pageData.allUsers || []).filter(u => !term || String(u.name).toLowerCase().includes(term) || String(u.username).toLowerCase().includes(term))); };
+    psearch.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); const t = psearch.value.trim(); if (!t) return; api('/api/users?q=' + encodeURIComponent(t)).then(d => applyPeople(d.items || [])).catch(err => toast(err.message)); } };
+  }
   const chatSearch = $('#chat-search');
   if (chatSearch) chatSearch.oninput = () => {
     const term = chatSearch.value.toLowerCase();
@@ -1181,6 +1238,15 @@ function bind() {
   if (state.page === 'messages') {
     setTimeout(() => { scrollBubbles(); const ci = $('#composer-input'); if (ci && document.activeElement !== ci && !document.querySelector('.modal-card')) ci.focus(); }, 60);
   }
+}
+function customExerciseModal(onSaved) {
+  modal(`<span class="eyebrow">EXERCISE LIBRARY</span><h2>Add a custom exercise</h2><p>Your exercise is private to you and shows up in your library and workout logging.</p><form class="activity-form" id="cex-form"><label>Exercise name<input name="name" required maxlength="80" placeholder="e.g. Preacher Curl"></label><label>Muscle group<select name="muscle">${['Chest','Back','Shoulders','Arms','Legs','Glutes','Core','Cardio','Full Body','Other'].map(m => `<option>${m}</option>`).join('')}</select></label><label>Equipment<input name="equipment" placeholder="Dumbbell, barbell, machine…" maxlength="30"></label><button class="primary" type="submit">Save exercise</button></form>`);
+  $('#cex-form').onsubmit = async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
+    try { await api('/api/exercises', { method: 'POST', body: JSON.stringify(f) }); toast(`"${f.name}" added to your library`); if (onSaved) onSaved(); }
+    catch (err) { toast(err.message); }
+  };
+  bind();
 }
 function openComments(postId) {
   api(`/api/comments?post_id=${postId}`).then(d => {
@@ -1308,6 +1374,14 @@ async function action(a, btn) {
         .then(async () => { state.friends = true; await hydrate(); render(); toast('Friend request sent'); })
         .catch((e) => { if (/already|exist/i.test(e.message)) { state.friends = true; render(); toast('Already connected'); } else toast(e.message); });
       return;
+    case 'acceptFriend':
+      api('/api/friendships/respond', { method: 'POST', body: JSON.stringify({ request_id: id, decision: 'accept' }) })
+        .then(async () => { $('#modal').innerHTML = ''; await hydrate(); await loadPageData('friends'); render(); toast("Friend added — you're in each other's circle 🎉"); })
+        .catch(e => toast(e.message)); return;
+    case 'rejectFriend':
+      api('/api/friendships/respond', { method: 'POST', body: JSON.stringify({ request_id: id, decision: 'decline' }) })
+        .then(async () => { $('#modal').innerHTML = ''; await hydrate(); await loadPageData('friends'); render(); toast('Request declined'); })
+        .catch(e => toast(e.message)); return;
     case 'like': api(`/api/posts/${id}/like`, { method: 'POST', body: '{}' }).then(async () => { if (state.page === 'reels' || state.page === 'posts') { if ((state.prTab || 'reels') === 'reels') { pageData.reels = (await api('/api/reels')).items || []; } else { pageData.feed = (await api('/api/feed')).items || []; } render(); } else { await hydrate(); render(); } }).catch(e => toast(e.message)); return;
     case 'comment': openComments(id); return;
     case 'share': {
@@ -1351,13 +1425,13 @@ async function action(a, btn) {
     }
     case 'athlete': {
       $('#modal').innerHTML = '';
-      state.page = 'athleteProfile'; state.detailId = id; pageData.detailData = null;
+      pushTrail('athleteProfile'); state.page = 'athleteProfile'; state.detailId = id; pageData.detailData = null;
       render(); loadPageData('athleteProfile'); window.scrollTo(0, 0);
       return;
     }
     case 'communityOpen': {
       $('#modal').innerHTML = '';
-      state.page = 'communityDetail'; state.detailId = id; pageData.detailData = null;
+      pushTrail('communityDetail'); state.page = 'communityDetail'; state.detailId = id; pageData.detailData = null;
       render(); loadPageData('communityDetail'); window.scrollTo(0, 0);
       return;
     }    case 'businessDetail': {
@@ -1379,7 +1453,7 @@ async function action(a, btn) {
       (async () => {
         try {
           const probe = await api(`/api/businesses/${id}`);
-          state.bizId = id; state.page = 'businessChannel'; render(); await loadPageData('businessChannel'); render(); window.scrollTo(0, 0);
+          state.bizId = id; pushTrail('businessChannel'); pushTrail('businessChannel'); state.page = 'businessChannel'; render(); await loadPageData('businessChannel'); render(); window.scrollTo(0, 0);
         } catch (e) { toast(e.message); }
       })();
       return;
@@ -1556,7 +1630,7 @@ async function action(a, btn) {
           const prefs = data.prefs || {};
           const CATS = [['friend', '👥', 'Friend requests'], ['message', '💬', 'Messages'], ['achievement', '🏆', 'Achievements'], ['challenge', '⚔️', 'Challenges'], ['workout', '🏋', 'Workouts'], ['hydration', '💧', 'Hydration'], ['event', '🎉', 'Events'], ['community', '◌', 'Community'], ['business', '📣', 'Businesses'], ['ai', '🤖', 'AI coach']];
           const ICONS = { friend: '👥', message: '💬', achievement: '🏆', challenge: '⚔️', workout: '🏋', hydration: '💧', event: '🎉', community: '◌', business: '📣', ai: '🤖', xp: '⚡', activity: '🏀' };
-          modal(`<div class="notif-center"><div class="notif-head"><span class="eyebrow">NOTIFICATION CENTER</span><h2 style="font-size:20px;margin:2px 0">All activity</h2><button class="outline small" data-action="readNotifications">Mark all read</button></div>
+          modalWide(`<div class="notif-center notif-scroll"><div class="notif-head"><span class="eyebrow">NOTIFICATION CENTER</span><h2 style="font-size:20px;margin:2px 0">All activity</h2><button class="outline small" data-action="readNotifications">Mark all read</button></div>
           <div class="notif-list">${(data.items || []).slice(0, 30).map(n => `<div class="notif-item ${n.is_read ? 'read' : ''}"><span class="notif-ico">${ICONS[n.type] || '🔔'}</span><div><b>${escapeHtml(n.title)}</b><p>${escapeHtml(n.body)}</p><small>${timeShort(n.created_at)}</small></div>${n.is_read ? '' : '<i class="notif-dot"></i>'}</div>`).join('') || '<p class="muted">No notifications yet — they\'ll appear here.</p>'}</div>
           <span class="eyebrow">PREFERENCES</span>
           <div class="notif-prefs">${CATS.map(([c, ic, label]) => `<label class="notif-pref"><span>${ic} ${label}</span><input type="checkbox" data-npref="${c}" ${prefs[c] && prefs[c].enabled ? 'checked' : ''}/></label>`).join('')}</div>
@@ -1612,7 +1686,10 @@ async function action(a, btn) {
       return;
     case 'eventFilter': toast('Filters coming to the demo soon — all categories shown'); return;
     case 'challenge': {
-      modal(`<span class="eyebrow">NEW CHALLENGE</span><h2>Start a rivalry</h2><form class="activity-form" id="challenge-form"><label>Opponent<select name="opponent_id">${pageData.users.filter(u => u.id !== 1).map(u => `<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('') || '<option value="2">Rahul Menon</option>'}</select></label><label>Type<select name="challenge_type"><option value="running_distance">Running distance (km)</option><option value="gym_sessions">Gym sessions</option><option value="cycling_distance">Cycling distance (km)</option></select></label><label>Target value<input name="target_value" type="number" value="5" min="1" step="0.5"></label><button class="primary" type="submit">Send challenge</button></form>`);
+      let chFriends = (pageData.challengeFriends || []);
+      if (!chFriends.length) { try { chFriends = (await api('/api/challenges')).friends || []; } catch (_) {} pageData.challengeFriends = chFriends; }
+      if (!chFriends.length) { toast('Add a friend first — challenges are between real friends'); return; }
+      modal(`<span class="eyebrow">NEW CHALLENGE</span><h2>Start a rivalry</h2><form class="activity-form" id="challenge-form"><label>Challenge a friend<select name="opponent_id">${chFriends.map(u => `<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('')}</select></label><label>Type<select name="challenge_type"><option value="running_distance">Running distance (km)</option><option value="gym_sessions">Gym sessions</option><option value="cycling_distance">Cycling distance (km)</option></select></label><label>Target value<input name="target_value" type="number" value="5" min="1" step="0.5"></label><button class="primary" type="submit">Send challenge</button></form>`);
       $('#challenge-form').onsubmit = async (e) => {
         e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
         try { await api('/api/challenges', { method: 'POST', body: JSON.stringify({ ...f, opponent_id: Number(f.opponent_id), target_value: Number(f.target_value) }) }); $('#modal').innerHTML = ''; await loadPageData('challenges'); state.page = 'challenges'; render(); toast('Challenge sent!'); }
@@ -1679,11 +1756,14 @@ async function action(a, btn) {
       modal(`<span class="eyebrow">LOG WORKOUT</span><h2>How did it go?</h2><form class="activity-form" id="wo-form">
       <label>Session title<input name="title" value="Training session" required maxlength="80"></label>
       <label>Duration (minutes)<input name="duration_min" type="number" value="45" min="5" max="240"></label>
-      <div id="wo-rows"><div class="wo-row"><select name="exercise_id">${exs.map(e => `<option value="${e.id}">${escapeHtml(e.name)} (${e.muscle})</option>`).join('')}</select><input name="sets" type="number" value="3" min="1" max="20" title="Sets"/><input name="reps" type="number" value="10" min="1" max="100" title="Reps"/><input name="weight" type="number" value="0" min="0" step="0.5" title="Weight kg"/></div></div>
+      <div class="wo-head"><span>EXERCISE</span><span>SETS</span><span>REPS</span><span>WEIGHT (KG)</span></div>
+      <div id="wo-rows"><div class="wo-row"><select name="exercise_id">${exs.map(e => `<option value="${e.id}">${escapeHtml(e.name)} (${e.muscle})</option>`).join('')}</select><input name="sets" type="number" value="3" min="1" max="20" aria-label="Sets" placeholder="3"/><input name="reps" type="number" value="10" min="1" max="100" aria-label="Reps" placeholder="10"/><input name="weight" type="number" value="0" min="0" step="0.5" aria-label="Weight in kg" placeholder="0"/></div></div>
       <button type="button" class="outline small" id="wo-add">＋ Add exercise</button>
+      <button type="button" class="outline small" id="wo-custom">✚ Add custom exercise</button>
       <button class="primary" type="submit">Save workout</button></form>`);
       bind();
-      $('#wo-add').onclick = () => $('#wo-rows').insertAdjacentHTML('beforeend', `<div class="wo-row"><select name="exercise_id">${exs.map(e => `<option value="${e.id}">${escapeHtml(e.name)} (${e.muscle})</option>`).join('')}</select><input name="sets" type="number" value="3" min="1" max="20"/><input name="reps" type="number" value="10" min="1" max="100"/><input name="weight" type="number" value="0" min="0" step="0.5"/></div>`);
+      $('#wo-add').onclick = () => $('#wo-rows').insertAdjacentHTML('beforeend', `<div class="wo-row"><select name="exercise_id">${exs.map(e => `<option value="${e.id}">${escapeHtml(e.name)} (${e.muscle})</option>`).join('')}</select><input name="sets" type="number" value="3" min="1" max="20" aria-label="Sets"/><input name="reps" type="number" value="10" min="1" max="100" aria-label="Reps"/><input name="weight" type="number" value="0" min="0" step="0.5" aria-label="Weight"/></div>`);
+      $('#wo-custom').onclick = () => customExerciseModal(async () => { try { const d = await api('/api/exercises'); pageData.exercises = d.items || []; $('#modal').innerHTML = ''; action('logWorkout', null); } catch (e) { toast(e.message); } });
       $('#wo-form').onsubmit = async (e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);
@@ -1699,6 +1779,9 @@ async function action(a, btn) {
       };
       return;
     }
+    case 'customExercise':
+      customExerciseModal(async () => { try { const d = await api('/api/exercises'); pageData.exercises = d.items || []; if (state.page === 'library') await loadPageData('library'); render(); } catch (e) { toast(e.message); } });
+      return;
     case 'generateWorkout': {
       modal(`<span class="eyebrow">✦ AI GENERATOR</span><h2>Build my workout</h2><form class="activity-form" id="gen-form">
       <label>Goal<select name="goal"><option>Build muscle</option><option>Lose fat</option><option>Get stronger</option><option>Endurance</option></select></label>
@@ -1753,11 +1836,13 @@ async function action(a, btn) {
       <label>Food<input name="name" placeholder="Grilled chicken and rice" required maxlength="100"></label>
       <label>Calories<input name="kcal" type="number" value="400" min="0" max="3000" required></label>
       <label>Protein (g)<input name="protein_g" type="number" value="30" min="0" max="300"></label>
+      <label>Carbs (g)<input name="carbs_g" type="number" value="0" min="0" max="500"></label>
+      <label>Fats (g)<input name="fat_g" type="number" value="0" min="0" max="200"></label>
       <button class="primary" type="submit">Add to diary</button></form>`);
       bind();
       $('#meal-form').onsubmit = async (e) => {
         e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
-        try { await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ ...f, kcal: Number(f.kcal), protein_g: Number(f.protein_g) }) }); $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); toast('Meal logged · +5 XP'); }
+        try { await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ ...f, kcal: Number(f.kcal), protein_g: Number(f.protein_g), carbs_g: Number(f.carbs_g || 0), fat_g: Number(f.fat_g || 0) }) }); $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); toast('Meal logged · +5 XP'); }
         catch (err) { toast(err.message); }
       };
       return;
@@ -1789,8 +1874,20 @@ async function action(a, btn) {
     }
     case 'delMeal':
       api(`/api/nutrition/${id}`, { method: 'POST', body: '{}' }).then(async () => { await loadPageData('nutrition'); render(); toast('Removed'); }).catch(e => toast(e.message)); return;
-    case 'addWater':
-      api('/api/water', { method: 'POST', body: JSON.stringify({ ml: Number(btn.dataset.ml) }) }).then(async () => { await loadPageData('nutrition'); render(); toast(`💧 +${btn.dataset.ml}ml logged`); }).catch(e => toast(e.message)); return;
+    case 'setTargets': setTargetsModal(); return;
+    case 'addWaterCustom': {
+      modal(`<span class="eyebrow">HYDRATION</span><h2>Add water</h2><form class="activity-form" id="water-form"><label>Amount<input name="amount" type="number" min="1" step="any" required placeholder="e.g. 2"></label><label>Unit<select name="unit"><option value="ml">millilitres (ml)</option><option value="l">litres (L)</option><option value="oz">US fluid ounces (oz)</option><option value="gal">US gallons (gal)</option></select></label><button class="primary" type="submit">Add to today</button></form>`);
+      $('#water-form').onsubmit = async (e) => {
+        e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
+        const amt = parseFloat(f.amount);
+        if (!(amt > 0)) return toast('Enter an amount greater than 0');
+        const ML = { ml: 1, l: 1000, oz: 29.5735, gal: 3785.41 };
+        const ml = Math.round(amt * (ML[f.unit] || 1));
+        try { await api('/api/water', { method: 'POST', body: JSON.stringify({ ml }) }); $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); toast(`Added ${(ml / 1000).toFixed(2)} L of water 💧`); }
+        catch (err) { toast(err.message); }
+      };
+      bind(); return;
+    }
     case 'addProgress':
       modal(`<span class="eyebrow">PRIVATE LOG</span><h2>Measurements</h2><p class="loading">🔒 Progress data is private — only you see it.</p><form class="activity-form" id="prog-form">
       <label>Weight (kg)<input name="weight_kg" type="number" step="0.1" min="30" max="300"></label>
@@ -1897,6 +1994,7 @@ async function action(a, btn) {
     case 'genWorkoutFromOnboarding': $('#modal').innerHTML = ''; action('generateWorkout', null); return;
     case 'cmdk': cmdk(); return;
     case 'close': $('#modal').innerHTML = ''; return;
+    case 'goBack': goBack(); return;
     default: toast('Coming soon in the demo'); return;
   }
 }
