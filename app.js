@@ -1262,6 +1262,9 @@ function openComments(postId) {
 }
 async function action(a, btn) {
   const id = btn ? Number(btn.dataset.id) : 0;
+  const _now = Date.now();
+  if (_now - (action._t || 0) < 300 && action._n === a + id) return;  // double-click guard: one action per tap
+  action._t = _now; action._n = a + id;
   const done = (msg, fn) => api('/api/actions', { method: 'POST', body: JSON.stringify({ action: a === 'joinActivity' ? 'join' : a, state: {} }) }).then(async (d) => { if (d.state) applyServerState(d.state); if (fn) await fn(); await hydrate(); render(); toast(msg); }).catch(e => toast(e.message));
   switch (a) {
     case 'account': {
@@ -1875,6 +1878,29 @@ async function action(a, btn) {
     case 'delMeal':
       api(`/api/nutrition/${id}`, { method: 'POST', body: '{}' }).then(async () => { await loadPageData('nutrition'); render(); toast('Removed'); }).catch(e => toast(e.message)); return;
     case 'setTargets': setTargetsModal(); return;
+    case 'replaceEx': {
+      const i = Number(btn.dataset.i || 0);
+      const plan = window.__lastPlan;
+      if (!plan || !plan.items || !plan.items[i]) return toast('No plan to swap');
+      const it = plan.items[i];
+      if (!it.alt) return toast('No alternative for this exercise');
+      plan.items[i] = { ...it, exercise: it.alt, alt: it.exercise };  // swap
+      window.__lastPlan = plan;
+      modal(`<span class="eyebrow">✦ GENERATED</span><h2>${escapeHtml(plan.title)}</h2><p class="loading">~${plan.est_kcal} kcal · ${plan.items.length} exercises</p>
+      <div class="gen-plan">${plan.items.map((x, j) => `<div class="gen-row"><div><b>${j + 1}. ${escapeHtml(x.exercise)}</b><small>${x.sets} sets × ${x.reps} reps · rest ${x.rest_s}s · ${x.tempo} tempo</small><small class="dim">Alt: ${escapeHtml(x.alt)}</small></div><button class="more" data-action="replaceEx" data-i="${j}" title="Replace">⇄</button></div>`).join('')}</div>
+      <p class="loading">${escapeHtml(plan.note)}</p>
+      <div class="hero-actions"><button class="primary" data-action="genLogIt">Log this workout</button><button class="outline" data-action="genHarder">Make it harder</button><button class="outline" data-action="genEasier">Make it easier</button></div>`);
+      bind();
+      return;
+    }
+    case 'closeModal': $('#modal').innerHTML = ''; return;
+    case 'addWater': {
+      const ml = Number(btn.dataset.ml || 0);
+      if (!(ml > 0)) return toast('Invalid amount');
+      try { await api('/api/water', { method: 'POST', body: JSON.stringify({ ml }) }); await loadPageData(state.page); render(); toast(`+${ml} ml logged 💧`); }
+      catch (err) { toast(err.message); }
+      return;
+    }
     case 'addWaterCustom': {
       modal(`<span class="eyebrow">HYDRATION</span><h2>Add water</h2><form class="activity-form" id="water-form"><label>Amount<input name="amount" type="number" min="1" step="any" required placeholder="e.g. 2"></label><label>Unit<select name="unit"><option value="ml">millilitres (ml)</option><option value="l">litres (L)</option><option value="oz">US fluid ounces (oz)</option><option value="gal">US gallons (gal)</option></select></label><button class="primary" type="submit">Add to today</button></form>`);
       $('#water-form').onsubmit = async (e) => {
