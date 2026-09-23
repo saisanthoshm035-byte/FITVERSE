@@ -68,10 +68,10 @@ def sessions_mode() -> str:
 def _arg(v):
     """Encode one Python parameter into libsql pipeline arg form.
 
-    IMPORTANT: the HTTP v2 spec stores `value` as a JSON STRING for every
-    type ("In JSON, the value is a String to avoid losing precision"),
-    including integers and floats. Real Turso rejects raw JSON numbers
-    with HTTP 400. Blobs use base64 in the `value` field.
+    IMPORTANT: the HTTP v2 / hrana encoding rules (validated against real
+    Turso): integers are sent as JSON STRINGS (precision escape hatch),
+    but floats must be raw JSON NUMBERS — a float value sent as a string
+    is rejected with HTTP 400. Blobs use base64 in the `value` field.
     """
     if v is None:
         return {"type": "null", "value": None}
@@ -80,7 +80,7 @@ def _arg(v):
     if isinstance(v, int):
         return {"type": "integer", "value": str(v)}
     if isinstance(v, float):
-        return {"type": "float", "value": repr(v)}
+        return {"type": "float", "value": v}
     if isinstance(v, (bytes, bytearray)):
         return {"type": "blob", "value": base64.b64encode(bytes(v)).decode("ascii")}
     return {"type": "text", "value": str(v)}
@@ -240,10 +240,16 @@ class RemoteConn:
                 return results
             except sqlite3.OperationalError:
                 raise  # real SQL error — do not retry
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as e:
-                if isinstance(e, urllib.error.HTTPError) and e.code < 500 and e.code != 429:
-                    raise sqlite3.OperationalError(f"remote database HTTP {e.code}")
-                last_err = e
+            except urllib.error.HTTPError as e:
+                # Surface Turso's own error text — it names the exact
+                # validation problem instead of a bare status code.
+                try:
+                    detail = e.read().decode("utf-8", "replace")[:300]
+                except Exception:
+                    detail = ""
+                if e.code < 500 and e.code != 429:
+                    raise sqlite3.OperationalError(f"remote database HTTP {e.code}: {detail}")
+                last_err = f"HTTP {e.code}: {detail}"
                 time.sleep(0.3 * (attempt + 1))
         raise sqlite3.OperationalError(f"remote database unreachable: {last_err}")
 
