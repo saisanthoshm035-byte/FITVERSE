@@ -1301,7 +1301,7 @@ async function action(a, btn) {
       }; bind(); return;
     }
     case 'googleLogin': authWithGoogle(); return;
-    case 'logout': sessionToken = ''; localStorage.removeItem('fitverse-session'); evtSource?.close(); evtSource = null; $('#modal').innerHTML = ''; hydrate().then(render); toast('Signed out of this browser session'); return;
+    case 'logout': api('/api/auth/logout', { method: 'POST' }).catch(() => {}); sessionToken = ''; localStorage.removeItem('fitverse-session'); evtSource?.close(); evtSource = null; $('#modal').innerHTML = ''; hydrate().then(render); toast('Signed out of this browser session'); return;
     case 'notifications': {
       modal(`<span class="eyebrow">NOTIFICATIONS</span><h2>Your fitness loop</h2>${pageData.notifications.length ? pageData.notifications.map(n => `<div class="notice" style="${n.is_read ? 'opacity:.5' : ''}"><b>${escapeHtml(n.title)}</b><p>${escapeHtml(n.body)}</p><small>${timeShort(n.created_at)}</small></div>`).join('') : '<p>No notifications.</p>'}<button class="outline" data-action="readNotifications">Mark all read</button>`);
       bind(); return;

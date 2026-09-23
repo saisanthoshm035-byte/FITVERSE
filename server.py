@@ -39,7 +39,10 @@ try:
 except Exception:
  pass  # .env is optional — real environment variables still work
 
-SESSIONS: dict[str, int] = {}
+import store  # persistent storage layer: database-backed sessions + optional remote DB
+# NOTE: sessions now live in the DATABASE (table `sessions`) — a server restart,
+# redeploy or Render spin-down no longer signs anyone out.
+
 OAUTH_STATES: dict[str, float] = {}
 TYPING: dict[int, tuple] = {}  # conversation_id -> (last typing timestamp, user_id)
 DEMO_USER_ID = 1
@@ -49,16 +52,16 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect() -> sqlite3.Connection:
-    db = sqlite3.connect(DATABASE, timeout=15)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys = ON")
-    try:
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA busy_timeout=15000")
-    except sqlite3.OperationalError:
-        pass
-    return db
+def connect(database: str | None = None):
+    """Dual-mode DB handle — see store.py.
+
+    Default: local SQLite file (unchanged behaviour, zero new dependencies).
+    If FITVERSE_DB_URL + FITVERSE_DB_TOKEN are configured (Render deploys),
+    returns a persistent remote libsql/Turso handle over plain HTTP.
+    All existing call sites (server + ai/fitness/platform services) are
+    untouched — they keep doing `with connect() as db: db.execute(...)`.
+    """
+    return store.connect(database or DATABASE)
 
 
 def hash_password(password: str, salt: str) -> str:
@@ -954,12 +957,12 @@ class FitverseHandler(BaseHTTPRequestHandler):
         """0 = anonymous guest. A visitor without a valid session must never be demo
         user 1 — that leaked a real person's name and data to every signed-out visitor."""
         token = self.headers.get("X-Session", "")
-        return SESSIONS.get(token, 0)
+        return store.session_user(token)
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         query = urlparse(self.path).query
-        if path == "/api/health": return self.send_json(200,{"ok":True,"database":"sqlite","time":now()})
+        if path == "/api/health": return self.send_json(200,{"ok":True,"database":store.storage_mode(),"sessions":"database","time":now()})
         # Signed-out visitors may browse PUBLIC content only; personal endpoints need a session.
         _GUEST_OK = ("/api/auth/", "/api/health", "/api/bootstrap", "/api/leaderboard", "/api/users",
                      "/api/feed", "/api/reels", "/api/activities", "/api/events", "/api/communities",
@@ -1224,7 +1227,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",(uid,0,0,0,0,0,"pending",0,0,0,stamp))
                     db.execute("INSERT INTO profiles (user_id,avatar_url,updated_at,onboarding_completed) VALUES (?,?,?,0)",(uid,pic or None,stamp))
                     greeting=gname
-            token=secrets.token_urlsafe(32); SESSIONS[token]=uid
+            token=secrets.token_urlsafe(32); store.session_put(token, uid)
             disp=_html.escape(greeting); safe_name=_q(greeting)
             html=("<!doctype html><meta charset='utf-8'><title>Signing in…</title><style>body{font-family:system-ui;display:grid;place-items:center;height:100vh;background:#f6faf7;color:#0b1711}</style>"
                   f"<div style='text-align:center'><div style='font-size:40px'>✅</div><b>Signed in as {disp}</b><p style='color:#647068'>Opening FITVERSE…</p></div>"
@@ -1733,11 +1736,16 @@ class FitverseHandler(BaseHTTPRequestHandler):
             # Every write needs a real account; guests get a clear sign-in prompt.
             if self.current_user() <= 0 and not path.startswith("/api/auth/"):
                 return self.send_json(401,{"error":"Sign in to do that"})
+            if path == "/api/auth/logout":
+                """Revoke the caller's session token (real logout, not just forgetting it client-side)."""
+                tok = self.headers.get("X-Session", "")
+                if tok: store.session_drop(tok)
+                return self.send_json(200,{"ok":True})
             if path == "/api/auth/login":
                 username=str(data.get("username","")).strip().lower(); password=str(data.get("password",""))
                 with connect() as db: user=db.execute("SELECT * FROM users WHERE username=? OR email=?",(username,username)).fetchone()
                 if not user or hash_password(password,user["password_salt"]) != user["password_hash"]: return self.send_json(401,{"error":"Invalid username or password"})
-                token=secrets.token_urlsafe(32); SESSIONS[token]=user["id"]; return self.send_json(200,{"token":token,"user":{"id":user["id"],"name":user["name"]}})
+                token=secrets.token_urlsafe(32); store.session_put(token, user["id"]); return self.send_json(200,{"token":token,"user":{"id":user["id"],"name":user["name"]}})
             if path == "/api/auth/register":
                 required=["name","username","email","password"]
                 if any(not str(data.get(k,"")).strip() for k in required): return self.send_json(400,{"error":"Name, username, email and password are required"})
@@ -1746,7 +1754,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     with connect() as db:
                         cur=db.execute("INSERT INTO users (name,username,email,password_salt,password_hash,created_at) VALUES (?,?,?,?,?,?)",(data["name"].strip(),data["username"].strip().lower(),data["email"].strip().lower(),salt,hash_password(data["password"],salt),stamp))
                         db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",(cur.lastrowid,0,0,0,0,0,"pending",0,0,0,stamp)); db.execute("INSERT INTO profiles (user_id,updated_at,onboarding_completed) VALUES (?,?,0)",(cur.lastrowid,stamp)); user_id=cur.lastrowid
-                    token=secrets.token_urlsafe(32); SESSIONS[token]=user_id; return self.send_json(201,{"token":token,"userId":user_id})
+                    token=secrets.token_urlsafe(32); store.session_put(token, user_id); return self.send_json(201,{"token":token,"userId":user_id})
                 except sqlite3.IntegrityError: return self.send_json(409,{"error":"That username or email is already in use"})
             if path == "/api/profile":
                 allowed_user={"name","city","fitness_level","fitness_goal","favorite_activity","preferred_time"}
@@ -2022,6 +2030,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 if not vals or all(v is None for v in vals.values()):
                     if not vals: return self.send_json(400,{"error":"Nothing to update"})
                 with connect() as db:
+                    db.execute("INSERT OR IGNORE INTO user_settings (user_id,updated_at) VALUES (?,?)",(uid,now()))
                     cols=",".join(f"{k}=?" for k in vals)
                     db.execute(f"UPDATE user_settings SET {cols},updated_at=? WHERE user_id=?",(*vals.values(),now(),uid))
                     if db.execute("SELECT 1 FROM user_settings WHERE user_id=?",(uid,)).fetchone() is None:
@@ -2036,12 +2045,10 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     t=ai_service.targets_from_profile(vals)
                     vals["kcal_target"]=t["kcal_target"]; vals["protein_target"]=t["protein_target"]
                     cols=",".join(f"{k}=?" for k in vals)
-                    try:
-                        db.execute(f"UPDATE user_settings SET {cols},updated_at=? WHERE user_id=?",(*vals.values(),now(),uid))
-                    except sqlite3.OperationalError:
-                        db.execute("INSERT OR IGNORE INTO user_settings (user_id,updated_at) VALUES (?,?)",(uid,now()))
-                        cols2=",".join(f"{k}=?" for k in vals)
-                        db.execute(f"UPDATE user_settings SET {cols2} WHERE user_id=?",(*vals.values(),uid))
+                    # Row must exist BEFORE the UPDATE: a fresh user has no user_settings row,
+                    # and a 0-row UPDATE silently dropped the whole plan (the flash-then-vanish bug).
+                    db.execute("INSERT OR IGNORE INTO user_settings (user_id,updated_at) VALUES (?,?)",(uid,now()))
+                    db.execute(f"UPDATE user_settings SET {cols},updated_at=? WHERE user_id=?",(*vals.values(),now(),uid))
                     db.execute("UPDATE users SET fitness_level=?,fitness_goal=? WHERE id=?",(data.get("experience","Intermediate"),data.get("goal","General fitness"),uid))
                 return self.send_json(200,{"ok":True,"targets":t})
             if path == "/api/posts":
@@ -2400,6 +2407,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     initialize_database()
+    store.purge_expired_sessions()
     host = os.environ.get("HOST", "0.0.0.0")   # 0.0.0.0 so cloud hosts like Render can reach it
     try: port = int(os.environ.get("PORT", "4173"))
     except (TypeError, ValueError): port = 0
