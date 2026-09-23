@@ -30,6 +30,7 @@ SQL errors raise sqlite3.OperationalError, preserving existing
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
@@ -65,17 +66,23 @@ def sessions_mode() -> str:
 # ---------------------------------------------------------------------------
 
 def _arg(v):
-    """Encode one Python parameter into libsql pipeline arg form."""
+    """Encode one Python parameter into libsql pipeline arg form.
+
+    IMPORTANT: the HTTP v2 spec stores `value` as a JSON STRING for every
+    type ("In JSON, the value is a String to avoid losing precision"),
+    including integers and floats. Real Turso rejects raw JSON numbers
+    with HTTP 400. Blobs use base64 in the `value` field.
+    """
     if v is None:
         return {"type": "null", "value": None}
     if isinstance(v, bool):
-        return {"type": "integer", "value": 1 if v else 0}
+        return {"type": "integer", "value": "1" if v else "0"}
     if isinstance(v, int):
-        return {"type": "integer", "value": v}
+        return {"type": "integer", "value": str(v)}
     if isinstance(v, float):
-        return {"type": "float", "value": v}
+        return {"type": "float", "value": repr(v)}
     if isinstance(v, (bytes, bytearray)):
-        return {"type": "blob", "value": bytes(v).hex()}
+        return {"type": "blob", "value": base64.b64encode(bytes(v)).decode("ascii")}
     return {"type": "text", "value": str(v)}
 
 
@@ -89,7 +96,7 @@ def _dec(v):
     if t in ("float", "real"):
         return float(v["value"])
     if t == "blob":
-        return bytes.fromhex(v["value"])
+        return base64.b64decode(v["value"])
     return v.get("value")
 
 
