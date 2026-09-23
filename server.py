@@ -416,7 +416,22 @@ def initialize_database() -> None:
         # every demo user joins a team deterministically so the war has stakes
         for u in db.execute("SELECT id FROM users").fetchall():
             db.execute("INSERT OR IGNORE INTO team_members (team_id,user_id,joined_at) VALUES (?,?,?)", (1 + (u[0] % 4), u[0], stamp2))
-        exists = db.execute("SELECT 1 FROM users WHERE id = ?", (DEMO_USER_ID,)).fetchone()
+        # Re-runnable seed: the guard checks that ALL key pieces exist. A boot
+        # that crashed partway (remote-DB first deploy, etc.) leaves a partial
+        # database; re-entering this block heals it because every INSERT below
+        # is INSERT OR IGNORE — a complete database is completely untouched.
+        def _seed_complete(db):
+            try:
+                if db.execute("SELECT COUNT(*) c FROM users WHERE id<=4").fetchone()["c"] < 4: return False
+                if db.execute("SELECT COUNT(*) c FROM communities WHERE id<=4").fetchone()["c"] < 4: return False
+                if db.execute("SELECT COUNT(*) c FROM businesses").fetchone()["c"] < 1: return False
+                if db.execute("SELECT COUNT(*) c FROM achievements").fetchone()["c"] < 11: return False
+                if db.execute("SELECT COUNT(*) c FROM exercises").fetchone()["c"] < 1: return False
+                if db.execute("SELECT COUNT(*) c FROM foods").fetchone()["c"] < 1: return False
+                return True
+            except sqlite3.OperationalError:
+                return False
+        exists = _seed_complete(db)
         if not exists:
             created = now()
             demo_salt = "fitverse-demo-salt"
@@ -427,49 +442,54 @@ def initialize_database() -> None:
                 (4, "Arjun Raj", "arjunraj", "arjun@fitverse.demo", "Chennai", "Intermediate", "General fitness", "Cycling", "6–8 AM"),
             ]
             for u in users:
-                db.execute("""INSERT INTO users (id,name,username,email,password_salt,password_hash,city,fitness_level,fitness_goal,favorite_activity,preferred_time,created_at)
+                db.execute("""INSERT OR IGNORE INTO users (id,name,username,email,password_salt,password_hash,city,fitness_level,fitness_goal,favorite_activity,preferred_time,created_at)
                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                            (u[0], u[1], u[2], u[3], demo_salt, hash_password("demo1234", demo_salt), *u[4:], created))
-            db.executemany("INSERT INTO profiles (user_id,bio,availability,workout_intensity,preferred_location,updated_at) VALUES (?,?,?,?,?,?)", [
+            db.executemany("INSERT OR IGNORE INTO profiles (user_id,bio,availability,workout_intensity,preferred_location,updated_at) VALUES (?,?,?,?,?,?)", [
                 (1,"Building a better relationship with consistency. Basketball after class.","Weekdays","Moderate","Campus",created),
                 (2,"Courts, community and a little healthy competition.","Weekdays","Moderate","Campus",created),
                 (3,"One more kilometre, one more story.","Mornings","High","Track",created),
                 (4,"Chasing sunrise and long roads.","Weekends","Moderate","ECR",created),
             ])
-            db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            db.execute("INSERT OR IGNORE INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                        (1, 1080, 6, 3, 0, 0, "pending", 0, 0, 12, created))
             for user_id, xp, streak, activities in [(2, 1240, 9, 7), (3, 1170, 12, 8), (4, 950, 5, 5)]:
-                db.execute("INSERT INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                db.execute("INSERT OR IGNORE INTO user_game_state VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                            (user_id, xp, streak, activities, 0, 0, "pending", 0, 0, 12, created))
-            db.executemany("""INSERT INTO activities (id,title,sport,starts_at,location_label,max_participants,fitness_level,intensity,description,host_id,created_at)
+            db.executemany("""INSERT OR IGNORE INTO activities (id,title,sport,starts_at,location_label,max_participants,fitness_level,intensity,description,host_id,created_at)
                               VALUES (?,?,?,?,?,?,?,?,?,?,?)""", [
                 (1, "Sunset basketball", "Basketball", "2026-09-10T17:30:00+05:30", "Campus Sports Ground", 8, "Intermediate", "Moderate", "A friendly post-class game.", 2, created),
                 (2, "Campus loop run", "Running", "2026-09-10T18:00:00+05:30", "Campus Track", 12, "Beginner", "Moderate", "An easy social 5K.", 3, created),
                 (3, "Weekend cycling crew", "Cycling", "2026-09-13T06:30:00+05:30", "ECR Checkpoint", 15, "Intermediate", "Moderate", "Coastal morning ride.", 4, created),
             ])
-            db.executemany("INSERT INTO activity_participants VALUES (?,?,?)", [(1,2,created),(1,3,created),(1,4,created),(2,2,created),(2,3,created)])
-            db.execute("""INSERT INTO challenges (id,title,challenge_type,target_value,challenger_id,opponent_id,status,winner_id,starts_at,ends_at,created_at)
+            db.executemany("INSERT OR IGNORE INTO activity_participants VALUES (?,?,?)", [(1,2,created),(1,3,created),(1,4,created),(2,2,created),(2,3,created)])
+            db.execute("""INSERT OR IGNORE INTO challenges (id,title,challenge_type,target_value,challenger_id,opponent_id,status,winner_id,starts_at,ends_at,created_at)
                           VALUES (1,'Rahul 5K Challenge','running_distance',5,2,1,'pending',NULL,?,?,?)""",
                        ("2026-09-10T00:00:00+05:30", "2026-09-17T23:59:00+05:30", created))
-            db.executemany("INSERT INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,?)", [(1,1,3.8),(1,2,4.2)])
-            db.executemany("INSERT INTO communities (id,name,description,activity,created_at) VALUES (?,?,?,?,?)", [
+            db.executemany("INSERT OR IGNORE INTO challenge_participants (challenge_id,user_id,progress) VALUES (?,?,?)", [(1,1,3.8),(1,2,4.2)])
+            db.executemany("INSERT OR IGNORE INTO communities (id,name,description,activity,created_at) VALUES (?,?,?,?,?)", [
                 (1,"Basketball Community","Courts, crews and competition.","Basketball",created),
                 (2,"Chennai Runners","Run the city together.","Running",created),
                 (3,"Gym Beginners","Small wins. Strong habits.","Gym",created),
                 (4,"Cycling Club","Sunday miles and chai stops.","Cycling",created),
             ])
-            db.execute("INSERT INTO community_members VALUES (?,?,?,?)", (1,1,"member",created))
-            db.executemany("""INSERT INTO events (id,name,category,starts_at,location_label,price_inr,capacity,organizer,description,created_at)
+            db.execute("INSERT OR IGNORE INTO community_members VALUES (?,?,?,?)", (1,1,"member",created))
+            db.executemany("""INSERT OR IGNORE INTO events (id,name,category,starts_at,location_label,price_inr,capacity,organizer,description,created_at)
                               VALUES (?,?,?,?,?,?,?,?,?,?)""", [
                 (1,"Chennai Night Run 2026","Running","2026-09-20T19:00:00+05:30","Marina Beach",499,2400,"Chennai Running Collective","6K under city lights, music, medals and your fastest self.",created),
                 (2,"Campus 3v3 Tournament","Basketball","2026-09-15T16:00:00+05:30","Campus Sports Ground",199,120,"FITVERSE Campus","A fast, friendly campus tournament.",created),
                 (3,"Sunrise Yoga at Besant","Yoga","2026-09-18T06:00:00+05:30","Besant Nagar Beach",0,100,"Yoga Chennai","A gentle community flow by the sea.",created),
             ])
-            db.execute("INSERT INTO posts (id,author_id,body,kind,created_at) VALUES (1,3,?,'activity',?)", ("Finished my first 5K today! The last kilometre was all heart. 🏃", created))
-            db.execute("INSERT INTO conversations (id,kind,title,created_at) VALUES (1,'direct','Rahul Menon',?)", (created,))
-            db.executemany("INSERT INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)", [(1,2,"Hey Sai! You joining basketball later?",created),(1,1,"Absolutely. Bringing an extra ball!",created)])
-            db.executemany("INSERT INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,?,?)", [(1,"activity","Rahul invited you","Sunset basketball starts in 42 minutes.",0,created),(1,"challenge","Challenge reminder","Your 5K challenge is waiting.",0,created)])
-            db.executemany("INSERT INTO businesses (name,category,location_label,description,rating,created_at) VALUES (?,?,?,?,?,?)", [("Pulse Fitness","Gym","Adyar","Community-first strength training.",4.7,created),("Courtside Academy","Sports academy","Guindy","Basketball coaching and court time.",4.5,created)])
+            db.execute("INSERT OR IGNORE INTO posts (id,author_id,body,kind,created_at) VALUES (1,3,?,'activity',?)", ("Finished my first 5K today! The last kilometre was all heart. 🏃", created))
+            db.execute("INSERT OR IGNORE INTO conversations (id,kind,title,created_at) VALUES (1,'direct','Rahul Menon',?)", (created,))
+            if not db.execute("SELECT 1 FROM messages WHERE conversation_id=1 LIMIT 1").fetchone():
+                db.executemany("INSERT OR IGNORE INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)", [(1,2,"Hey Sai! You joining basketball later?",created),(1,1,"Absolutely. Bringing an extra ball!",created)])
+            if not db.execute("SELECT 1 FROM notifications WHERE user_id=1 AND title='Rahul invited you' LIMIT 1").fetchone():
+                db.executemany("INSERT OR IGNORE INTO notifications (user_id,type,title,body,is_read,created_at) VALUES (?,?,?,?,?,?)", [(1,"activity","Rahul invited you","Sunset basketball starts in 42 minutes.",0,created),(1,"challenge","Challenge reminder","Your 5K challenge is waiting.",0,created)])
+            # businesses has no unique constraint — guard by name instead of OR IGNORE
+            for _b in [("Pulse Fitness","Gym","Adyar","Community-first strength training.",4.7),("Courtside Academy","Sports academy","Guindy","Basketball coaching and court time.",4.5)]:
+                if not db.execute("SELECT 1 FROM businesses WHERE name=?",(_b[0],)).fetchone():
+                    db.execute("INSERT INTO businesses (name,category,location_label,description,rating,created_at) VALUES (?,?,?,?,?,?)",(*_b,created))
 
 
         # --- extended demo universe (idempotent, runs on every boot) ---
@@ -538,11 +558,13 @@ def initialize_database() -> None:
             (3, "direct", "Ananya Iyer", stamp),
             (4, "group", "Weekend Run Crew", stamp),
         ])
-        db.executemany("INSERT OR IGNORE INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)", [
-            (2, 2, "Court 3 is booked for Saturday, 6 PM. Who is in?", stamp),
-            (3, 3, "Morning run tomorrow? Easy pace, 5K around the loop.", stamp),
-            (4, 4, "Weekend ride plan is up — ECR, Sunday 6:30 AM.", stamp),
-        ])
+        if not db.execute("SELECT 1 FROM messages WHERE conversation_id=4 LIMIT 1").fetchone():
+            # guarded: messages has no unique key, so this seed must not re-run per boot
+            db.executemany("INSERT OR IGNORE INTO messages (conversation_id,sender_id,body,created_at) VALUES (?,?,?,?)", [
+                (2, 2, "Court 3 is booked for Saturday, 6 PM. Who is in?", stamp),
+                (3, 3, "Morning run tomorrow? Easy pace, 5K around the loop.", stamp),
+                (4, 4, "Weekend ride plan is up — ECR, Sunday 6:30 AM.", stamp),
+            ])
         # FITVERSE 5.0 migration (idempotent): backfill direct-chat membership from real
         # message history so the participant-based inbox shows every thread each user
         # genuinely exchanged messages in. Group/community demo chats stay out of
