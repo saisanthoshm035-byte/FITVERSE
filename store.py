@@ -197,6 +197,12 @@ class RemoteConn:
     in_transaction = False
 
     def __init__(self, url: str, token: str):
+        # Turso hands out libsql:// URLs; its HTTP v2 pipeline is served over
+        # HTTPS on the same host. Translate before handing to urllib.
+        if url.startswith("libsql://"):
+            url = "https://" + url[len("libsql://"):]
+        elif url.startswith("libsql+"):
+            url = "https://" + url.split("://", 1)[1]
         if not url.endswith("/"):
             url += "/"
         self._url = url + "v2/pipeline"
