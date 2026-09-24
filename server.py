@@ -23,6 +23,12 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).parent.resolve()
 DATABASE = ROOT / "fitverse.db"
 
+# PERF: SSE loops previously re-ran MAX(id)/dm_participants queries every tick for
+# every connected client. We snapshot the small pieces that rarely change (who is
+# in which DM thread, the global message high-water mark) and refresh them every
+# ~30s. Message/notification DELIVERY itself stays live — those queries still run
+# every tick, exactly as before, just on a reused connection instead of a new one.
+
 # Load .env (gitignored) at boot: KEY=VALUE lines, without overriding real env vars.
 # Local development uses this file; Render uses dashboard environment variables.
 try:
@@ -46,6 +52,23 @@ import store  # persistent storage layer: database-backed sessions + optional re
 OAUTH_STATES: dict[str, float] = {}
 TYPING: dict[int, tuple] = {}  # conversation_id -> (last typing timestamp, user_id)
 DEMO_USER_ID = 1
+_SNAP_CACHE: dict = {"at": 0.0, "msg_max": 0, "dm": {}}  # SSE helpers, refreshed ~30s
+
+
+def _sse_snapshot(db) -> dict:
+    """Cheap cached snapshot for the SSE loop (message high-water mark + DM map)."""
+    now_t = time.time()
+    if now_t - _SNAP_CACHE["at"] < 30.0 and _SNAP_CACHE["dm"]:
+        return _SNAP_CACHE
+    try:
+        msg_max = db.execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0]
+        dm: dict[int, list[int]] = {}
+        for r in db.execute("SELECT conversation_id cid, user_id uid FROM dm_participants"):
+            dm.setdefault(int(r["cid"]), []).append(int(r["uid"]))
+        _SNAP_CACHE.update({"at": now_t, "msg_max": int(msg_max), "dm": dm})
+    except sqlite3.OperationalError:
+        pass  # tables not ready yet — keep whatever we had
+    return _SNAP_CACHE
 
 
 def now() -> str:
@@ -373,12 +396,19 @@ def initialize_database() -> None:
         for col, typ in [("owner_id", "INTEGER"), ("tagline", "TEXT"), ("website", "TEXT"), ("phone", "TEXT"), ("address", "TEXT"), ("lat", "REAL"), ("lng", "REAL"), ("cover", "TEXT"), ("logo", "TEXT"), ("hours_note", "TEXT"), ("verified", "INTEGER DEFAULT 0")]:
             try: db.execute(f"ALTER TABLE businesses ADD COLUMN {col} {typ}")
             except sqlite3.OperationalError: pass
-        for col, typ in [("media_url", "TEXT"), ("media_type", "TEXT"), ("is_public", "INTEGER DEFAULT 1"), ("biz_channel", "INTEGER")]:
+        for col, typ in [("media_url", "TEXT"), ("media_type", "TEXT"), ("is_public", "INTEGER DEFAULT 1"), ("biz_channel", "INTEGER"), ("media", "TEXT"), ("photo", "TEXT")]:
             try: db.execute(f"ALTER TABLE posts ADD COLUMN {col} {typ}")
             except sqlite3.OperationalError: pass
         for col, typ in [("link_url", "TEXT"), ("payload", "TEXT")]:
             try: db.execute(f"ALTER TABLE notifications ADD COLUMN {col} {typ}")
             except sqlite3.OperationalError: pass
+        # Event cover photos: migrated HERE at boot (idempotent) instead of on every
+        # GET /api/events request — on the remote DB those five UPDATEs ran per view.
+        try: db.execute("ALTER TABLE events ADD COLUMN photo TEXT")
+        except sqlite3.OperationalError: pass
+        db.executemany("UPDATE events SET photo=? WHERE id=? AND (photo IS NULL OR photo='')", [
+            ("cycling.jpg", 4), ("yoga.jpg", 5), ("gym.jpg", 6), ("running.jpg", 7), ("basketball.jpg", 8),
+        ])
         for col, typ in [("owner_id", "INTEGER")]:
             try: db.execute(f"ALTER TABLE exercises ADD COLUMN {col} {typ}")
             except sqlite3.OperationalError: pass
@@ -811,14 +841,22 @@ def list_feed(user_id: int) -> list[dict]:
           EXISTS(SELECT 1 FROM saved_posts s WHERE s.post_id=p.id AND s.user_id=?) AS saved,
           (SELECT count(*) FROM comments c WHERE c.post_id=p.id) AS comments
           FROM posts p JOIN users u ON u.id=p.author_id ORDER BY p.id DESC""",(user_id,user_id)).fetchall()
+        # PERF: reactions used to run 2 queries PER POST (N+1). Two grouped queries
+        # for the whole feed produce exactly the same shapes.
+        reactions: dict[int, list] = {}
+        my_reactions: dict[int, list] = {}
+        try:
+            for r in db.execute("SELECT post_id, reaction, COUNT(*) n FROM post_reactions GROUP BY post_id, reaction"):
+                reactions.setdefault(r["post_id"], []).append({"reaction": r["reaction"], "n": r["n"]})
+            for r in db.execute("SELECT post_id, reaction FROM post_reactions WHERE user_id=?", (user_id,)):
+                my_reactions.setdefault(r["post_id"], []).append(r["reaction"])
+        except sqlite3.OperationalError:
+            pass  # reactions table not migrated yet — same fallback as before (empty lists)
         out=[]
         for row in rows:
             d=dict(row)
-            try:
-                d["reactions"]=[dict(r) for r in db.execute("SELECT reaction, COUNT(*) n FROM post_reactions WHERE post_id=? GROUP BY reaction",(d["id"],))]
-                d["my_reactions"]=[r[0] for r in db.execute("SELECT reaction FROM post_reactions WHERE post_id=? AND user_id=?",(d["id"],user_id))]
-            except sqlite3.OperationalError:
-                d["reactions"]=[]; d["my_reactions"]=[]
+            d["reactions"]=reactions.get(d["id"], [])
+            d["my_reactions"]=my_reactions.get(d["id"], [])
             if user_id == 0:  # anonymous visitor: anonymize the author
                 d["name"] = "Community athlete"
                 d["username"] = "athlete"
@@ -1123,13 +1161,6 @@ class FitverseHandler(BaseHTTPRequestHandler):
             return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/events":
             with connect() as db:
-                try: db.execute("ALTER TABLE events ADD COLUMN photo TEXT")
-                except sqlite3.OperationalError: pass
-                db.execute("UPDATE events SET photo='cycling.jpg' WHERE id=4 AND (photo IS NULL OR photo='')")
-                db.execute("UPDATE events SET photo='yoga.jpg' WHERE id=5 AND (photo IS NULL OR photo='')")
-                db.execute("UPDATE events SET photo='gym.jpg' WHERE id=6 AND (photo IS NULL OR photo='')")
-                db.execute("UPDATE events SET photo='running.jpg' WHERE id=7 AND (photo IS NULL OR photo='')")
-                db.execute("UPDATE events SET photo='basketball.jpg' WHERE id=8 AND (photo IS NULL OR photo='')")
                 rows=db.execute("""SELECT e.*,COALESCE(sum(b.quantity),0) AS booked_count,
                   EXISTS(SELECT 1 FROM bookings mine WHERE mine.event_id=e.id AND mine.user_id=? AND mine.status='confirmed') AS booked
                   FROM events e LEFT JOIN bookings b ON b.event_id=e.id AND b.status='confirmed' GROUP BY e.id ORDER BY e.starts_at""",(self.current_user(),)).fetchall()
@@ -1263,16 +1294,19 @@ class FitverseHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            uid = self.current_user(); last_msg = 0; last_notif = int(urlparse(self.path).query.split("since=")[-1].split("&")[0] or 0)
+            uid = self.current_user(); last_notif = int(urlparse(self.path).query.split("since=")[-1].split("&")[0] or 0)
             try:
+                # PERF: one database handle for the whole stream (remote DB keeps its
+                # HTTPS connection warm; sqlite keeps its file handle). Same queries
+                # run every tick as before — only the per-tick reconnect is gone.
                 with connect() as db:
-                    last_msg = db.execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0]
-                self.wfile.write(b"retry: 3000\n\n"); self.wfile.flush()
-                while True:
-                    with connect() as db:
+                    snap = _sse_snapshot(db)
+                    last_msg = int(snap.get("msg_max") or 0)
+                    self.wfile.write(b"retry: 3000\n\n"); self.wfile.flush()
+                    while True:
                         # Real DM push: only messages in conversations THIS user participates in.
                         if uid > 0:
-                            conv_ids = [r["id"] for r in db.execute("SELECT conversation_id id FROM dm_participants WHERE user_id=?", (uid,))]
+                            conv_ids = (snap.get("dm") or {}).get(uid) or []
                             if conv_ids:
                                 marks = ",".join("?" for _ in conv_ids)
                                 new = db.execute(f"SELECT m.*,u.name,p.avatar_url FROM messages m JOIN users u ON u.id=m.sender_id LEFT JOIN profiles p ON p.user_id=m.sender_id WHERE m.conversation_id IN ({marks}) AND m.id>? ORDER BY m.id", (*conv_ids, last_msg)).fetchall()
@@ -1282,12 +1316,13 @@ class FitverseHandler(BaseHTTPRequestHandler):
                         notes = db.execute("SELECT * FROM notifications WHERE user_id=? AND id>? ORDER BY id", (uid, last_notif)).fetchall()
                         for n in notes:
                             self.wfile.write(f"event: notification\ndata: {json.dumps(dict(n), ensure_ascii=False)}\n\n".encode()); last_notif = n["id"]
-                    # Typing indicator (signed-in only): someone OTHER than the viewer typed in the last 2.5s.
-                    active_now = [cid for cid, (ts, who) in TYPING.items() if uid > 0 and time.time() - ts < 2.5 and who != uid]
-                    if active_now:
-                        self.wfile.write(f"event: typing\ndata: {json.dumps({'conversations': active_now})}\n\n".encode())
-                    self.wfile.write(b": ping\n\n"); self.wfile.flush()
-                    time.sleep(1.2)
+                        # Typing indicator (signed-in only): someone OTHER than the viewer typed in the last 2.5s.
+                        active_now = [cid for cid, (ts, who) in TYPING.items() if uid > 0 and time.time() - ts < 2.5 and who != uid]
+                        if active_now:
+                            self.wfile.write(f"event: typing\ndata: {json.dumps({'conversations': active_now})}\n\n".encode())
+                        self.wfile.write(b": ping\n\n"); self.wfile.flush()
+                        time.sleep(1.2)
+                        snap = _sse_snapshot(db)  # refreshes internally every ~30s
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
                 return
             except Exception as exc:
@@ -1758,6 +1793,13 @@ class FitverseHandler(BaseHTTPRequestHandler):
             # Every write needs a real account; guests get a clear sign-in prompt.
             if self.current_user() <= 0 and not path.startswith("/api/auth/"):
                 return self.send_json(401,{"error":"Sign in to do that"})
+            # Any write may change the numbers the intelligence layer memoizes —
+            # drop that user's cached DNA/debt/patterns immediately.
+            try:
+                import intelligence
+                intelligence.invalidate_user_cache(self.current_user())
+            except Exception:
+                pass
             if path == "/api/auth/logout":
                 """Revoke the caller's session token (real logout, not just forgetting it client-side)."""
                 tok = self.headers.get("X-Session", "")

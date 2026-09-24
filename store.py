@@ -38,6 +38,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPConnection, HTTPSConnection
 
 SESSION_TTL_DAYS = 30
 
@@ -100,6 +101,12 @@ def _dec(v):
     return v.get("value")
 
 
+def _is_readonly_sql(sql: str) -> bool:
+    """True for plain SELECT statements — the only kind safe to micro-cache."""
+    s = sql.lstrip(" \t\r\n(;\"").upper()
+    return s.startswith("SELECT") or s.startswith("WITH")
+
+
 class _Row:
     """Lightweight read-only row: index access, name access, .keys(), dict()."""
 
@@ -146,6 +153,19 @@ class _RemoteCursor:
 
     # -- protocol ----------------------------------------------------------
     def execute(self, sql, params=()):
+        # Tiny read-through cache for hot SELECTs (same connection = same
+        # transaction view): a handler that re-reads the same row sees its
+        # own writes through the DML path below, and the cache dies with the
+        # connection. Purely a latency win — behaviour is identical.
+        key = None
+        cache = getattr(self._conn, "_cache", None)
+        if cache is not None and _is_readonly_sql(sql) and len(params) <= 8:
+            key = (sql, tuple(params))
+            hit = cache.get(key)
+            if hit and hit[0] > time.monotonic():
+                _, self._rows, self.rowcount, self.description, self.lastrowid = hit
+                self._pos = 0
+                return self
         # _pipeline already raises sqlite3.OperationalError on any per-statement
         # error, so this single result is guaranteed to be an "ok" response.
         res = self._conn._query(sql, params)
@@ -164,6 +184,9 @@ class _RemoteCursor:
             self.description = None
         lrid = inner.get("last_insert_rowid")
         self.lastrowid = int(lrid) if lrid is not None else None
+        if key is not None and cache is not None and "rows" in inner:
+            cache[key] = (time.monotonic() + _CACHE_MICRO_TTL,
+                          list(self._rows), self.rowcount, self.description, self.lastrowid)
         return self
 
     # -- fetch API ---------------------------------------------------------
@@ -197,8 +220,18 @@ class _RemoteCursor:
         return False
 
 
+_CACHE_MICRO_TTL = 5.0  # seconds; per-connection read cache for hot SELECTs
+
+
 class RemoteConn:
-    """sqlite3.Connection-shaped handle backed by the libsql HTTP API."""
+    """sqlite3.Connection-shaped handle backed by the libsql HTTP API.
+
+    PERF: one persistent HTTP(S) connection per handle (http.client), so a
+    handler that runs N statements does ONE TCP+TLS handshake instead of N.
+    On Render (far from Turso) that previously cost ~1s per statement; the
+    connection is still created lazily and re-established transparently on
+    any transport error, with the same 3-attempt retry + error text as before.
+    """
 
     row_factory = None  # rows are always mapping/index accessible like sqlite3.Row
     in_transaction = False
@@ -206,15 +239,36 @@ class RemoteConn:
     def __init__(self, url: str, token: str):
         # Turso hands out libsql:// URLs; its HTTP v2 pipeline is served over
         # HTTPS on the same host. Translate before handing to urllib.
+        self._https = True
         if url.startswith("libsql://"):
             url = "https://" + url[len("libsql://"):]
         elif url.startswith("libsql+"):
             url = "https://" + url.split("://", 1)[1]
+        elif url.startswith("http://"):
+            self._https = False  # self-hosted/edge proxies on plain HTTP
+            url = "http://" + url[len("http://"):]
         if not url.endswith("/"):
             url += "/"
-        self._url = url + "v2/pipeline"
+        self._base = url
+        self._path = "v2/pipeline"
         self._token = token
         self._closed = False
+        self._http = None  # lazy: created on first statement
+        self._cache: dict = {}  # per-connection micro-cache for hot reads
+
+    def _connect_http(self):
+        host = self._base.split("//", 1)[1].rstrip("/")
+        if self._https:
+            return HTTPSConnection(host, timeout=15)
+        return HTTPConnection(host, timeout=15)
+
+    def _close_http(self):
+        if self._http is not None:
+            try:
+                self._http.close()
+            except Exception:
+                pass
+            self._http = None
 
     # -- HTTP core ---------------------------------------------------------
     def _pipeline(self, stmts):
@@ -224,15 +278,26 @@ class RemoteConn:
                 for s, ps in stmts
             ] + [{"type": "close"}]
         }).encode("utf-8")
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self._token}"}
         last_err = None
         for attempt in range(3):  # small retry: transient network/5xx
-            req = urllib.request.Request(
-                self._url, data=body, method="POST",
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._token}"},
-            )
+            if self._http is None:
+                self._http = self._connect_http()
             try:
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    payload = json.loads(resp.read().decode("utf-8"))
+                self._http.request("POST", "/" + self._path, body=body, headers=headers)
+                resp = self._http.getresponse()
+                payload_raw = resp.read()
+                if resp.status >= 500 or resp.status == 429:
+                    last_err = f"HTTP {resp.status}: {payload_raw[:300].decode('utf-8', 'replace')}"
+                    self._close_http()
+                    time.sleep(0.3 * (attempt + 1))
+                    continue
+                if resp.status >= 400:
+                    # Surface Turso's own error text — it names the exact
+                    # validation problem instead of a bare status code.
+                    raise sqlite3.OperationalError(
+                        f"remote database HTTP {resp.status}: {payload_raw[:300].decode('utf-8', 'replace')}")
+                payload = json.loads(payload_raw.decode("utf-8"))
                 results = payload.get("results", [])
                 for r in results[:len(stmts)]:
                     if r.get("type") == "error":
@@ -240,17 +305,11 @@ class RemoteConn:
                 return results
             except sqlite3.OperationalError:
                 raise  # real SQL error — do not retry
-            except urllib.error.HTTPError as e:
-                # Surface Turso's own error text — it names the exact
-                # validation problem instead of a bare status code.
-                try:
-                    detail = e.read().decode("utf-8", "replace")[:300]
-                except Exception:
-                    detail = ""
-                if e.code < 500 and e.code != 429:
-                    raise sqlite3.OperationalError(f"remote database HTTP {e.code}: {detail}")
-                last_err = f"HTTP {e.code}: {detail}"
-                time.sleep(0.3 * (attempt + 1))
+            except OSError as e:  # connection dropped / timed out — reconnect and retry
+                last_err = repr(e)
+                self._close_http()
+                if attempt < 2:
+                    time.sleep(0.3 * (attempt + 1))
         raise sqlite3.OperationalError(f"remote database unreachable: {last_err}")
 
     def _query(self, sql, params=()):
@@ -301,6 +360,7 @@ class RemoteConn:
 
     def close(self):
         self._closed = True
+        self._close_http()
 
     def __enter__(self):
         return self

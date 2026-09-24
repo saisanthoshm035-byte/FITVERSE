@@ -14,9 +14,44 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import date, datetime, timedelta
 
 from server import connect, now
+
+
+# ---------------------------------------------------------------- hot-path cache
+# /api/intelligence, /api/ai/daily and the coach all recompute the same DNA/debt/
+# pattern numbers from unchanged data, several times per click. The pure scoring
+# only moves when the user's real activity changes, so we memoize per user for a
+# short window and clear the entry the moment ANY POST from that user arrives
+# (server.py calls invalidate_user_cache at the start of every POST). Behaviour
+# is identical; remote-database round-trips per page drop dramatically.
+_UCACHE: dict[int, dict] = {}
+_UCACHE_TTL = 30.0  # seconds
+
+
+def _ucache_get(uid: int, key: str):
+    entry = _UCACHE.get(uid)
+    if entry and entry["at"] > time.monotonic() and key in entry:
+        return entry[key]
+    return None
+
+
+def _ucache_put(uid: int, key: str, value):
+    entry = _UCACHE.get(uid)
+    if not entry or entry["at"] <= time.monotonic():
+        entry = {"at": time.monotonic() + _UCACHE_TTL}
+        _UCACHE[uid] = entry
+    entry[key] = value
+
+
+def invalidate_user_cache(uid: int | None = None) -> None:
+    """Drop memoized intelligence for one user (or everyone). Cheap; called on writes."""
+    if uid is None:
+        _UCACHE.clear()
+    else:
+        _UCACHE.pop(uid, None)
 
 
 # ---------------------------------------------------------------- helpers
@@ -78,47 +113,61 @@ def _muscle_split(db, uid, days=28):
 
 # ---------------------------------------------------------------- FITNESS DNA
 
-def fitness_dna(uid: int) -> dict:
+def fitness_dna(uid: int, db=None) -> dict:
     """Seven behavioral scores (0-100) computed from real activity."""
-    with connect() as db:
-        s = _settings(db, uid)
-        game = db.execute("SELECT xp,streak,activities FROM user_game_state WHERE user_id=?", (uid,)).fetchone()
-        game = dict(game) if game else {"xp": 0, "streak": 0, "activities": 0}
-        weeks = max(1, _weekly_sessions(db, uid))
-        sessions_28 = _weekly_sessions(db, uid, weeks=4)
-        split = _muscle_split(db, uid)
-        cardio_min = db.execute(
-            """SELECT COALESCE(SUM(wl.duration_min),0) FROM workout_logs wl
-               JOIN workout_sessions ws ON ws.id=wl.session_id JOIN exercises e ON e.id=wl.exercise_id
-               WHERE ws.user_id=? AND e.muscle='Cardio' AND ws.created_at>=date('now','-28 days')""",
-            (uid,)).fetchone()[0]
-        rpe = db.execute(
-            """SELECT AVG(wl.rpe) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id
-               WHERE ws.user_id=? AND wl.rpe IS NOT NULL AND ws.created_at>=date('now','-28 days')""",
-            (uid,)).fetchone()[0]
-        volume = db.execute(
-            """SELECT COALESCE(SUM(total_volume),0) FROM workout_sessions
-               WHERE user_id=? AND created_at>=date('now','-28 days')""", (uid,)).fetchone()[0]
-        challenge_rows = db.execute(
-            "SELECT COUNT(*) FROM challenge_participants WHERE user_id=?", (uid,)).fetchone()[0]
-        social = db.execute(
-            """SELECT (SELECT COUNT(*) FROM friendships WHERE status='accepted' AND (requester_id=? OR addressee_id=?))
-                    + (SELECT COUNT(*) FROM posts WHERE author_id=?)
-                    + (SELECT COUNT(*) FROM comments WHERE author_id=?)
-                    + (SELECT COUNT(*) FROM community_members WHERE user_id=?)""",
-            (uid, uid, uid, uid, uid)).fetchone()[0]
-        days_trained = db.execute(
-            """SELECT COUNT(DISTINCT date(created_at)) FROM workout_sessions
-               WHERE user_id=? AND created_at>=date('now','-28 days')""", (uid,)).fetchone()[0]
-        days_logged_meals = db.execute(
-            "SELECT COUNT(DISTINCT logged_on) FROM nutrition_logs WHERE user_id=? AND logged_on>=date('now','-28 days')",
-            (uid,)).fetchone()[0]
-        days_logged_water = db.execute(
-            "SELECT COUNT(DISTINCT logged_on) FROM water_logs WHERE user_id=? AND logged_on>=date('now','-28 days')",
-            (uid,)).fetchone()[0]
-        mission_done = db.execute(
-            "SELECT COUNT(*) FROM missions WHERE user_id=? AND status='completed' AND completed_at>=date('now','-28 days')",
-            (uid,)).fetchone()[0] if _table_exists(db, "missions") else 0
+    cached = _ucache_get(uid, "dna")
+    if cached is not None:
+        return cached
+    opened = False
+    if db is None:  # PERF: one connection for the whole computation (was ~6+)
+        db = connect(); opened = True
+    try:
+        return _fitness_dna_impl(db, uid)
+    finally:
+        if opened:
+            try: db.close()
+            except Exception: pass
+
+
+def _fitness_dna_impl(db, uid: int) -> dict:
+    s = _settings(db, uid)
+    game = db.execute("SELECT xp,streak,activities FROM user_game_state WHERE user_id=?", (uid,)).fetchone()
+    game = dict(game) if game else {"xp": 0, "streak": 0, "activities": 0}
+    weeks = max(1, _weekly_sessions(db, uid))
+    sessions_28 = _weekly_sessions(db, uid, weeks=4)
+    split = _muscle_split(db, uid)
+    cardio_min = db.execute(
+        """SELECT COALESCE(SUM(wl.duration_min),0) FROM workout_logs wl
+           JOIN workout_sessions ws ON ws.id=wl.session_id JOIN exercises e ON e.id=wl.exercise_id
+           WHERE ws.user_id=? AND e.muscle='Cardio' AND ws.created_at>=date('now','-28 days')""",
+        (uid,)).fetchone()[0]
+    rpe = db.execute(
+        """SELECT AVG(wl.rpe) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id
+           WHERE ws.user_id=? AND wl.rpe IS NOT NULL AND ws.created_at>=date('now','-28 days')""",
+        (uid,)).fetchone()[0]
+    volume = db.execute(
+        """SELECT COALESCE(SUM(total_volume),0) FROM workout_sessions
+           WHERE user_id=? AND created_at>=date('now','-28 days')""", (uid,)).fetchone()[0]
+    challenge_rows = db.execute(
+        "SELECT COUNT(*) FROM challenge_participants WHERE user_id=?", (uid,)).fetchone()[0]
+    social = db.execute(
+        """SELECT (SELECT COUNT(*) FROM friendships WHERE status='accepted' AND (requester_id=? OR addressee_id=?))
+                + (SELECT COUNT(*) FROM posts WHERE author_id=?)
+                + (SELECT COUNT(*) FROM comments WHERE author_id=?)
+                + (SELECT COUNT(*) FROM community_members WHERE user_id=?)""",
+        (uid, uid, uid, uid, uid)).fetchone()[0]
+    days_trained = db.execute(
+        """SELECT COUNT(DISTINCT date(created_at)) FROM workout_sessions
+           WHERE user_id=? AND created_at>=date('now','-28 days')""", (uid,)).fetchone()[0]
+    days_logged_meals = db.execute(
+        "SELECT COUNT(DISTINCT logged_on) FROM nutrition_logs WHERE user_id=? AND logged_on>=date('now','-28 days')",
+        (uid,)).fetchone()[0]
+    days_logged_water = db.execute(
+        "SELECT COUNT(DISTINCT logged_on) FROM water_logs WHERE user_id=? AND logged_on>=date('now','-28 days')",
+        (uid,)).fetchone()[0]
+    mission_done = db.execute(
+        "SELECT COUNT(*) FROM missions WHERE user_id=? AND status='completed' AND completed_at>=date('now','-28 days')",
+        (uid,)).fetchone()[0] if _table_exists(db, "missions") else 0
 
     # ================================================================
     # FITVERSE FITNESS DNA - SCORING SYSTEM v3 (pure functions of real data)
@@ -152,7 +201,7 @@ def fitness_dna(uid: int) -> dict:
     consistency = _clamp(consistency)
 
     # ---- STRENGTH: real lifting volume + GENUINE PRs (90d) + lifetime PRs
-    pr_count = _recent_prs(uid, days=90)
+    pr_count = _recent_prs(db, uid, days=90)
     pr_total = db.execute(
         "SELECT COUNT(*) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id "
         "WHERE ws.user_id=? AND wl.is_pr=1 AND wl.weight>0", (uid,)).fetchone()[0]
@@ -236,19 +285,21 @@ def fitness_dna(uid: int) -> dict:
     # Scores themselves are always recomputed pure, so the cache never drifts.
     if uid > 0:
         try:
-            with connect() as _db3:
-                _db3.execute("INSERT OR IGNORE INTO user_settings (user_id,updated_at) VALUES (?,?)", (uid, now()))
-                _db3.execute("UPDATE user_settings SET dna_cache=?,target_week=?,updated_at=? WHERE user_id=?",
-                             (_json.dumps(scores), target_week, now(), uid))
-                _db3.commit()
+            row = db.execute("SELECT dna_cache,target_week,updated_at FROM user_settings WHERE user_id=?", (uid,)).fetchone()
+            blob = _json.dumps(scores)
+            if not (row and row["dna_cache"] == blob and row["target_week"] == target_week):
+                # write only when the snapshot actually changed — saves a round-trip
+                db.execute("INSERT OR IGNORE INTO user_settings (user_id,updated_at) VALUES (?,?)", (uid, now()))
+                db.execute("UPDATE user_settings SET dna_cache=?,target_week=?,updated_at=? WHERE user_id=?",
+                           (blob, target_week, now(), uid))
         except Exception as _e:
             print("dna persist:", repr(_e))
 
     personality, focus = _personality(scores, split, s)
     strengths = [k.capitalize() for k, v in sorted(scores.items(), key=lambda kv: -kv[1])[:2] if v >= 40]
     improve = [k.capitalize() for k, v in sorted(scores.items(), key=lambda kv: kv[1])[:2] if v < 70]
-    mission = _recommended_mission(uid, scores, split)
-    return {
+    mission = _recommended_mission(db, uid, scores, split)
+    payload = {
         "scores": scores,
         "personality": personality,
         "focus": focus,
@@ -258,16 +309,17 @@ def fitness_dna(uid: int) -> dict:
         "mission": mission,
         "sessions_28d": sessions_28,
     }
+    _ucache_put(uid, "dna", payload)
+    return payload
 
 
-def _recent_prs(uid, days=28):
-    with connect() as db:
-        if not _table_exists(db, "workout_logs"):
-            return 0
-        return db.execute(
-            """SELECT COUNT(*) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id
-               WHERE ws.user_id=? AND wl.is_pr=1 AND ws.created_at>=date('now',?)""",
-            (uid, f"-{days} days")).fetchone()[0]
+def _recent_prs(db, uid, days=28):
+    if not _table_exists(db, "workout_logs"):
+        return 0
+    return db.execute(
+        """SELECT COUNT(*) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id
+           WHERE ws.user_id=? AND wl.is_pr=1 AND ws.created_at>=date('now',?)""",
+        (uid, f"-{days} days")).fetchone()[0]
 
 
 def _table_exists(db, name):
@@ -307,35 +359,34 @@ MISSION_CATALOG = [
 ]
 
 
-def _recommended_mission(uid: int, scores: dict, split: dict) -> dict:
+def _recommended_mission(db, uid: int, scores: dict, split: dict) -> dict:
     """Pick the highest-leverage mission from DNA + patterns + debt, with adaptive difficulty."""
-    with connect() as db:
-        debt = fitness_debt(uid)
-        # priority: imbalance > debt > weakest DNA area
-        imbalance = split["upper"] >= 2 and split["lower"] <= split["upper"] * 0.34
-        if imbalance:
-            chosen = MISSION_CATALOG[0]
-        elif debt["debt"] >= 2 or scores["consistency"] < 55:
-            chosen = MISSION_CATALOG[2]
-        elif scores["cardio"] < 55:
-            chosen = MISSION_CATALOG[1]
-        elif scores["nutrition"] < 50:
-            chosen = MISSION_CATALOG[3]
-        elif scores["social"] < 55:
-            chosen = MISSION_CATALOG[4]
-        else:
-            chosen = MISSION_CATALOG[1]  # even strong users get the cardio touch
-        target = chosen["base"]
-        # ---- adaptive difficulty from recent mission history
-        recent = db.execute(
-            "SELECT status FROM missions WHERE user_id=? AND status IN ('completed','expired') ORDER BY id DESC LIMIT 3",
-            (uid,)).fetchall()
-        done = sum(1 for r in recent if r["status"] == "completed")
-        if len(recent) >= 2 and done == len(recent):
-            target += 1  # crushing it → level up
-        elif len(recent) >= 2 and done == 0:
-            target = max(2, target - 1)  # struggling → reduce pressure
-        xp = chosen["xp"] + (100 if target > chosen["base"] else -75 if target < chosen["base"] else 0)
+    debt = fitness_debt(uid, db=db)
+    # priority: imbalance > debt > weakest DNA area
+    imbalance = split["upper"] >= 2 and split["lower"] <= split["upper"] * 0.34
+    if imbalance:
+        chosen = MISSION_CATALOG[0]
+    elif debt["debt"] >= 2 or scores["consistency"] < 55:
+        chosen = MISSION_CATALOG[2]
+    elif scores["cardio"] < 55:
+        chosen = MISSION_CATALOG[1]
+    elif scores["nutrition"] < 50:
+        chosen = MISSION_CATALOG[3]
+    elif scores["social"] < 55:
+        chosen = MISSION_CATALOG[4]
+    else:
+        chosen = MISSION_CATALOG[1]  # even strong users get the cardio touch
+    target = chosen["base"]
+    # ---- adaptive difficulty from recent mission history
+    recent = db.execute(
+        "SELECT status FROM missions WHERE user_id=? AND status IN ('completed','expired') ORDER BY id DESC LIMIT 3",
+        (uid,)).fetchall()
+    done = sum(1 for r in recent if r["status"] == "completed")
+    if len(recent) >= 2 and done == len(recent):
+        target += 1  # crushing it → level up
+    elif len(recent) >= 2 and done == 0:
+        target = max(2, target - 1)  # struggling → reduce pressure
+    xp = chosen["xp"] + (100 if target > chosen["base"] else -75 if target < chosen["base"] else 0)
     return {"key": chosen["id"], "icon": chosen["icon"], "title": chosen["title"],
             "metric": chosen["metric"], "target": target, "reward_xp": xp,
             "description": chosen["desc"].format(target=target)}
@@ -369,7 +420,7 @@ def ensure_weekly_mission(db, uid: int) -> dict | None:
     if row:
         m = dict(row)
     else:
-        rec = _recommended_mission(uid, fitness_dna(uid)["scores"], _muscle_split(db, uid))
+        rec = _recommended_mission(db, uid, fitness_dna(uid, db=db)["scores"], _muscle_split(db, uid))
         cur = db.execute("INSERT INTO missions (user_id,mission_key,title,icon,description,metric,target,reward_xp,status,created_at) VALUES (?,?,?,?,?,?,?,?,'active',?)",
                          (uid, rec["key"], rec["title"], rec["icon"], rec["description"], rec["metric"], rec["target"], rec["reward_xp"], now()))
         m = dict(db.execute("SELECT * FROM missions WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -379,9 +430,15 @@ def ensure_weekly_mission(db, uid: int) -> dict | None:
 
 # ---------------------------------------------------------------- PATTERNS
 
-def detect_patterns(uid: int) -> list[dict]:
+def detect_patterns(uid: int, db=None) -> list[dict]:
     """Behavioral patterns. Never medical, never shaming."""
-    with connect() as db:
+    cached = _ucache_get(uid, "patterns")
+    if cached is not None:
+        return cached
+    opened = False
+    if db is None:
+        db = connect(); opened = True
+    try:
         split = _muscle_split(db, uid)
         gap = None
         row = db.execute("SELECT MAX(created_at) FROM workout_sessions WHERE user_id=?", (uid,)).fetchone()
@@ -393,6 +450,10 @@ def detect_patterns(uid: int) -> list[dict]:
             (uid,)).fetchall()
         s = _settings(db, uid)
         target_wk = int(s.get("days_per_week") or 4)
+    finally:
+        if opened:
+            try: db.close()
+            except Exception: pass
     out = []
     total = split["upper"] + split["lower"]
     if total >= 3 and split["lower"] <= split["upper"] * 0.34:
@@ -435,6 +496,7 @@ def detect_patterns(uid: int) -> list[dict]:
             "why": "Balanced programs build resilient athletes.",
             "fix": "Hold the course, and consider a fresh challenge to stay sharp.",
         })
+    _ucache_put(uid, "patterns", out)
     return out
 
 
@@ -448,14 +510,24 @@ def _muscle_cardio_sessions(db, uid):
 
 # ---------------------------------------------------------------- FITNESS DEBT
 
-def fitness_debt(uid: int) -> dict:
+def fitness_debt(uid: int, db=None) -> dict:
     """Missed sessions vs weekly plan, framed for safe recovery."""
-    with connect() as db:
+    cached = _ucache_get(uid, "debt")
+    if cached is not None:
+        return cached
+    opened = False
+    if db is None:
+        db = connect(); opened = True
+    try:
         s = _settings(db, uid)
         done = _weekly_sessions(db, uid)
         last_week = db.execute(
             "SELECT COUNT(*) FROM workout_sessions WHERE user_id=? AND created_at>=date('now','-14 days') AND created_at<date('now','-7 days')",
             (uid,)).fetchone()[0]
+    finally:
+        if opened:
+            try: db.close()
+            except Exception: pass
     target = int(s.get("days_per_week") or 4)
     debt = max(0, target - done)
     prev_debt = max(0, target - last_week)
@@ -471,17 +543,22 @@ def fitness_debt(uid: int) -> dict:
     else:
         advice = "The week got away — that happens. Ease back with 2-3 short sessions and reset the target next week."
         level = "high"
-    return {
+    result = {
         "target": target, "completed": done, "debt": debt, "previous_debt": prev_debt,
         "reduction": max(0, prev_debt - debt), "level": level, "advice": advice,
         "week_progress": _clamp(100 * done / target if target else 0),
     }
+    _ucache_put(uid, "debt", result)
+    return result
 
 
 # ---------------------------------------------------------------- FITNESS TWIN
 
 def fitness_twin(uid: int) -> dict:
     """Behavior model: where am I / what holds me back / where could I go / next."""
+    cached = _ucache_get(uid, "twin")
+    if cached is not None:
+        return cached
     dna = fitness_dna(uid)
     debt = fitness_debt(uid)
     patterns = detect_patterns(uid)
@@ -509,7 +586,7 @@ def fitness_twin(uid: int) -> dict:
         "intensity": "Sessions are comfortable; a touch more challenge would unlock gains.",
     }.get(weakest, "Focus is still forming — one clear priority will sharpen everything.")
     next_action = dna["mission"]["title"] if dna.get("mission") else "Log your next session"
-    return {
+    _twin_result = {
         "where_now": {
             "sessions_28d": dna["sessions_28d"],
             "weekly_avg": round(dna["sessions_28d"] / 4, 1),
@@ -526,6 +603,8 @@ def fitness_twin(uid: int) -> dict:
         "next": next_action,
         "disclaimer": "Your Fitness Twin models behavior from your FITVERSE activity. It guides training habits — it is not a medical assessment.",
     }
+    _ucache_put(uid, "twin", _twin_result)
+    return _twin_result
 
 
 # ---------------------------------------------------------------- TRAJECTORIES

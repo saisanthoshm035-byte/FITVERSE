@@ -192,7 +192,9 @@ async function hydrate() {
   pageData.achievements = achievements.items || [];
   pageData.buddy = (buddy.items || []).map(x => ({ note: x.note }));
   pageData.fitmatch = fitmatch.items || [];
-  pageData.daily = signedIn ? await api('/api/ai/daily', { method: 'POST', body: '{}' }).catch(() => null) : null;
+  // PERF: the daily brief loads in parallel instead of blocking every hydrate.
+  if (signedIn) api('/api/ai/daily', { method: 'POST', body: '{}' }).then(d => { pageData.daily = d; if (state.page === 'home') render(); }).catch(() => {});
+  else pageData.daily = null;
   syncAvatars();
   if (pageData.conversations.length && !pageData.conversations.some(c => c.id === pageData.activeConversation)) pageData.activeConversation = pageData.conversations[0].id;
   if (state.page === 'home' && sessionToken) loadDashboard();
@@ -224,8 +226,10 @@ async function loadPageData(page) {
   const tasks = [];
   const add = (p, fn) => tasks.push(fn.then(items => { pageData[p] = items; }).catch(() => {}));
   if (page === 'discover') {
-    add('users', api('/api/users').then(d => d.items || []));
-    add('allUsers', api('/api/users').then(d => d.items || []).catch(() => []));
+    // PERF: one fetch feeds both lists (was two identical /api/users calls).
+    const usersP = api('/api/users').then(d => d.items || []).catch(() => []);
+    add('users', usersP);
+    add('allUsers', usersP);
     add('recommendations', api('/api/recommendations').then(d => d.items || []));
     add('activities', api('/api/activities').then(d => d.items || []));
     add('events', api('/api/events').then(d => d.items || []));
@@ -233,9 +237,11 @@ async function loadPageData(page) {
     add('businesses', api('/api/businesses').then(d => d.items || []));
   }
   if (page === 'challenges') {
-    add('challenges', api('/api/challenges').then(d => d.items || []));
-    add('challengeFriends', api('/api/challenges').then(d => d.friends || []));
-    add('challengeBoard', api('/api/challenges').then(d => d.leaderboard || []));
+    // PERF: one fetch for all three challenge views (was three identical calls).
+    const chP = api('/api/challenges').then(d => d).catch(() => ({}));
+    add('challenges', chP.then(d => d.items || []));
+    add('challengeFriends', chP.then(d => d.friends || []));
+    add('challengeBoard', chP.then(d => d.leaderboard || []));
   }
   if (page === 'communities') add('communities', api('/api/communities').then(d => d.items || []));
   if (page === 'events') add('events', api('/api/events').then(d => d.items || []));
@@ -246,7 +252,7 @@ async function loadPageData(page) {
   if (page === 'profile' && sessionToken) { add('xpLedger', api('/api/xp').then(d => d.items || [])); add('achievements', api('/api/achievements').then(d => d.items || [])); add('friends', api('/api/friends').then(d => d.items || [])); add('mission', api('/api/missions').then(d => d.item || {})); }
   if (page === 'home') { if (sessionToken) { add('mission', api('/api/missions').then(d => d.item || {})); add('moments', api('/api/moments').then(d => d.items || [])); } add('friendsActivity', api('/api/friends/activity').then(d => d.items || [])); add('socialCtx', api('/api/social/context').then(d => d).catch(() => ({}))); }
   if (page === 'reels' || page === 'posts') { add('reels', api('/api/reels').then(d => d.items || [])); if (!pageData.feed.length) add('feed', api('/api/feed').then(d => d.items || [])); }
-  if (page === 'businesses') add('businesses', api('/api/businesses').then(d => d.items || []));
+  // PERF: /api/businesses is fetched once, in the businesses block below (was twice).
   if (page === 'workout' && sessionToken) { add('workouts', api('/api/workouts').then(d => d.items || [])); add('prs', api('/api/workouts/prs').then(d => d.items || [])); }
   if (page === 'intelligence' && sessionToken) {
     add('intel', api('/api/intelligence').then(d => d));
@@ -267,7 +273,9 @@ async function loadPageData(page) {
     add('healthRec', api('/api/health/recommendation').then(d => d).catch(() => null));
   }
   if (page === 'businesses') {
-    add('businesses', api('/api/businesses').then(d => d.items || []));
+    // PERF: single /api/businesses fetch (the page was fetched twice before).
+    const bizP = api('/api/businesses').then(d => d.items || []);
+    add('businesses', bizP);
     add('myBusinesses', api('/api/businesses/mine').then(d => d.items || []).catch(() => []));
   }
   if (page === 'businessChannel') {
@@ -1211,7 +1219,6 @@ function bind() {
       pageData.messages.push({ sender_id: me().id || 1, name: me().name || 'You', body: message, created_at: new Date().toISOString() });
       render(); scrollBubbles();
       await api('/api/messages', { method: 'POST', body: JSON.stringify({ body: message, conversation_id: f.dataset.conv || 1 }) });
-      await new Promise(r => setTimeout(r, 600));
       const fresh = (await api(`/api/conversations/${f.dataset.conv || 1}`)).items || [];
       if (f.dataset.conv == pageData.activeConversation && state.page === 'messages') { pageData.messages = fresh; render(); }
       const conv = pageData.conversations.find(c => c.id == f.dataset.conv);
@@ -2035,7 +2042,11 @@ function startSSE() {
       if (state.page === 'messages' && Number(m.conversation_id) === Number(pageData.activeConversation)) {
         pageData.messages.push(m); render(); scrollBubbles();
       }
-      api('/api/conversations').then(d => { pageData.conversations = d.items || []; syncAvatars(); if (state.page === 'messages') render(); }).catch(() => {});
+      // PERF: refresh the conversation list at most every 5s, not on every message.
+      if (!startSSE._lastConvSync || Date.now() - startSSE._lastConvSync > 5000) {
+        startSSE._lastConvSync = Date.now();
+        api('/api/conversations').then(d => { pageData.conversations = d.items || []; syncAvatars(); if (state.page === 'messages') render(); }).catch(() => {});
+      }
     });
     evtSource.addEventListener('notification', (e) => {
       const n = JSON.parse(e.data);
