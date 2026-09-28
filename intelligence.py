@@ -286,7 +286,7 @@ def _fitness_dna_impl(db, uid: int) -> dict:
     if uid > 0:
         try:
             row = db.execute("SELECT dna_cache,target_week,updated_at FROM user_settings WHERE user_id=?", (uid,)).fetchone()
-            blob = _json.dumps(scores)
+            blob = json.dumps(scores)
             if not (row and row["dna_cache"] == blob and row["target_week"] == target_week):
                 # write only when the snapshot actually changed — saves a round-trip
                 db.execute("INSERT OR IGNORE INTO user_settings (user_id,updated_at) VALUES (?,?)", (uid, now()))

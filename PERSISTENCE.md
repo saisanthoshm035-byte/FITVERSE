@@ -10,50 +10,45 @@ and their data vanished.
 ## What is fixed (already done, live in the code)
 
 1. **Logins now survive restarts.** Sessions are stored in a real `sessions`
-   database table (30-day expiry, hashed-free random tokens, real logout that
+   database table (30-day expiry, random server-side tokens, real logout that
    revokes the token server-side). A server restart, redeploy or Render
    spin-down no longer signs anyone out.
-2. **Onboarding saves for real.** The "Generate My Plan" step now guarantees
+2. **Onboarding saves for real.** The "Generate My Plan" step guarantees
    the user's settings row exists before saving, so calorie/protein targets
-   persist for brand-new accounts (previously the plan flashed and vanished).
-3. **All data still goes through one database layer.** Nothing else changed —
-   same APIs, same UI, same features.
+   persist for brand-new accounts.
+3. **All data still goes through one database layer.** Same APIs, same UI,
+   same features.
 
-## The one thing you should do: give Render a real database
+## REVERT (2026-09-28): SQLite is the default again — speed first
 
-If you do nothing, the app still works, **but on Render the SQLite file is
-wiped on every redeploy** (that is a Render free-tier limitation, not a bug).
-Local data on your PC is safe. To make data permanent on Render, connect the
-free Turso database (~5 minutes, no credit card):
+The Turso remote database made every query an HTTP round-trip, and the app
+became noticeably slow. **FITVERSE now uses plain local SQLite everywhere,
+even on Render**, unless remote mode is explicitly re-enabled.
 
-1. Go to **https://turso.tech** → sign up free.
-2. Create a database (any name, e.g. `fitverse`), location closest to you.
-3. In the database page open **Connect** and copy:
-   - the **URL** — looks like `libsql://fitverse-yourorg.turso.io`
-   - create a **token** and copy it.
-4. On **Render**: your `fitverse` service → **Environment** → add:
-   - `FITVERSE_DB_URL` = the libsql:// URL
-   - `FITVERSE_DB_TOKEN` = the token
-5. Save → wait for the redeploy to go **Live**.
+### What you'll notice
 
-That's it. FITVERSE automatically detects the remote database and stores
-everything there (users, sessions, posts, messages, workouts, nutrition…).
-No other configuration is needed, and the app runs unchanged with zero
-new dependencies.
+- `https://fitverse-omdx.onrender.com/api/health` now reports
+  `"database": "sqlite"` and the app is fast again (queries are in-process).
+- **Render free-tier caveat (accepted "for now"):** the SQLite file lives on
+  Render's ephemeral disk, so posts/accounts made on the live site are wiped
+  on each redeploy or spin-down. Local data on your PC is unaffected.
+- Everyone simply signs up / logs in again after a redeploy until we switch
+  to a permanent database.
 
-**First deploy on a fresh Turso database:** the schema is created
-automatically at boot. Your existing demo data on your PC does **not** transfer
-(it stays in your local `fitverse.db`); users simply sign up fresh on the live
-site, and from then on everything they do is permanent.
+### How to re-enable Turso later (when you want persistence back)
 
-## Verifying it's working
+The Turso code is untouched. Two steps on Render:
 
-- Open `https://your-render-url/api/health` — it reports
-  `"database": "libsql-remote"` when the remote DB is active
-  (`"sqlite"` = local file mode, e.g. on your PC).
-- Log in, note your name/targets, wait for Render to redeploy or spin down,
-  log back in — your account and data are still there.
-- Log out → your token is revoked server-side (the old token cannot be reused).
+1. Keep/set `FITVERSE_DB_URL` (libsql://…) and `FITVERSE_DB_TOKEN`.
+2. Add one variable: `FITVERSE_DB_MODE` = `remote`, then save.
+
+Without that `remote` flag the URL/token are ignored and SQLite is used —
+so leaving the old variables in place is harmless.
+
+### Verifying it's working
+
+- `GET /api/health` → `"database": "sqlite"` = fast local mode;
+  `"libsql-remote"` = Turso active.
 
 ## Security notes
 

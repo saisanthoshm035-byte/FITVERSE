@@ -1,0 +1,108 @@
+/* ============================================================
+   FITVERSE 5.0 — futuristic 3D layer + AI/health v5 styles.
+   Loaded LAST. Only ADDS visual depth (transform/shadow/animation)
+   and styles new v5 elements — never changes layout, so the mobile
+   layer (mobile.css) keeps full authority. All motion respects
+   prefers-reduced-motion and is toned down on small screens.
+   ============================================================ */
+
+/* ---------- 3D depth: hero panel tilts in 3D, cards lift on hover ---------- */
+.hero{
+  perspective:900px;
+  background:radial-gradient(120% 160% at 85% -10%, #234a38 0%, #152a22 55%, #0d1b14 100%);
+  box-shadow:0 24px 60px -24px rgba(11,23,17,.45), inset 0 1px 0 rgba(255,255,255,.06);
+}
+.hero-orbit{
+  transform-style:preserve-3d;
+  transform:rotateX(6deg) rotateY(-7deg);
+  animation:fv-float 7s ease-in-out infinite;
+}
+@keyframes fv-float{
+  0%,100%{transform:rotateX(6deg) rotateY(-7deg) translateZ(0)}
+  50%{transform:rotateX(3deg) rotateY(-4deg) translateZ(14px)}
+}
+.orbit-core{
+  transform:translateZ(46px);
+  box-shadow:0 0 0 25px #ffffff0b,0 0 0 55px #ffffff08,
+             0 30px 60px -18px rgba(201,243,107,.35);
+  transition:transform .4s ease;
+}
+.hero:hover .orbit-core{transform:translateZ(60px) scale(1.02)}
+.float-card{
+  transform:translateZ(30px);
+  box-shadow:0 14px 30px -10px rgba(0,0,0,.4);
+}
+.float-card.one{animation:fv-bob 5.5s ease-in-out infinite}
+.float-card.two{animation:fv-bob 6.5s ease-in-out .8s infinite}
+@keyframes fv-bob{0%,100%{transform:translateZ(30px) translateY(0)}50%{transform:translateZ(38px) translateY(-7px)}}
+
+/* cards: subtle 3D lift (desktop pointers only — no sticky hover on touch) */
+@media(hover:hover) and (pointer:fine){
+  .stat-card,.post,.activity-card,.person-card,.community-card,.event-card,.biz-card,.achievement-row article{
+    transition:transform .22s ease,box-shadow .22s ease;
+    will-change:transform;
+  }
+  .stat-card:hover,.post:hover,.activity-card:hover,.person-card:hover,.community-card:hover,.event-card:hover,.biz-card:hover,.achievement-row article:hover{
+    transform:translateY(-3px);
+    box-shadow:0 18px 40px -18px rgba(11,23,17,.28);
+  }
+  .stat-card:hover,.post:hover,.activity-card:hover{transform:translateY(-3px) rotateX(1.2deg)}
+}
+
+/* buttons get pressed-in 3D feel */
+.primary,.outline,.filter{
+  transition:transform .15s ease,box-shadow .15s ease;
+}
+.primary{box-shadow:0 6px 16px -6px rgba(169,221,67,.55)}
+@media(hover:hover){.primary:hover{transform:translateY(-1px)}}
+.primary:active,.outline:active,.filter:active{transform:translateY(1px) scale(.99)}
+
+/* nav icons: tiny 3D flip on hover (sidebar) */
+@media(hover:hover) and (pointer:fine){
+  .nav-item span{transition:transform .2s ease;display:inline-block}
+  .nav-item:hover span{transform:translateZ(6px) scale(1.12)}
+}
+
+/* ---------- 3D backdrop canvas (procedural wireframe globe, app.js five.js) ---------- */
+#fv3d{
+  position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.5;
+}
+@media(max-width:760px){#fv3d{opacity:.32}}
+
+/* ---------- AI (Groq) surfaces ---------- */
+.review-ai{
+  background:linear-gradient(100deg,rgba(201,243,107,.16),rgba(201,243,107,.05));
+  border:1px solid rgba(121,161,52,.25);
+  border-radius:12px;padding:13px 15px;font-size:12.5px;line-height:1.6;margin:0 0 8px;
+}
+.dc-line.ai-tip{background:linear-gradient(100deg,rgba(201,243,107,.14),transparent);border-left:3px solid var(--lime);border-radius:6px;padding:8px 11px}
+.composer-ai-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  background:#f4f7ee;border:1px dashed #c4d3a8;border-radius:9px;
+  padding:8px 12px;font-size:10.5px;color:#5b6a52;margin-top:11px;
+}
+.composer-ai-bar span b{color:#3f5a2e}
+#composer-ai-btn{white-space:nowrap}
+.plan-engine-tag{
+  display:inline-block;font:9px 'DM Mono',monospace;letter-spacing:.6px;
+  background:rgba(201,243,107,.2);color:#3c5a1e;border-radius:8px;padding:3px 8px;margin-left:8px;
+}
+.ai-status-chip{
+  display:inline-flex;align-items:center;gap:6px;
+  font:10px 'DM Mono',monospace;color:#4d6b3a;background:#f0f5e3;
+  border:1px solid #d7e4bd;border-radius:16px;padding:5px 10px;
+}
+.ai-status-chip i{width:7px;height:7px;border-radius:50%;background:#57a15f;animation:fv-pulse 2.2s infinite;font-style:normal}
+@keyframes fv-pulse{50%{opacity:.35}}
+
+/* ---------- Health Connect import card bits ---------- */
+.hc-steps{margin:8px 0;padding-left:20px;font-size:12px;color:#4c5a50;line-height:1.65}
+.hc-steps li{margin:4px 0}
+.hc-steps b{color:var(--ink)}
+
+/* ---------- reduced motion: freeze the 3D show ---------- */
+@media(prefers-reduced-motion:reduce){
+  .hero-orbit,.float-card.one,.float-card.two,.ai-status-chip i{animation:none}
+  .hero:hover .orbit-core{transform:translateZ(46px)}
+  *{transition-duration:.01ms!important}
+}

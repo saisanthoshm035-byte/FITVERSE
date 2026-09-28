@@ -1,10 +1,10 @@
 """FITVERSE AI service layer.
 
 A clean seam for real AI models: every function returns data the UI can render.
-Currently powered by deterministic, personalized rules over the user's real data
-(goals, history, nutrition, recovery) so responses are genuinely useful without
-any external API. To plug in a real model later, replace the internals of each
-function with a provider call — the signatures and response shapes stay the same.
+Groq (GROQ_API_KEY) powers the heavy lifting wherever an LLM genuinely helps —
+coach chat, workout design, meal parsing, weekly narrative — while personalized
+deterministic rules over the user's real data remain the permanent fallback, so
+nothing ever breaks when the API is unreachable or unconfigured.
 
 Medical safety: injury/pain questions always return general safety guidance and
 a recommendation to consult a qualified healthcare professional. The coach never
@@ -91,7 +91,7 @@ SAFETY = ("I'm not able to diagnose injuries or medical conditions. General guid
 
 
 def ai_coach(user_id: int, message: str) -> dict:
-    """Personalized coach reply. Deterministic today, model-backed later — same shape."""
+    """Personalized coach reply. Groq first (facts from real data), deterministic fallback."""
     q = (message or "").lower().strip()
     with connect() as db:
         s = get_settings(db, user_id)
@@ -158,7 +158,7 @@ def ai_coach(user_id: int, message: str) -> dict:
             "Spread it across 3-4 meals for better recovery."), "kind": "nutrition"}
     if any(k in q for k in ("eat", "meal", "diet", "food")):
         return {"reply": parts(
-            f"🍽️ You've logged **{round(today['kcal'])}/{t['kcal']} kcal** today (protein {round(today['p'])}g).",
+            f"🍽️ You've logged **{round(today['kcal'])}/{t['kcal_target']} kcal** today (protein {round(today['p'])}g).",
             "Build plates around a palm of protein, a fist of carbs, thumbs of fats — and log right after eating, not at midnight. Your diary makes the coach smarter."), "kind": "nutrition"}
 
     # --- programming questions ---
@@ -187,6 +187,23 @@ def ai_coach(user_id: int, message: str) -> dict:
 
     # --- default: personalized brief ---
     weakest = min(["Chest", "Back", "Shoulders", "Arms", "Legs", "Glutes", "Core"], key=lambda m: cov.get(m, 0))
+
+    # --- Groq: natural, personalized answer over the deterministic draft ---
+    # The deterministic branches above already answered topical questions with
+    # real data; anything reaching here gets the LLM treatment when available.
+    try:
+        import groq_ai
+        if groq_ai.configured():
+            _draft = parts(
+                f"👋 {streak}-day streak, {len(sessions)} sessions this week, {round(today['p'])}g protein so far.",
+                f"Your week looks {'strong' if len(sessions)>=3 else 'light so far'} — **{weakest} has the least attention in the last 7 days**.",
+                "Ask me for a workout, a meal idea, your protein, or say 'plan my week'.")
+            _ctx = f"streak {streak}d | {len(sessions)} sessions this week | today {round(today['kcal'])} kcal, {round(today['p'])}g protein | goal {s.get('goal') or 'general fitness'} | {prs} PRs in 30d"
+            _reply = groq_ai.coach_reply(_ctx, [], q, draft=_draft)
+            if _reply:
+                return {"reply": _reply, "kind": "ai"}
+    except Exception:
+        pass
     return {"reply": parts(
         f"👋 {streak}-day streak, {len(sessions)} sessions this week, {round(today['p'])}g protein so far.",
         f"Your week looks {'strong' if len(sessions)>=3 else 'light so far'} — **{weakest} has the least attention in the last 7 days**.",
@@ -226,6 +243,23 @@ def generate_workout(user_id: int, params: dict) -> dict:
 
     with connect() as db:
         pool = [dict(r) for r in db.execute("SELECT * FROM exercises")]
+
+    # --- Groq: let the model design the session from the REAL exercise pool ---
+    try:
+        import groq_ai
+        if groq_ai.configured():
+            gp = {"goal": goal, "days_per_week": days, "duration": minutes, "equipment": equipment,
+                  "muscles": muscles, "style": style, "experience": experience,
+                  "harder": bool(harder), "easier": bool(easier)}
+            g = groq_ai.workout_plan(pool, gp)
+            if g and g.get("items"):
+                est = round(minutes * (6.5 if "cardio" in str(g["items"]).lower() else 5.5) * (1.1 if harder else 1.0))
+                g.update({"params": params, "est_kcal": est,
+                          "note": (g.get("note") or "") + " — AI-designed from your equipment and goal."})
+                return g
+    except Exception:
+        pass
+
     equip_ok = lambda e: (equipment in ("full gym", "gym") or e.lower() in ("bodyweight", equipment) or
                           (equipment == "home dumbbells" and e.lower() in ("dumbbell", "bodyweight")))
 
@@ -262,13 +296,23 @@ def generate_workout(user_id: int, params: dict) -> dict:
     est = round(minutes * (6.5 if "cardio" in str(plan).lower() else 5.5) * (1.1 if harder else 1.0))
     return {"title": f"{'Home ' if equipment=='home dumbbells' else ''}{'Easier ' if easier else 'Harder ' if harder else ''}{focus[0]} focus · {minutes} min",
             "params": params, "items": plan, "est_kcal": est,
-            "note": "Generated from your equipment and goal — replace any exercise you like."}
+            "note": "Generated from your equipment and goal — replace any exercise you like.",
+            "engine": "deterministic"}
 
 
 # ---------------------------------------------------------------- meal analysis
 
 def analyze_meal(desc: str, grams: float = 250) -> dict:
-    """Estimate nutrition from a text description using the foods DB. Labeled estimates."""
+    """Estimate nutrition from a text description. Groq parses free text first;
+    the foods-DB matcher remains the offline fallback. Labeled estimates."""
+    try:
+        import groq_ai
+        if groq_ai.configured():
+            g = groq_ai.meal_parse(desc, grams)
+            if g:
+                return g
+    except Exception:
+        pass
     d = (desc or "").lower()
     with connect() as db:
         foods = [dict(r) for r in db.execute("SELECT * FROM foods")]
@@ -320,12 +364,25 @@ def weekly_review(user_id: int) -> dict:
         game = db.execute("SELECT streak FROM user_game_state WHERE user_id=?", (user_id,)).fetchone()
     consistency = round(len(sessions) / max(1, s.get("days_per_week") or 4) * 100)
     avg_prot = round(sum(prot) / len(prot)) if prot else 0
+    # --- Groq: short personalized narrative over the real numbers ---
+    ai_narrative = None
+    try:
+        import groq_ai
+        if groq_ai.configured():
+            ai_narrative = groq_ai.week_review({
+                "workouts": len(sessions), "minutes": mins, "calories_burned": kcal,
+                "avg_protein": avg_prot, "new_prs": prs, "days_meals_logged": days_logged,
+                "consistency": min(100, consistency), "streak": game["streak"] if game else 0,
+                "goal": s.get("goal"), "best_exercise": best["name"] if best else None})
+    except Exception:
+        ai_narrative = None
     review = {
         "week": f"Week of {date.today().strftime('%b %d')}",
         "workouts": len(sessions), "minutes": mins, "calories_burned": kcal,
         "avg_protein": avg_prot, "best_exercise": best["name"] if best else "—",
         "new_prs": prs, "days_meals_logged": days_logged,
         "consistency": min(100, consistency), "streak": game["streak"] if game else 0,
+        "ai_summary": ai_narrative,  # Groq narrative; UI falls back to the suggestion list
         "suggestions": [
             f"{'Great rhythm — add one mobility day to lock it in.' if len(sessions) >= 3 else 'Two more sessions this week hits your goal — schedule them now.'}",
             f"{'Protein averaged ' + str(avg_prot) + 'g — prep 2 protein-forward meals ahead on busy days.' if avg_prot and avg_prot < (s.get('protein_target') or 130) else 'Hydration is the easiest win — keep the bottle on your desk.'}",

@@ -13,14 +13,15 @@ This module fixes persistence with the smallest possible change:
    server-side with a 30-day expiry, and never appear in URLs. Logout deletes
    the row. Restarting the server no longer logs anyone out.
 
-2. OPTIONAL REMOTE DATABASE (opt-in via environment)
-   If FITVERSE_DB_URL + FITVERSE_DB_TOKEN are set, `connect()` returns a
-   handle backed by a libsql/Turso database over its documented HTTP v2
-   pipeline endpoint (https://docs.turso.tech/sdk/http/reference) using only
-   the Python standard library. The free Turso tier keeps FITVERSE data
-   persistent across Render redeploys and spin-downs.
-   If the variables are absent, `connect()` returns a plain local sqlite3
-   connection exactly as before — local development is 100% unchanged.
+2. OPTIONAL REMOTE DATABASE (double opt-in via environment)
+   Remote libsql/Turso mode requires ALL of: FITVERSE_DB_URL +
+   FITVERSE_DB_TOKEN set AND FITVERSE_DB_MODE=remote.
+   REVERT (2026-09-28): the Turso round-trip made every query an HTTP call
+   and the app felt slow, so remote mode is now DISABLED BY DEFAULT — plain
+   local SQLite is used even when the URL/token env vars are still present.
+   To re-enable Turso later, set FITVERSE_DB_MODE=remote (Render dashboard).
+   NOTE: SQLite on Render's free tier is ephemeral — data resets on redeploys
+   and spin-downs. That trade-off was accepted for speed "for now".
 
 The returned object mirrors the small sqlite3 surface this app actually uses
 (`with connect() as db:` + execute/fetchone/fetchall/lastrowid/rowcount/
@@ -54,8 +55,18 @@ def _env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
+_REMOTE_MODE_VALUES = ("remote", "turso", "libsql", "1", "true", "yes", "on")
+
+
+def _remote_db_enabled() -> bool:
+    """Remote DB is double opt-in: URL/token present AND FITVERSE_DB_MODE=remote."""
+    if not _env("FITVERSE_DB_URL"):
+        return False
+    return _env("FITVERSE_DB_MODE").lower() in _REMOTE_MODE_VALUES
+
+
 def storage_mode() -> str:
-    return "libsql-remote" if _env("FITVERSE_DB_URL") else "sqlite"
+    return "libsql-remote" if _remote_db_enabled() else "sqlite"
 
 
 def sessions_mode() -> str:
@@ -374,9 +385,9 @@ class RemoteConn:
 # ---------------------------------------------------------------------------
 
 def connect(database: str = "fitverse.db"):
-    """Return a local sqlite3 connection, or a remote one when configured."""
+    """Return a local sqlite3 connection, or a remote one when explicitly enabled."""
     url, token = _env("FITVERSE_DB_URL"), _env("FITVERSE_DB_TOKEN")
-    if url:
+    if url and _remote_db_enabled():
         return RemoteConn(url, token)
     db = sqlite3.connect(database, timeout=15)
     db.row_factory = sqlite3.Row

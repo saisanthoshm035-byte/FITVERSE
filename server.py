@@ -2427,6 +2427,24 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 if not isinstance(days, list) or not days:
                     return self.send_json(400, {"error": "No days to import"})
                 return self.send_json(200, platform_service.import_takeout_days(self.current_user(), days))
+            if path == "/api/health/import/file":
+                """Real file import: Health Connect export / Google Takeout Fit JSON.
+                Accepts either {records:[...]} or a raw pasted/exported JSON payload."""
+                import platform_service
+                records = data.get("records")
+                if records is None and isinstance(data.get("json"), str):
+                    try:
+                        parsed = json.loads(data["json"])
+                        if isinstance(parsed, list):
+                            records = parsed
+                        elif isinstance(parsed, dict):
+                            records = (parsed.get("records") or parsed.get("days") or parsed.get("data")
+                                       or parsed.get("metrics") or parsed.get("sessions") or [parsed])
+                    except Exception:
+                        records = None
+                if not isinstance(records, list) or not records:
+                    return self.send_json(400, {"error": "No parsable records found. Export from Health Connect (Settings → Export data) or Google Takeout (Fit) as JSON, then import it here."})
+                return self.send_json(200, platform_service.import_health_connect_records(self.current_user(), records))
             if path == "/api/health/disconnect":
                 import platform_service
                 return self.send_json(200, platform_service.health_disconnect(self.current_user(), str(data.get("provider","google_fit"))[:20]))
@@ -2454,6 +2472,16 @@ class FitverseHandler(BaseHTTPRequestHandler):
             if path == "/api/ai/daily":
                 import platform_service
                 return self.send_json(200, platform_service.daily_companion(self.current_user()))
+            if path == "/api/ai/compose":
+                import platform_service
+                return self.send_json(200, platform_service.compose_assist(self.current_user(), str(data.get("text", ""))))
+            if path == "/api/ai/status":
+                try:
+                    import groq_ai
+                    return self.send_json(200, groq_ai.status())
+                except Exception:
+                    return self.send_json(200, {"provider": "groq", "configured": False,
+                                                "note": "Built-in deterministic AI active — full AI unavailable."})
             return self.send_json(404,{"error":"Unknown API route"})
         except ValueError as error: self.send_json(400,{"error":str(error)})
         except Exception as error:

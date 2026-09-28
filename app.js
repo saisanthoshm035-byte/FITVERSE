@@ -84,6 +84,75 @@ const avatar = (name, tone = 'coral') => `<div class="avatar ${tone}">${escapeHt
 const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600); };
 const inr = (n) => (n > 0 ? `₹${Number(n).toLocaleString('en-IN')}` : 'Free');
 const dayShort = (iso) => { try { return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' }); } catch { return iso; } };
+// FITVERSE 5.0: parse Health Connect exports / Takeout Fit files into flexible records.
+// Pure client-side: reads real user-provided files, never invents values. ZIP needs the
+// server-side JSON path (paste or unzip first); .json/.csv parse directly here.
+async function parseHealthExportFiles(files) {
+  const recs = [];
+  const pushMetric = (type, day, val) => { if (type && day && val > 0) recs.push({ type, day, value: val }); };
+  const pushWorkout = (day, name, durMin, km, kcal) => { if (day && (durMin > 0 || km > 0 || kcal > 0)) recs.push({ type: 'workout', day, name: String(name || 'Workout').slice(0, 60), duration_min: durMin || 0, distance_km: km || 0, kcal: kcal || 0 }); };
+  const fromAggregationWindow = (w, cb) => { try { cb(new Date(Number(w.startTimeMillis)).toISOString().slice(0, 10), new Date(Number(w.endTimeMillis)).toISOString().slice(0, 10)); } catch (_) {} };
+  for (const f of files) {
+    try {
+      const text = await f.text();
+      if (/\.csv$/i.test(f.name)) {
+        const lines = text.split(/\r?\n/).filter(Boolean);
+        if (!lines.length) continue;
+        const head = lines[0].split(',').map(h => h.trim().toLowerCase());
+        const col = (...names) => { for (const n of names) { const i = head.indexOf(n); if (i >= 0) return i; } return -1; };
+        const iD = col('date', 'day', 'start_date'), iT = col('type', 'metric'), iV = col('value', 'steps', 'amount');
+        for (const ln of lines.slice(1)) {
+          const cells = ln.split(',');
+          const day = (cells[iD] || '').trim().slice(0, 10);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+          if (iT >= 0 && iV >= 0) pushMetric((cells[iT] || '').trim().toLowerCase(), day, parseFloat(cells[iV]));
+          else if (iV >= 0 && head[iV] === 'steps') pushMetric('steps', day, parseFloat(cells[iV]));
+        }
+        continue;
+      }
+      if (!/\.json$/i.test(f.name)) continue;
+      const j = JSON.parse(text);
+      const bins = Array.isArray(j) ? j : (j.bucket || []);
+      for (const b of bins) {   // Takeout Fit shape: bucket → dataset → point
+        let day = '';
+        fromAggregationWindow(b, (d0) => { day = d0; });
+        for (const ds of (b.dataset || [])) {
+          const id = ds.dataSourceId || '';
+          for (const pt of (ds.point || [])) {
+            const v = (pt.value || [])[0] || {};
+            if (id.includes('step_count') && v.intVal != null) pushMetric('steps', day, v.intVal);
+            if (id.includes('distance') && v.fpVal != null) pushMetric('distance', day, v.fpVal / 1000);
+          }
+        }
+      }
+      if (j.session) {          // Takeout Fit sessions (workouts)
+        for (const s of j.session) {
+          let day = '', min = 0;
+          try { day = new Date(s.startTimeMillis).toISOString().slice(0, 10); min = Math.round((Number(s.endTimeMillis) - Number(s.startTimeMillis)) / 60000); } catch (_) {}
+          pushWorkout(day, s.name || 'Workout', min, 0, 0);
+        }
+      }
+      const flat = Array.isArray(j) ? j : null;
+      const records = flat || (j.records || j.days || j.data || j.metrics || null);
+      if (records && Array.isArray(records)) {   // flexible record list
+        for (const r of records) {
+          if (!r || typeof r !== 'object') continue;
+          const day = String(r.day || r.date || '').slice(0, 10);
+          if (r.type || r.metric) {
+            const t = String(r.type || r.metric).toLowerCase();
+            if (t === 'workout' || t === 'exercise' || t === 'activity') pushWorkout(day, r.name || r.sport, Number(r.duration_min) || 0, Number(r.distance_km) || 0, Number(r.kcal) || 0);
+            else pushMetric(t, day, Number(r.value ?? r.amount) || 0);
+          } else if (r.steps != null) pushMetric('steps', day, Number(r.steps));
+          else if (r.sleep_min != null) pushMetric('sleep_min', day, Number(r.sleep_min));
+          else if (r.weight_kg != null) pushMetric('weight_kg', day, Number(r.weight_kg));
+          else if (r.resting_hr != null) pushMetric('resting_hr', day, Number(r.resting_hr));
+          else if (r.hydration_ml != null) pushMetric('hydration_ml', day, Number(r.hydration_ml));
+        }
+      }
+    } catch (_) {}
+  }
+  return recs.slice(0, 1000);
+}
 // Upload a file via the existing base64 /api/upload endpoint. Returns { path, media } or null.
 async function uploadImageFile(file, forceVideo = false) {
   const isVid = forceVideo || (file.type || '').startsWith('video');
@@ -561,7 +630,7 @@ function progressPage() {
   return shell(`${pageHeader('Progress', 'Private by default. Visible to you alone.')}
 ${review ? `<section class="review-card"><div class="review-head"><span class="pill lime">✦ YOUR WEEKLY RECAP</span><h3>${escapeHtml(review.week)}</h3><button class="more" data-action="shareRecap" title="Share card">↗</button></div>
 <div class="review-grid"><div><b>${review.workouts}</b><small>workouts</small></div><div><b>${review.calories_burned.toLocaleString()}</b><small>kcal burned</small></div><div><b>${review.avg_protein}g</b><small>avg protein</small></div><div><b>${review.new_prs}</b><small>new PRs</small></div><div><b>${review.consistency}%</b><small>consistency</small></div><div><b>${review.streak}</b><small>day streak</small></div></div>
-<div class="review-tips">${review.suggestions.map(s => `<p>💡 ${escapeHtml(s)}</p>`).join('')}</div></section>` : ''}
+<div class="review-tips">${review.ai_summary ? `<p class="review-ai">✦ ${escapeHtml(review.ai_summary)}</p>` : ''}${review.suggestions.map(s => `<p>💡 ${escapeHtml(s)}</p>`).join('')}</div></section>` : ''}
 <div class="progress-actions"><button class="primary" data-action="addProgress">＋ Log measurements</button></div>
 <section class="section-head"><div><span class="eyebrow">WEIGHT TREND</span><h2>Your trajectory</h2></div></section>
 ${weights.length >= 2 ? `<div class="chart-card">${lineChart(weights.map(e => ({ x: dayShort(e.entry_date), y: e.weight_kg })), 'kg')}</div>` : emptyState('📈', 'Not enough data yet', 'Log your weight twice to see your trend line here.')}
@@ -593,7 +662,7 @@ function libraryPage() {
 }
 function coachPage() {
   const chat = pageData.coachChat || [];
-  return shell(`${pageHeader('FITVERSE AI', 'Your personal coach — powered by your real data.')}
+  return shell(`${pageHeader('FITVERSE AI', 'Your personal coach — Groq-powered, grounded in your real data.')}
 <section class="ai-chat" id="ai-chat">
   <div class="ai-intro"><span class="pill lime">✦ FITVERSE AI</span><p>Ask me anything: workouts, nutrition, your progress, or plan my week.</p></div>
   ${chat.map(m => `<div class="ai-msg ${m.role}"><p>${m.content.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</p></div>`).join('')}
@@ -718,7 +787,7 @@ function weeklyReviewPage() {
 <div><b>${r.avg_protein || 0}g</b><small>avg protein</small></div><div><b>${r.new_prs || 0}</b><small>new PRs</small></div>
 <div><b>${r.consistency || 0}%</b><small>consistency</small></div><div><b>${r.streak || 0}</b><small>day streak</small></div></div>
 ${r.best_exercise ? `<p class="loading">Best exercise: <b>${escapeHtml(r.best_exercise)}</b> · Meals logged ${r.days_meals_logged || 0}/7 days</p>` : ''}
-<div class="review-tips">${(r.suggestions || []).map(s => `<p>💡 ${escapeHtml(s)}</p>`).join('')}</div></section>
+<div class="review-tips">${r.ai_summary ? `<p class="review-ai">✦ ${escapeHtml(r.ai_summary)}</p>` : ''}${(r.suggestions || []).map(s => `<p>💡 ${escapeHtml(s)}</p>`).join('')}</div></section>
 <div class="hero-actions"><button class="primary" data-action="shareRecap">Share recap card</button><button class="outline" data-page="coach">Ask the coach</button></div>`);
 }
 function lineChart(points, unit) {
@@ -744,6 +813,7 @@ function dailyCompanionCard() {
   const rec = d.recommendation;
   return `<section class="daily-companion" id="daily-companion"><div class="dc-head"><span class="pill lime">✦ AI COMPANION</span><b>${escapeHtml(d.greeting || 'Hello')}</b>${d.streak ? `<span class="dc-streak">🔥 ${d.streak} day streak</span>` : ''}</div>
   ${d.lines.map(l => `<p class="dc-line">${escapeHtml(l)}</p>`).join('')}
+  ${d.ai_tip ? `<p class="dc-line ai-tip">✦ <b>Tip of the day:</b> ${escapeHtml(d.ai_tip)}</p>` : ''}
   <div class="dc-rec"><b>${escapeHtml(rec.title)}</b><p>${escapeHtml(rec.why)}</p></div>
   <div class="dc-actions"><button class="primary small" data-action="dailyPlan">Build my plan</button><a class="outline small" href="#" data-action="dailyCoach" style="text-decoration:none;display:inline-block">Ask the coach</a></div></section>`;
 }
@@ -778,8 +848,18 @@ function connectHealth() {
     <div class="hc-actions"><label class="hc-import-btn">📎 Choose Takeout file(s)<input id="takeout-input" type="file" accept=".json" multiple style="display:none"/></label><small class="hc-scope">From <span class="code">takeout.google.com</span> → select only <b>Fit</b> → export → unzip → pick the .json files.</small></div>
     <p class="hc-note" id="takeout-status"></p>
   </article>
-  <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">🤖</span><div><h3>Health Connect (Android)</h3><p>Steps, sleep, heart rate, hydration and more — from your phone's health hub.</p></div>${hc.connected ? '<span class="hc-state on">Connected</span>' : '<span class="hc-state">Bridge pending</span>'}</div>
-    <div class="hc-setup"><p>Health Connect is a device-local Android API — a web page can't read it directly. FITVERSE's data model, sync pipeline and this UI are <b>ready</b>; the remaining step is the native Android bridge (FITVERSE app) that will pass your data through with your explicit permission per type.</p><p class="hc-note">In the meantime you can log weight, steps and hydration manually below — it feeds the same insights.</p></div>
+  <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">🤖</span><div><h3>Health Connect (Android)</h3><p>Steps, sleep, heart rate, hydration and more — from your phone's health hub.</p></div>${hc.connected ? '<span class="hc-state on">Imported data active</span>' : '<span class="hc-state">Import available</span>'}</div>
+    <div class="hc-setup">
+      <p><b>Honest note:</b> Health Connect is a device-local Android API — a website can't read it directly. FITVERSE never fakes health data, so here's what genuinely works today:</p>
+      <ol class="hc-steps">
+        <li><b>Import your export:</b> on your phone open Health Connect → ⚙ Settings → <b>Export data</b> (or use Google Takeout → Fit), then use the importer below. Everything lands in <i>your</i> account.</li>
+        <li><b>Connect Google Fit</b> (card above) for automatic workout sync — free, read-only.</li>
+        <li><b>Log manually</b> in the Daily metrics form below — it feeds the same insights.</li>
+      </ol>
+      <p class="hc-note">A future FITVERSE Android app can sync Health Connect automatically. ${hc.imported_days ? `You currently have <b>${hc.imported_days}</b> imported day${hc.imported_days == 1 ? '' : 's'} and <b>${hc.imported_activities || 0}</b> activit${hc.imported_activities == 1 ? 'y' : 'ies'}.` : 'No imported data yet.'}</p>
+    </div>
+    <div class="hc-actions"><label class="hc-import-btn">📎 Import health data file<input id="hc-import-input" type="file" accept=".json,.zip,.csv" multiple style="display:none"/></label>${hc.imported_days || hc.imported_activities ? '<button class="outline small" data-action="hcRemoveData">Remove imported data</button>' : ''}</div>
+    <p class="hc-note" id="hc-import-status"></p>
   </article>
 </section>
 <section class="hc-section"><div class="section-head"><div><span class="eyebrow">UNIFIED VIEW</span><h2>Your fitness data today</h2></div></div>
@@ -932,7 +1012,8 @@ function openComposer(mode = 'post', presetKind = '') {
   <label>${isReel ? 'Caption' : "What's happening?"}<textarea name="body" rows="${isReel ? 3 : 4}" placeholder="${isReel ? 'Say something about your clip…' : 'Training, meals, questions, wins…'}" required maxlength="2000"></textarea></label>
   <label class="file-label">${isReel ? 'Video or photo' : 'Photo'} <span class="dim">(${isReel ? 'optional, up to 25MB · mp4/webm/mov' : 'optional, up to 3MB'})</span><input type="file" id="composer-media" accept="${isReel ? 'video/mp4,video/webm,video/quicktime,image/*' : 'image/*'}" ${isReel ? '' : 'capture="environment"'}></label>
   <div id="composer-preview"></div>
-  <div class="hero-actions"><button class="primary" type="submit">${isReel ? 'Publish reel' : 'Publish post'}</button></div>
+  <div class="composer-ai-bar" id="composer-ai-bar"><span>✦ AI assist ready — polishes wording + adds hashtags</span></div>
+  <div class="hero-actions"><button class="outline" type="button" id="composer-ai-btn">✦ Assist</button><button class="primary" type="submit">${isReel ? 'Publish reel' : 'Publish post'}</button></div>
   </form>`);
   bind();
   let mediaPath = '', mediaIsVideo = false;
@@ -955,12 +1036,40 @@ function openComposer(mode = 'post', presetKind = '') {
     reader.readAsDataURL(file);
   };
   mediaInput.onchange = (e) => { const f = e.target.files?.[0]; if (f) uploadMedia(f); };
+  const formEl = $('#composer-form');
+  const bar = $('#composer-ai-bar');
+  let composeAi = null;
+  const aiBtn = $('#composer-ai-btn');
+  if (aiBtn) aiBtn.onclick = async () => {
+    const txt = (formEl ? new FormData(formEl).get('body') : '') || '';
+    if (!String(txt).trim()) { toast('Write something first — then tap ✦ Assist'); return; }
+    aiBtn.disabled = true; aiBtn.textContent = '✦ Thinking…';
+    try {
+      const r = await api('/api/ai/compose', { method: 'POST', body: JSON.stringify({ text: txt }) });
+      if (r.ok) {
+        composeAi = r;
+        $('textarea', $('#composer-form')).value = r.text;
+        if (bar) bar.innerHTML = `<span>✦ ${r.engine === 'groq' ? 'AI polished' : 'tidied'}${r.hashtags && r.hashtags.length ? ' · tags: ' + r.hashtags.map(t => '#' + escapeHtml(t)).join(' ') : ''} — publishes on Post${r.engine === 'groq' ? '' : ' (offline mode)'}</span><button type="button" class="outline small" id="composer-ai-undo">Undo</button>`;
+        const undo = $('#composer-ai-undo');
+        if (undo) undo.onclick = () => { $('textarea', $('#composer-form')).value = txt; composeAi = null; if (bar) bar.innerHTML = '<span>✦ AI assist ready — tap Assist again after editing</span>'; };
+      } else { toast(r.error || 'Nothing to polish'); }
+    } catch (err) { toast(err.message); }
+    aiBtn.disabled = false; aiBtn.textContent = '✦ Assist';
+  };
   $('#composer-form').onsubmit = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget));
     if (isReel && !mediaPath) { toast('Reels need a video or photo — pick one above'); return; }
     try {
-      await api('/api/posts', { method: 'POST', body: JSON.stringify({ body: f.body, kind: f.kind, photo: mediaPath || undefined, meta: mediaIsVideo ? 'video' : undefined }) });
+      let body = f.body;
+      if (composeAi && composeAi.text) {
+        body = composeAi.text;
+        const existing = (f.body.match(/#\w+/g) || []).map(t => t.toLowerCase());
+        const add = (composeAi.hashtags || []).filter(t => !existing.includes(t));
+        if (add.length) body += '\n\n' + add.map(t => '#' + t).join(' ');
+        composeAi = null;
+      }
+      await api('/api/posts', { method: 'POST', body: JSON.stringify({ body, kind: f.kind, photo: mediaPath || undefined, meta: mediaIsVideo ? 'video' : undefined }) });
       $('#modal').innerHTML = '';
       toast(isReel ? 'Reel published 🎬' : 'Posted to the feed ✦');
       await hydrate();
@@ -1174,6 +1283,21 @@ function bind() {
     const f = Object.fromEntries(new FormData(e.currentTarget));
     try { await api('/api/health/metrics', { method: 'POST', body: JSON.stringify(f) }); toast('Saved — your unified view updates instantly'); }
     catch (err) { toast(err.message); }
+  };
+  // FITVERSE 5.0: Health Connect export / Takeout ZIP import (real data, honest flow)
+  const hi = $('#hc-import-input');
+  if (hi) hi.onchange = async () => {
+    const st = $('#hc-import-status');
+    if (!hi.files || !hi.files.length) return;
+    try {
+      if (st) st.textContent = 'Reading your export…';
+      const recs = await parseHealthExportFiles([...hi.files]);
+      if (!recs.length) { if (st) st.textContent = 'Could not find steps/sleep/heart-rate/workout records in those files. Export from Health Connect (Settings → Export data) or Takeout → Fit as JSON, or paste rows as [{"type":"steps","day":"2026-01-31","value":8000}].'; return; }
+      if (st) st.textContent = `Importing ${recs.length} records…`;
+      const r = await api('/api/health/import/file', { method: 'POST', body: JSON.stringify({ records: recs }) });
+      if (st) st.textContent = `✅ Stored ${r.days_stored} day-records and ${r.activities_stored} workout${r.activities_stored == 1 ? '' : 's'}${r.skipped ? ` · ${r.skipped} unrecognized entries skipped (never guessed)` : ''}.`;
+      toast('Health data imported to your account');
+    } catch (e) { if (st) st.textContent = e.message; }
   };
   // FITVERSE 4.0: Google Takeout import (zero-setup real health data)
   const ti = $('#takeout-input');
@@ -1629,6 +1753,13 @@ async function action(a, btn) {
     case 'googleDisconnect': {
       (async () => {
         try { await api('/api/health/disconnect', { method: 'POST', body: JSON.stringify({ provider: 'google_fit' }) }); toast('Google Fit disconnected — synced data deleted'); await loadPageData('connectHealth'); render(); }
+        catch (e) { toast(e.message); }
+      })();
+      return;
+    }
+    case 'hcRemoveData': {
+      (async () => {
+        try { await api('/api/health/disconnect', { method: 'POST', body: JSON.stringify({ provider: 'health_connect' }) }); toast('Imported health data removed'); await loadPageData('connectHealth'); render(); }
         catch (e) { toast(e.message); }
       })();
       return;

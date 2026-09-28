@@ -9,9 +9,8 @@ Honesty rules enforced throughout:
   exactly what configuration is missing.
 - No medical claims. All guidance is general fitness/wellness advice.
 - Google Fit tokens are stored server-side and never sent to the frontend.
-- Optional LLM: only used when FITVERSE_LLM_API / FITVERSE_LLM_KEY env vars are
-  set (OpenAI-compatible). Everything degrades gracefully to the deterministic
-  engine, which always works.
+- Groq (GROQ_API_KEY) powers the AI surfaces; everything degrades gracefully to
+  the deterministic engine, which always works — even with zero configuration.
 """
 from __future__ import annotations
 
@@ -256,11 +255,123 @@ def import_takeout_days(uid: int, days: list) -> dict:
     return {"ok": True, "days": n_steps, "activities": n_act}
 
 
+# ---------------------------------------------------------------------------
+# Health Connect — honest capability + real file import (no fake data)
+# ---------------------------------------------------------------------------
+
+# What a web app can and cannot do with Health Connect, stated plainly.
+HEALTH_CONNECT_NOTE = (
+    "Health Connect (Android) is a device-local API: a website cannot read it directly — "
+    "only a native Android app (or Google Fit authorization) can. FITVERSE never fakes "
+    "health data. Real paths that work today: (1) export a ZIP from the Health Connect app "
+    "(Settings → Export data) or from Google Takeout and import the files here — everything "
+    "is parsed and stored in YOUR account; (2) connect Google Fit for automatic sync; "
+    "(3) log metrics manually. A future FITVERSE Android app can sync Health Connect automatically."
+)
+
+
+def health_connect_status(uid: int) -> dict:
+    """Capability report for the Health page: honest about what is possible."""
+    with connect() as db:
+        row = db.execute(
+            "SELECT status,last_synced_at FROM health_connections WHERE user_id=? AND provider='health_connect'",
+            (uid,)).fetchone()
+        imported = db.execute(
+            "SELECT count(*) FROM daily_metrics WHERE user_id=? AND source LIKE 'health_connect%'",
+            (uid,)).fetchone()[0]
+        acts = db.execute(
+            "SELECT count(*) FROM health_activities WHERE user_id=? AND provider='health_connect'",
+            (uid,)).fetchone()[0]
+    return {
+        "provider": "health_connect",
+        "connected": False,  # a web page cannot hold a device-local connection
+        "available": True,   # file import IS available today
+        "native_bridge": False,
+        "imported_days": imported,
+        "imported_activities": acts,
+        "last_imported_at": row["last_synced_at"] if row else None,
+        "android_app_required_for_auto_sync": True,
+        "note": HEALTH_CONNECT_NOTE,
+        "how_to": [
+            "On your Android phone: Health Connect app → ⚙ Settings → 'Export data' → save the ZIP.",
+            "Unzip it on your PC (or use Google Takeout → Fit). Files are usually daily steps, distance, exercise sessions or a merged JSON/CSV.",
+            "On FITVERSE → Health page → 'Import health data file' → pick the file(s). Data lands in your account instantly.",
+        ],
+    }
+
+
+def import_health_connect_records(uid: int, records: list, source_label: str = "health_connect_import") -> dict:
+    """Store REAL user-provided health records (Health Connect export / Takeout Fit).
+    Accepts a flexible record shape so raw exports parse without ceremony:
+      {"type": "steps"|"sleep_min"|"resting_hr"|"weight_kg"|"hydration_ml"|"workout",
+       "day": "YYYY-MM-DD", "value": number,
+       workout extras: "name"/"sport", "duration_min", "distance_km", "kcal"}
+    Unknown types are counted as skipped — never guessed, never faked."""
+    n_days = n_acts = skipped = 0
+    with connect() as db:
+        for r in (records or [])[:1000]:
+            if not isinstance(r, dict):
+                skipped += 1
+                continue
+            rtype = str(r.get("type") or r.get("metric") or "").strip().lower()
+            day = str(r.get("day") or r.get("date") or "")[:10]
+            try:
+                val = float(r.get("value") or r.get("amount") or 0)
+            except (TypeError, ValueError):
+                val = 0
+            aliases = {"steps": "steps", "step_count": "steps", "sleep": "sleep_min", "sleep_minutes": "sleep_min", "sleep_min": "sleep_min",
+                       "resting_hr": "resting_hr", "heart_rate": "resting_hr", "weight": "weight_kg", "weight_kg": "weight_kg",
+                       "hydration": "hydration_ml", "water": "hydration_ml", "hydration_ml": "hydration_ml"}
+            metric = aliases.get(rtype)
+            if metric and day and len(day) == 10 and val > 0:
+                col = {"steps": "steps", "sleep_min": "sleep_min", "resting_hr": "resting_hr",
+                       "weight_kg": "weight_kg", "hydration_ml": "hydration_ml"}[metric]
+                db.execute(
+                    f"""INSERT INTO daily_metrics (user_id,day,{col},source,updated_at) VALUES (?,?,?,?,?)
+                        ON CONFLICT(user_id,day) DO UPDATE SET {col}=COALESCE(MAX({col},excluded.{col}),excluded.{col}),
+                        source=excluded.source,updated_at=excluded.updated_at""",
+                    (uid, day, int(val) if metric != "weight_kg" else round(val, 1), source_label, now()))
+                n_days += 1
+            elif rtype in ("workout", "exercise", "exercise_session", "activity") and day:
+                name = str(r.get("name") or r.get("sport") or "Imported workout")[:60]
+                try:
+                    dur_s = int(float(r.get("duration_min") or 0) * 60)
+                except (TypeError, ValueError):
+                    dur_s = 0
+                try:
+                    km = round(float(r.get("distance_km") or 0), 2)
+                except (TypeError, ValueError):
+                    km = 0
+                try:
+                    kcal = int(float(r.get("kcal") or 0))
+                except (TypeError, ValueError):
+                    kcal = 0
+                db.execute(
+                    """INSERT OR IGNORE INTO health_activities
+                       (user_id,provider,external_id,sport,name,distance_km,moving_s,elev_m,kcal,avg_hr,max_hr,avg_pace_sec_km,started_at,raw_json,created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (uid, "health_connect", f"hc-{day}-{name}-{dur_s}", name, name, km, dur_s, 0, kcal, 0, 0, 0,
+                     day + "T00:00:00", "{}", now()))
+                n_acts += max(0, db.execute("SELECT changes()").fetchone()[0])
+            else:
+                skipped += 1
+        db.execute(
+            """INSERT INTO health_connections (user_id,provider,status,connected_at,last_synced_at)
+               VALUES (?,?,?,?,?) ON CONFLICT(user_id,provider) DO UPDATE SET
+               status='connected',last_synced_at=excluded.last_synced_at""",
+            (uid, "health_connect", "connected", now(), now()))
+    return {"ok": True, "days_stored": n_days, "activities_stored": n_acts, "skipped": skipped,
+            "note": "Real data stored to your account. Nothing is estimated or invented."}
+
+
 def health_disconnect(uid: int, provider: str) -> dict:
     with connect() as db:
         db.execute("UPDATE health_connections SET status='disconnected',access_token='',refresh_token='' WHERE user_id=? AND provider=?", (uid, provider))
         if provider == "google_fit":
             db.execute("DELETE FROM health_activities WHERE user_id=? AND provider='google_fit'", (uid,))
+        elif provider == "health_connect":
+            db.execute("DELETE FROM health_activities WHERE user_id=? AND provider='health_connect'", (uid,))
+            db.execute("DELETE FROM daily_metrics WHERE user_id=? AND source LIKE 'health_connect%'", (uid,))
     return {"ok": True}
 
 
@@ -269,14 +380,9 @@ def connections_status(uid: int) -> dict:
     return {
         "items": [
             google_fit_status(uid),
-            {
-                "provider": "health_connect",
-                "connected": False,
-                "available": False,
-                "note": "Health Connect (Android) is a device-local API. A web page cannot read it directly — it needs the future FITVERSE Android app as a bridge. The data model, sync pipeline and this UI are ready; the native bridge is the remaining step.",
-            },
+            health_connect_status(uid),
         ],
-        "privacy": "Health data stays on your account, is never public, and is used only for your own insights. Disconnect anytime to delete synced data.",
+        "privacy": "Health data stays on your account, is never public, and is used only for your own insights. Disconnect or 'Remove imported data' anytime.",
     }
 
 
@@ -461,8 +567,20 @@ INJURY_TERMS = ("injur", "pain", "hurts", "ache", "sprain", "strain", "tendon", 
 
 
 def _llm(messages: list[dict]) -> str | None:
-    """Optional LLM (OpenAI-compatible). Only if env configured. Returns None otherwise.
-    Works with OpenRouter (FITVERSE_LLM_KEY starting sk-or-) or any OpenAI-compatible API."""
+    """Optional LLM (OpenAI-compatible). Groq first (GROQ_API_KEY), then any
+    OpenAI-compatible API via FITVERSE_LLM_API/KEY. Returns None otherwise —
+    every caller falls back to the deterministic engine."""
+    try:
+        import groq_ai
+        if groq_ai.configured():
+            sys_msg = next((m["content"] for m in messages if m.get("role") == "system"), "")
+            chat_hist = [m for m in messages if m.get("role") in ("user", "assistant")][:-1]
+            question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+            reply = groq_ai.coach_reply(sys_msg, chat_hist, question)
+            if reply:
+                return reply
+    except Exception:
+        pass
     api = os.environ.get("FITVERSE_LLM_API", "").rstrip("/")
     key = os.environ.get("FITVERSE_LLM_KEY", "")
     model = os.environ.get("FITVERSE_LLM_MODEL", "gpt-4o-mini")
@@ -705,6 +823,26 @@ def chat_reply(uid: int, message: str, conversation_id: int | None = None) -> di
     return {"ok": True, "reply": reply, "kind": kind, "conversationId": cid}
 
 
+def compose_assist(uid: int, text: str) -> dict:
+    """Composer assistant: polish wording + suggest hashtags via Groq.
+    Honest fallback: returns the user's original text (never mangles without AI)."""
+    if not text.strip():
+        return {"ok": False, "error": "Write something first"}
+    try:
+        import groq_ai
+        r = groq_ai.post_polish(text[:1000])
+        if r:
+            return {"ok": True, "engine": "groq", **r}
+    except Exception:
+        pass
+    import re as _re
+    from collections import Counter
+    words = [w for w in _re.findall(r"[a-zA-Z]{4,}", text.lower())
+             if w not in ("this", "that", "with", "just", "today", "about", "really", "have", "been")]
+    tags = [w for w, _ in Counter(words).most_common(3)] or ["fitness"]
+    return {"ok": True, "engine": "builtin", "text": text, "hashtags": tags + ["fitverse"]}
+
+
 def daily_companion(uid: int) -> dict:
     """Morning brief — real data only; sections omitted when data is missing."""
     with connect() as db:
@@ -726,12 +864,20 @@ def daily_companion(uid: int) -> dict:
     if t.get("water_target_ml"):
         glasses = round(water / 250)
         lines.append(f"Hydration: {glasses}/{round(t['water_target_ml']/250)} glasses so far.")
+    ai_tip = None
+    try:
+        import groq_ai
+        if groq_ai.configured():
+            ai_tip = groq_ai.daily_tip(_ctx_line({**_user_context(uid), "goal": (s.get("goal") if isinstance(s, dict) else "") or "general fitness"}))
+    except Exception:
+        ai_tip = None
     return {
         "greeting": _part_of_day(),
         "streak": game["streak"] if game else 0,
         "recommendation": rec,
         "today": {"kcal": today["k"], "kcal_target": t.get("kcal_target", 0), "protein": today["p"], "protein_target": t.get("protein_target", 0)},
         "lines": lines,
+        "ai_tip": ai_tip,  # Groq-generated when configured; None keeps the UI unchanged
         "build_prompt": "Build my plan",
     }
 
