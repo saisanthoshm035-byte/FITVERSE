@@ -661,6 +661,22 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
 }
 @keyframes fv-pulse{50%{transform:translateY(-3px) scale(1.015)}}
 
+/* -- Interactive workout history: filters, expandable cards, AI tweaks ------------ */
+.workout-filters{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 12px}
+.workout-filters .chip{padding:6px 14px;font-size:11px}
+.session-card{cursor:pointer}
+.session-card .wo-chev{color:var(--fv-cyan);font-size:12px;margin-left:6px}
+.session-card.open{border-color:rgba(0,229,255,.55) !important;box-shadow:0 0 26px rgba(0,229,255,.14), 0 16px 40px rgba(0,0,0,.5)}
+.wo-detail{display:grid;gap:7px;margin:10px 0;padding:13px;background:rgba(0,229,255,.05);border:1px solid var(--fv-line);border-radius:12px;cursor:default}
+.wo-line{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--fv-mut)}
+.wo-line .wo-mus{flex:0 0 74px;font:700 8.5px 'DM Mono',monospace;letter-spacing:.8px;text-transform:uppercase;color:var(--fv-violet);background:rgba(139,92,246,.14);border:1px solid rgba(139,92,246,.3);border-radius:6px;padding:3px 6px;text-align:center}
+.wo-line .wo-ex{color:var(--fv-ink);font-weight:700;flex:1}
+.wo-line .wo-sets{font:11px 'DM Mono',monospace;color:var(--fv-cyan)}
+.wo-session-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px;padding-top:11px;border-top:1px dashed var(--fv-line);align-items:center}
+.wo-session-actions .wo-del{margin-left:auto;font-size:14px}
+.wo-session-actions .wo-del:hover{color:#ff5d7a !important;border-color:#ff5d7a !important}
+#rest-num{animation:fv-blink 1s steps(2) infinite}
+
 /* -- Finish Workout: live session editor ------------------------------------------ */
 .finish-session{
   background:linear-gradient(160deg, rgba(22,28,58,.88), rgba(9,13,30,.92)) !important;

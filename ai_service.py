@@ -247,7 +247,7 @@ def generate_workout(user_id: int, params: dict) -> dict:
     # --- Groq: let the model design the session from the REAL exercise pool ---
     try:
         import groq_ai
-        if groq_ai.configured():
+        if groq_ai.configured() and not params.get("fast"):
             gp = {"goal": goal, "days_per_week": days, "duration": minutes, "equipment": equipment,
                   "muscles": muscles, "style": style, "experience": experience,
                   "harder": bool(harder), "easier": bool(easier)}

@@ -2353,6 +2353,16 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 """AI training suggestion built from the user's imported health data."""
                 import platform_service
                 return self.send_json(200, platform_service.training_suggestion(self.current_user()))
+            if path.startswith("/api/workouts/") and path.split("/")[3].isdigit():
+                """DELETE a workout session (and its logs) — removes it from every panel."""
+                sid = int(path.split("/")[3]); uid = self.current_user()
+                with connect() as db:
+                    row = db.execute("SELECT user_id FROM workout_sessions WHERE id=?", (sid,)).fetchone()
+                    if not row or row["user_id"] != uid:
+                        return self.send_json(404, {"error": "Session not found"})
+                    db.execute("DELETE FROM workout_logs WHERE session_id=?", (sid,))
+                    db.execute("DELETE FROM workout_sessions WHERE id=?", (sid,))
+                return self.send_json(200, {"ok": True, "deleted": sid})
             if path == "/api/ai/workout":
                 import ai_service
                 plan=ai_service.generate_workout(self.current_user(),data)

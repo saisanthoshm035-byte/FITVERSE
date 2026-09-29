@@ -627,14 +627,23 @@ function workoutPage() {
   return shell(`${pageHeader('Workout', 'Log sessions, track volume, celebrate PRs.')}
 <div class="workout-top"><button class="primary" data-action="logWorkout">＋ Log a workout</button><button class="outline" data-action="fsStart">▶ Start session · Finish later</button><button class="outline" data-action="generateWorkout">✦ Generate with AI</button><button class="outline" data-page="library">Exercise library</button><button class="outline" data-action="customExercise">✚ Custom exercise</button></div>
 ${editor}
-<section class="section-head"><div><span class="eyebrow">HISTORY</span><h2>Recent sessions</h2></div></section>
-${w.length ? `<div class="session-list">${w.map(s => `<article class="session-card">
+<section class="section-head"><div><span class="eyebrow">HISTORY</span><h2>Recent sessions</h2></div></section>  ${w.length ? `<div class="workout-filters"><button class="chip ${!pageData.woFilter ? 'active' : ''}" data-action="woFilter" data-id="">All</button>${['Push', 'Pull', 'Legs', 'Full'].map(f => `<button class="chip ${pageData.woFilter === f ? 'active' : ''}" data-action="woFilter" data-id="${f}">${f}</button>`).join('')}</div>
+<div class="session-list">${w.filter(s => !pageData.woFilter || s.title.toLowerCase().includes(String(pageData.woFilter).toLowerCase())).map(s => {
+  const open = pageData.openSession === s.id;
+  return `<article class="session-card ${open ? 'open' : ''}" data-action="woToggle" data-id="${s.id}">
   <div class="session-date"><b>${dayShort(s.created_at)}</b><small>${timeShort(s.created_at)}</small></div>
-  <div class="session-body"><h3>${escapeHtml(s.title)}</h3>
-    ${s.logs.map(l => `<p class="setline">${escapeHtml(l.name)} <b>${l.sets}×${l.reps}</b>${l.weight > 0 ? ` @ ${l.weight}kg` : ''}${l.is_pr ? ' <span class="pr-flag">🔥 PR</span>' : ''}</p>`).join('')}
+  <div class="session-body"><h3>${escapeHtml(s.title)} <span class="wo-chev">${open ? '▴' : '⌄'}</span></h3>
+    ${open ? `<div class="wo-detail">${s.logs.map(l => `<div class="wo-line"><span class="wo-mus">${escapeHtml(l.muscle || '')}</span><span class="wo-ex">${escapeHtml(l.name)}</span><span class="wo-sets"><b>${l.sets}</b>×${l.reps}${l.weight > 0 ? ` @ ${l.weight}kg` : ' (bw)'}${l.is_pr ? ' <span class="pr-flag">🔥 PR</span>' : ''}</span></div>`).join('')}
+    <div class="wo-session-actions" data-stop>
+      <button class="outline small" data-action="woAiTweak" data-id="${s.id}" data-k="easier">🪶 Make easier</button>
+      <button class="outline small" data-action="woAiTweak" data-id="${s.id}" data-k="harder">🔥 Make harder</button>
+      <button class="outline small" data-action="woAiTweak" data-id="${s.id}" data-k="swap">⇄ Different exercises</button>
+      <button class="outline small" data-action="woRest">⏱ Rest timer</button>
+      <button class="more wo-del" data-action="woDelete" data-id="${s.id}" title="Delete session">🗑</button>
+    </div></div>` : s.logs.slice(0, 3).map(l => `<p class="setline">${escapeHtml(l.name)} <b>${l.sets}×${l.reps}</b>${l.weight > 0 ? ` @ ${l.weight}kg` : ''}${l.is_pr ? ' <span class="pr-flag">🔥 PR</span>' : ''}</p>`).join('')}${!open && s.logs.length > 3 ? `<p class="loading">+${s.logs.length - 3} more — tap to expand</p>` : ''}
     <div class="session-stats"><span>⏱ ${s.duration_min} min</span><span>🏋 ${Math.round(s.total_volume).toLocaleString()} kg volume</span><span>⚡ ~${s.est_kcal} kcal</span>${s.pr_count ? `<span class="pr-flag">🔥 ${s.pr_count} PR${s.pr_count > 1 ? 's' : ''}</span>` : ''}</div>
   </div>
-</article>`).join('')}</div>` : emptyState('🏋', 'No workouts yet', 'Complete your first workout to start building your fitness history.', null, null)}
+</article>`; }).join('')}</div>` : emptyState('🏋', 'No workouts yet', 'Complete your first workout to start building your fitness history.', null, null)}
 ${prs.length ? `<section class="section-head"><div><span class="eyebrow">PERSONAL RECORDS</span><h2>Your best lifts</h2></div></section><div class="pr-grid">${prs.map(p => `<article class="pr-card"><b>${escapeHtml(p.name)}</b><strong>${p.max_w ? p.max_w + ' kg' : Math.round(p.max_vol || 0) + ' vol'}</strong><small>${p.n} sessions logged</small></article>`).join('')}</div>` : ''}`);
 }
 function nutritionPage() {
@@ -1519,7 +1528,12 @@ async function action(a, btn) {
           const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: f.get('username'), password: f.get('password') }) });
           sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken); localStorage.setItem('fitverse-user', String(f.get('username') || '').toLowerCase()); localStorage.setItem('fitverse-pass', String(f.get('password') || ''));
           evtSource?.close(); evtSource = null; startSSE();
-          $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render(); toast(`Welcome back, ${result.user.name}`);
+          $('#modal').innerHTML = '';
+          // Instant feedback: user is IN — heavy data loads in the background.
+          sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken); localStorage.setItem('fitverse-user', String(f.get('username') || '').toLowerCase()); localStorage.setItem('fitverse-pass', String(f.get('password') || ''));
+          evtSource?.close(); evtSource = null; startSSE();
+          render(); toast(`✅ Signed in as ${result.user.name}`);
+          hydrate().then(() => { render(); loadPageData(state.page); toast(`Welcome back, ${result.user.name} 💪`); });
         } catch (error) { toast(error.message); }
       }; bind(); return;
     }
@@ -1542,8 +1556,9 @@ async function action(a, btn) {
           const result = await api('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, email, username, password: pass }) });
           sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken); localStorage.setItem('fitverse-user', username); localStorage.setItem('fitverse-pass', pass);
           evtSource?.close(); evtSource = null; startSSE();
-          $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render();
-          toast(`🎉 Welcome to FITVERSE, ${name.split(' ')[0]}! Your account is ready.`);
+          $('#modal').innerHTML = '';
+          render(); toast(`✅ Account created — you're in, ${name.split(' ')[0]}!`);
+          hydrate().then(() => { render(); loadPageData(state.page); toast(`🎉 Welcome to FITVERSE, ${name.split(' ')[0]}! Your account is ready.`); });
         } catch (error) { btn.disabled = false; btn.textContent = 'Create account'; fail(error.message); }
       }; bind(); return;
     }
@@ -2013,6 +2028,53 @@ async function action(a, btn) {
     case 'createReel': openComposer('reel'); return;
     case 'activityDetail': activityDetail(id); return;
     // ===== FITVERSE 2.0 actions =====
+    case 'woToggle': {
+      if (btn.closest('[data-stop]')) return;
+      pageData.openSession = pageData.openSession === id ? 0 : id;
+      render();
+      return;
+    }
+    case 'woFilter': pageData.woFilter = btn.dataset.id || ''; render(); return;
+    case 'woDelete': {
+      if (!confirm('Delete this workout session? Its volume and PRs are removed from your history.')) return;
+      try { await api(`/api/workouts/${id}`, { method: 'POST', body: '{}' }); pageData.openSession = 0; await loadPageData('workout'); await hydrate(); render(); toast('Session deleted'); }
+      catch (e) { toast(e.message); }
+      return;
+    }
+    case 'woRest': {
+      const mins = 2; let left = mins * 60;
+      modal(`<span class="eyebrow">⏱ REST TIMER</span><h2>Chill — I'll call you.</h2><div class="scan-result"><div class="scan-big"><b id="rest-num">${mins}:00</b><em>rest remaining</em></div></div><div class="hero-actions"><button class="outline" data-action="close">Skip rest</button></div>`);
+      bind();
+      const iv = setInterval(() => {
+        left -= 1;
+        const el = $('#rest-num');
+        if (!el) { clearInterval(iv); return; }
+        el.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+        if (left <= 0) { clearInterval(iv); el.textContent = "GO!"; notifSound(); toast("Rest over — next set 💪"); setTimeout(() => { $('#modal').innerHTML = ''; }, 900); }
+      }, 1000);
+      return;
+    }
+    case 'woAiTweak': {
+      const s = (pageData.workouts || []).find(x => x.id === id); if (!s) return;
+      const kind = btn.dataset.k;
+      const params = {
+        goal: kind === 'harder' ? 'build muscle' : kind === 'easier' ? 'general fitness' : 'build muscle',
+        duration: s.duration_min || 45, style: kind === 'swap' ? 'full' : 'push',
+        equipment: 'Full gym', harder: kind === 'harder', easier: kind === 'easier', fast: true,
+      };
+      toast(kind === 'harder' ? '🔥 Leveling it up…' : kind === 'easier' ? '🪶 Easing it down…' : '⇄ Swapping exercises…');
+      try {
+        const plan = (await api('/api/ai/workout', { method: 'POST', body: JSON.stringify(params) })).item || {};
+        const exs = pageData.exercises.length ? pageData.exercises : (await api('/api/exercises')).items || [];
+        pageData.exercises = exs;
+        const byName = Object.fromEntries(exs.map(e => [e.name, e.id]));
+        pageData.activeSession = { title: plan.title || `${kind === 'harder' ? 'Harder' : kind === 'easier' ? 'Lighter' : 'Remixed'} ${s.title}`, startedAt: new Date().toISOString(), logs: (plan.items || []).map(x => ({ exercise_id: byName[x.exercise] || exs[0]?.id || 0, sets: x.sets || 3, reps: parseInt(x.reps) || 10, weight: Math.round(((s.logs || []).find(l => l.name === x.exercise)?.weight) || 0) })).filter(x => x.exercise_id) };
+        state.page = 'workout'; render();
+        toast('✦ Loaded into your session — set weights and FINISH WORKOUT');
+        window.scrollTo(0, 0);
+      } catch (e) { toast(e.message); }
+      return;
+    }
     case 'fsStart': {
       const exs0 = pageData.exercises.length ? pageData.exercises : (await api('/api/exercises')).items || [];
       pageData.exercises = exs0;
@@ -2037,7 +2099,7 @@ async function action(a, btn) {
       const s3 = pageData.activeSession; if (!s3) return;
       try {
         toast('✦ AI is building your session…');
-        const plan = await api('/api/ai/workout', { method: 'POST', body: JSON.stringify({ goal: 'Build muscle', duration: 45, style: 'full', equipment: 'Full gym' }) });
+        const plan = (await api('/api/ai/workout', { method: 'POST', body: JSON.stringify({ goal: 'Build muscle', duration: 45, style: 'full', equipment: 'Full gym', fast: true }) })).item || {};
         const exs3 = pageData.exercises.length ? pageData.exercises : (await api('/api/exercises')).items || [];
         pageData.exercises = exs3;
         const byName = Object.fromEntries(exs3.map(e => [e.name, e.id]));
