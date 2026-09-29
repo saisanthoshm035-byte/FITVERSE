@@ -469,3 +469,133 @@ html,body{overflow-x:clip}
   .primary::after{display:none}
 }
 
+/* ==== FITVERSE 2030 · patch v63: full de-white sweep (DNA, nutrition, progress, business, notifications) ==== */
+
+/* -- Fitness DNA page: every remaining light panel ------------------------------ */
+.twin-block{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important;border-left:3px solid rgba(0,229,255,.55) !important;border-radius:12px}
+.twin-block.next{background:rgba(139,92,246,.14) !important;border-left:3px solid var(--fv-lime) !important}
+.twin-block p,.twin-block{color:var(--fv-mut)}
+.twin-block b,.twin-block strong{color:var(--fv-ink)}
+.twin-block div,.traj-result div,.pattern div,.meal-block div,.meal-item div,.water-card div,.review-card div,.review-grid div div,.biz-product div,.biz-post div,.notif-item div{background:transparent !important}
+.twin-stats > div{background:rgba(0,229,255,.07) !important;border:1px solid var(--fv-line) !important}
+.twin-stats b{color:var(--fv-ink) !important}
+.traj-rows > div{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important;color:var(--fv-ink) !important}
+.traj-rows > div span{color:var(--fv-mut) !important}
+.traj-rows b.lime{color:var(--fv-lime) !important}
+.traj-rows b.warn{color:#fbbf24 !important}
+.pill.ghost{background:rgba(0,229,255,.10) !important;border:1px solid rgba(0,229,255,.35) !important;color:var(--fv-cyan) !important}
+.pattern{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important;border-left:3px solid var(--fv-cyan) !important}
+.pattern.sev-good{border-left-color:var(--fv-lime) !important;background:rgba(163,255,18,.09) !important}
+.pattern.sev-info{border-left-color:var(--fv-cyan) !important;background:rgba(0,229,255,.09) !important}
+.pattern.sev-warning{border-left-color:#fb923c !important;background:rgba(251,146,60,.10) !important}
+.pattern b,.pattern strong{color:var(--fv-ink)}
+.pattern small,.pattern p{color:var(--fv-mut) !important}
+.bar.big{background:rgba(139,92,246,.16) !important;border-radius:99px}
+.bar.big i{background:linear-gradient(90deg,var(--fv-cyan),var(--fv-lime)) !important;box-shadow:0 0 10px rgba(163,255,18,.4)}
+.team-row{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important}
+.team-row.mine{background:rgba(163,255,18,.10) !important;border-color:rgba(163,255,18,.4) !important}
+.team-info .bar{background:rgba(139,92,246,.16) !important}
+.team-info .bar i{background:linear-gradient(90deg,var(--fv-cyan),var(--fv-lime)) !important}
+
+/* -- Nutrition page: water + meal panels ----------------------------------------- */
+.water-card{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;border-radius:16px;-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 12px 34px rgba(0,0,0,.45)}
+.water-card h3,.water-card b,.water-card strong{color:var(--fv-ink)}
+.water-card p,.water-card small{color:var(--fv-mut)}
+.meal-block{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;border-radius:13px}
+.meal-block h3,.meal-block h4,.meal-block b{color:var(--fv-ink)}
+.meal-block p,.meal-block small{color:var(--fv-mut)}
+.meal-item{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important}
+.macro-hero{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important}
+.macro-chip{background:rgba(10,15,34,.65) !important;border:1px solid var(--fv-line) !important}
+.macro-chip .bar{background:rgba(139,92,246,.16) !important}
+.macro-chip .bar i{background:var(--fv-lime) !important;box-shadow:0 0 8px rgba(163,255,18,.4)}
+.macro-chip.c .bar i{background:var(--fv-cyan) !important}
+.macro-chip.f .bar i{background:var(--fv-magenta) !important}
+
+/* -- Progress page: weekly review ------------------------------------------------- */
+.review-card{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;border-radius:18px}
+.review-grid div{background:rgba(0,229,255,.07) !important;border:1px solid var(--fv-line) !important}
+.review-grid b{color:var(--fv-ink) !important}
+.mistake-box{background:rgba(139,92,246,.10) !important;border:1px solid rgba(139,92,246,.35) !important}
+.mistake-box b{color:var(--fv-ink)}
+.chart-card{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important}
+.scan-macros span{background:rgba(139,92,246,.14) !important;border:1px solid var(--fv-line) !important}
+
+/* -- Exercise library --------------------------------------------------------------- */
+.lib-card{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;border-radius:13px;transition:transform .18s ease, box-shadow .25s ease, border-color .25s ease}
+.lib-card:hover{border-color:rgba(0,229,255,.5) !important;transform:translateY(-2px);box-shadow:0 0 20px rgba(0,229,255,.15), 0 14px 34px rgba(0,0,0,.5)}
+.lib-card h3,.lib-card h4,.lib-card b{color:var(--fv-ink)}
+.lib-card p,.lib-card small{color:var(--fv-mut)}
+.lib-muscle{background:rgba(0,229,255,.08) !important;border:1px solid var(--fv-line) !important;color:var(--fv-cyan) !important}
+
+/* -- Challenges: create button, win board, leaderboard ------------------------------ */
+.create-inline{background:linear-gradient(92deg,var(--fv-magenta),var(--fv-violet)) !important;color:#fff !important;box-shadow:0 0 18px rgba(255,46,166,.4)}
+.win-board{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important}
+.rank.you{background:rgba(163,255,18,.12) !important;border:1px solid rgba(163,255,18,.4) !important;border-radius:8px}
+.rank.you .avatar{border-color:rgba(163,255,18,.5) !important}
+
+/* -- Moments share button + friends' activity icons ---------------------------------- */
+.moment-share{background:rgba(10,15,34,.65) !important;border:1px solid var(--fv-line) !important;color:var(--fv-ink) !important;transition:border-color .2s, box-shadow .2s}
+.moment-share:hover{border-color:var(--fv-lime) !important;box-shadow:0 0 14px rgba(163,255,18,.35)}
+.fa-icon{background:rgba(139,92,246,.16) !important;box-shadow:0 0 12px rgba(139,92,246,.25)}
+.moment-card, .moment-card > div{background:transparent !important;border-color:transparent !important;box-shadow:none !important}
+.moment-card b,.moment-card strong{color:var(--fv-ink) !important}
+.moment-card small,.moment-card p{color:var(--fv-mut) !important}
+
+/* -- Discover + friends translucent chips --------------------------------------------- */
+.search span{background:rgba(0,229,255,.10) !important;color:var(--fv-cyan) !important}
+.tag-row span{background:rgba(0,229,255,.10) !important;border:1px solid rgba(0,229,255,.25)}
+.person-cover span{background:rgba(6,10,24,.85) !important;color:var(--fv-ink) !important;border:1px solid var(--fv-line) !important}
+
+/* -- Communities translucent badge ----------------------------------------------------- */
+.community-cover small{background:rgba(6,10,24,.85) !important;color:var(--fv-ink) !important;border:1px solid var(--fv-line) !important;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.community-cover.photo small{text-shadow:none !important}
+
+/* -- Business pages --------------------------------------------------------------------- */
+.biz-card{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important}
+.biz-photo span,.biz-photo-thumb{background:rgba(10,15,34,.7) !important;border:1px solid var(--fv-line) !important}
+.biz-product{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important}
+.biz-product-img{background:rgba(0,229,255,.08) !important;border:1px solid var(--fv-line) !important}
+.biz-post{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important}
+.biz-map-fallback,.biz-map-hint{background:rgba(0,229,255,.06) !important;border-color:var(--fv-line) !important;color:var(--fv-mut) !important}
+.biz-owner-tools,.biz-owned{background:rgba(139,92,246,.10) !important;border:1px solid rgba(139,92,246,.35) !important}
+.biz-hours-row{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important}
+.biz-channel-head h2{color:var(--fv-ink) !important}
+.biz-channel-head .pill{background:rgba(163,255,18,.14) !important;color:var(--fv-lime) !important}
+
+/* -- Notification center ---------------------------------------------------------------- */
+.hc-form{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;border-radius:16px}
+.hc-form h3,.hc-form b{color:var(--fv-ink) !important}
+.hc-form label{color:var(--fv-mut) !important}
+.hc-week-row{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important}
+.hc-stats > div{background:rgba(0,229,255,.07) !important;border:1px solid var(--fv-line) !important}
+.notif-item{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important}
+.notif-item b{color:var(--fv-ink) !important}
+.notif-item p{color:var(--fv-mut) !important}
+.notif-item small{color:var(--fv-mut) !important}
+.notif-ico{background:rgba(139,92,246,.16) !important;box-shadow:0 0 12px rgba(139,92,246,.25)}
+.notif-pref{background:rgba(10,15,34,.6) !important;border:1px solid var(--fv-line) !important;color:var(--fv-ink) !important}
+
+/* -- Auth / setup helpers ---------------------------------------------------------------- */
+.setup-steps .code{background:rgba(0,229,255,.10) !important;border:1px solid rgba(0,229,255,.25) !important;color:var(--fv-cyan) !important}
+.google-btn:hover{background:rgba(10,15,34,.6) !important;box-shadow:0 0 14px rgba(0,229,255,.2) !important}
+
+/* -- Scan result macros (modal) ------------------------------------------------------------ */
+
+/* -- Kill legacy hover whites (styles.css hover states that flash light) ------------------- */
+.cmdk-row:hover{background:rgba(0,229,255,.10) !important}
+
+/* -- Dark select dropdowns (onboarding, forms) ----------------------------------------------- */
+.activity-form select,.modal-card select,.hc-form select{
+  background:rgba(8,12,30,.9) !important;border:1px solid var(--fv-line) !important;
+  color:var(--fv-ink) !important;border-radius:8px;padding:9px;
+}
+.activity-form select:focus,.modal-card select:focus{outline:0;border-color:var(--fv-cyan) !important;box-shadow:0 0 0 3px rgba(0,229,255,.18) !important}
+.activity-form select option,.modal-card select option,.hc-form select option{background:#0a0f22;color:var(--fv-ink)}
+
+/* -- Motion safety for new hover lifts ------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce){
+  .lib-card:hover{transform:none}
+}
+
+

@@ -546,7 +546,7 @@ function profile() {
   const unlocked = pageData.achievements.filter(a => a.unlocked_at).length;
   return shell(`${pageHeader('Your profile', 'Your progress tells a story.')}
 <section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Your profile')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'you')} · ${escapeHtml(p.city || 'Your city')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button><button class="outline ob-btn" data-action="runOnboarding">🧭 Setup wizard${pageData.mySettings && !pageData.mySettings.onboarded ? ' · not finished' : ''}</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
-<a class="pill lime" data-page="connectHealth" style="cursor:pointer;text-decoration:none;display:inline-block;margin:0 0 14px">🔌 Connect Health Data — Google Fit, steps, sleep →</a>
+<a class="pill lime" data-page="connectHealth" style="cursor:pointer;text-decoration:none;display:inline-block;margin:0 0 14px">🔌 Connect Health Data — import, track & AI insights →</a>
 <div id="ptab-posts">${pageData.feed.filter(x => x.username === p.username).map(postCard).join('') || '<p class="loading">No posts yet — create one from the ＋ button.</p>'}</div>
 <div id="ptab-friends" style="display:none">${pageData.friends.map(f => `<article class="person-card" style="max-width:420px"><div class="person-info" style="padding:14px">${avatar(f.name, 'teal')}<h3>${escapeHtml(f.name)} <i>✓</i></h3><p>@${escapeHtml(f.username)} · ${escapeHtml(f.status)}</p></div></article>`).join('') || '<p class="loading">No friends yet — find matches on Discover.</p>'}</div>
 <div id="ptab-achievements" style="display:none"><div class="achievement-row">${pageData.achievements.map(a => `<article class="${a.unlocked_at ? '' : 'locked'}" style="${a.unlocked_at ? '' : 'opacity:.45'}"><span>${a.icon}</span><b>${escapeHtml(a.name)}</b><small>${escapeHtml(a.description)}</small></article>`).join('')}</div><p class="loading">${unlocked}/${pageData.achievements.length} unlocked</p></div>`);
@@ -866,17 +866,7 @@ function connectHealth() {
   return shell(`${pageHeader('Connect Health Data', 'Bring your real training data into FITVERSE — always your choice, always private.')}
 <section class="hc-hero"><div><span class="pill lime">🔒 PRIVATE BY DESIGN</span><h2>Your data, <em>your control.</em></h2><p>Health data stays on your account, is never public, and is used only for your own insights. Disconnect anytime to delete synced data.</p></div></section>
 <section class="hc-connections">
-  <article class="hc-card ${gf.connected ? 'connected' : ''}"><div class="hc-card-head"><span class="hc-logo">❤️</span><div><h3>Google Fit</h3><p>${gf.connected ? 'Connected' + (gf.last_synced_at ? ' · last synced ' + timeShort(gf.last_synced_at) : '') : 'Free, read-only connection to your Google Fit workouts — runs, walks, rides and training sessions. Sign in with Google; revoke anytime.'}</p></div>${gf.connected ? '<span class="hc-state on">Connected</span>' : '<span class="hc-state">Not connected</span>'}</div>
-    ${gf.connected
-      ? `<div class="hc-actions"><button class="primary small" data-action="googleSync">Sync now</button><button class="outline small" data-action="googleDisconnect">Disconnect</button></div>`
-      : gf.configured
-        ? `<div class="hc-actions"><button class="primary small" data-action="googleConnect">Connect Google Fit</button><small class="hc-scope">You'll approve read-only fitness access on Google's own sign-in page.</small></div>`
-        : `<div class="hc-setup"><p><b>Direct sign-in isn't available right now</b> (Google OAuth isn't configured on this server) — so FITVERSE gives you the two paths that actually work, today:</p>
-            <p><b>Way 1 · zero setup, works right now:</b> import your full history with the <b>Google Takeout importer</b> below 👇 — steps, workouts, everything, in one upload.</p>
-            <p><b>Way 2 · instant tracking:</b> log metrics in the <b>Daily metrics</b> form below — feeds the Health Brain immediately.</p>
-            <p class="hc-note">Want one-tap sync restored? Ask the admin to set <span class="code">GOOGLE_FIT_CLIENT_ID</span> + <span class="code">GOOGLE_FIT_CLIENT_SECRET</span> — the button reappears automatically once it's live. FITVERSE never fakes health data.</p></div>`}
-  </article>
-  <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">📥</span><div><h3>Import from Google Takeout</h3><p>No accounts, no setup: export your Google Fit history from Google and upload it here. Works instantly on desktop and mobile.</p></div></div>
+  <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">📥</span><div><h3>Google Takeout import</h3><p>The reliable way to bring your full Google Fit history in — no sign-in, no OAuth, works instantly on desktop and mobile.</p></div><span class="hc-state on">Works now</span></div>
     <div class="hc-actions"><label class="hc-import-btn">📎 Choose Takeout file(s)<input id="takeout-input" type="file" accept=".json" multiple style="display:none"/></label><small class="hc-scope">From <span class="code">takeout.google.com</span> → select only <b>Fit</b> → export → unzip → pick the .json files.</small></div>
     <p class="hc-note" id="takeout-status"></p>
   </article>
@@ -897,7 +887,7 @@ function connectHealth() {
 <section class="hc-section"><div class="section-head"><div><span class="eyebrow">UNIFIED VIEW</span><h2>Your fitness data today</h2></div></div>
   <div class="hc-stats wide"><div><b>${ov.streak ?? 0}</b><small>day streak</small></div><div><b>${week.sessions ?? 0}</b><small>workouts this week</small></div><div><b>${week.kcal ?? 0}</b><small>kcal burned (7d)</small></div><div><b>${s.kcal ?? 0}<em>/${s.kcal_target || '—'}</em></b><small>kcal today</small></div><div><b>${s.protein ?? 0}<em>/${s.protein_target || '—'}g</em></b><small>protein today</small></div><div><b>${s.water_ml != null ? (s.water_ml / 1000).toFixed(1) : '—'}<em>/${s.water_target_ml ? (s.water_target_ml / 1000).toFixed(1) : '—'}L</em></b><small>hydration</small></div></div>
 </section>
-<section class="hc-section"><div class="section-head"><div><span class="eyebrow">CARDIO ANALYSIS</span><h2>Heart & legs, in numbers</h2></div><small class="hc-note">From your logged distance workouts${gf.connected ? ' + Google Fit' : ''}</small></div>
+<section class="hc-section"><div class="section-head"><div><span class="eyebrow">CARDIO ANALYSIS</span><h2>Heart & legs, in numbers</h2></div><small class="hc-note">From your logged distance workouts</small></div>
   ${cardioBody}
 </section>
 <section class="hc-section"><div class="section-head"><div><span class="eyebrow">GROQ HEALTH BRAIN</span><h2>Instant AI analysis of YOUR data</h2></div></div>
@@ -1765,34 +1755,6 @@ async function action(a, btn) {
       return;
     }
     case 'dailyPlan': case 'dailyCoach': $('#modal').innerHTML = ''; state.page = 'coach'; render(); loadPageData('coach'); window.scrollTo(0, 0); return;
-    case 'googleConnect': {
-      (async () => {
-        try {
-          const r = await api('/api/health/google/connect', { method: 'POST', body: '{}' });
-          if (r.authorize_url) { toast('Opening Google sign-in…'); window.location.href = r.authorize_url; }
-        } catch (err) {
-          modal(`<span class="eyebrow">GOOGLE FIT</span><h2>Pick your path</h2><p><b>Right now, no setup:</b> scroll to <b>Import from Google Takeout</b> on the Health page — export from <span class="code">takeout.google.com</span> (select <b>Fit</b>) and upload the .json files.</p><p><b>Full auto-sync (free):</b> at <span class="code">console.cloud.google.com</span> enable the Fitness API, create an OAuth web client with redirect <span class="code">${location.origin}/api/health/google/callback</span>, then set <span class="code">GOOGLE_FIT_CLIENT_ID</span> and <span class="code">GOOGLE_FIT_CLIENT_SECRET</span> on the server and restart.</p><p class="muted">FITVERSE never fakes health data — these are the two real paths.</p><button class="outline" data-action="closeModal">Got it</button>`);
-          bind();
-        }
-      })();
-      return;
-    }
-    case 'googleSync': {
-      (async () => {
-        try { toast('Syncing Google Fit…'); const r = await api('/api/health/google/sync', { method: 'POST', body: '{}' });
-          toast(r.ok ? `Synced — ${r.fetched} sessions found` : r.error || 'Sync failed');
-          await loadPageData('connectHealth'); render();
-        } catch (e) { toast(e.message); }
-      })();
-      return;
-    }
-    case 'googleDisconnect': {
-      (async () => {
-        try { await api('/api/health/disconnect', { method: 'POST', body: JSON.stringify({ provider: 'google_fit' }) }); toast('Google Fit disconnected — synced data deleted'); await loadPageData('connectHealth'); render(); }
-        catch (e) { toast(e.message); }
-      })();
-      return;
-    }
     case 'hcRemoveData': {
       (async () => {
         try { await api('/api/health/disconnect', { method: 'POST', body: JSON.stringify({ provider: 'health_connect' }) }); toast('Imported health data removed'); await loadPageData('connectHealth'); render(); }
