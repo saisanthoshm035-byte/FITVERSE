@@ -330,6 +330,22 @@ CREATE TABLE IF NOT EXISTS post_reactions (
 );
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON post_reactions(post_id);
 
+-- ===== speed indexes: every hot panel query hits an index ==================
+CREATE INDEX IF NOT EXISTS idx_daily_metrics_user_day ON daily_metrics(user_id, day);
+CREATE INDEX IF NOT EXISTS idx_health_activities_user ON health_activities(user_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_health_activities_start ON health_activities(started_at);
+CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings(user_id);
+CREATE INDEX IF NOT EXISTS idx_community_members_user ON community_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_community_members_comm ON community_members(community_id);
+CREATE INDEX IF NOT EXISTS idx_friendships_addressee ON friendships(addressee_id, status);
+CREATE INDEX IF NOT EXISTS idx_friendships_requester ON friendships(requester_id, status);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_conv ON ai_messages(conversation_id, id);
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_user ON ai_conversations(user_id, id);
+CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON blocks(blocker_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_feed_created ON posts(created_at);
+CREATE INDEX IF NOT EXISTS idx_reactions_user ON post_reactions(user_id);
+
 -- ===== FITVERSE 4.0: health integrations, business ecosystem, notification prefs =====
 CREATE TABLE IF NOT EXISTS dm_participants (
   conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -1629,9 +1645,8 @@ class FitverseHandler(BaseHTTPRequestHandler):
                   WHERE ws.user_id=? GROUP BY e.name ORDER BY max_w DESC LIMIT 12""",(uid,)).fetchall()
             return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/nutrition":
-            uid=self.current_user(); day=urlparse(self.path).query.split("day=")[-1].split("&")[0] or None
-            import datetime as _dt
-            day=day or _dt.date.today().isoformat()
+            uid=self.current_user(); import datetime as _dt
+            day=_dt.date.today().isoformat()
             with connect() as db:
                 logs=[dict(r) for r in db.execute("SELECT * FROM nutrition_logs WHERE user_id=? AND logged_on=? ORDER BY id",(uid,day))]
                 week=[dict(r) for r in db.execute("""SELECT logged_on, SUM(kcal) kcal, SUM(protein_g) p FROM nutrition_logs
@@ -1884,6 +1899,19 @@ class FitverseHandler(BaseHTTPRequestHandler):
                       VALUES (?,?,?,?,?,?,?,?,?,?)""",(str(data["title"]).strip()[:100],str(data["sport"]).strip()[:50],str(data["starts_at"]),str(data["location_label"]).strip()[:120],maximum,str(data.get("fitness_level","Open"))[:30],str(data.get("intensity","Moderate"))[:30],str(data.get("description","")).strip()[:1000],self.current_user(),now()))
                     db.execute("INSERT INTO activity_participants VALUES (?,?,?)",(cur.lastrowid,self.current_user(),now()))
                 return self.send_json(201,{"ok":True,"activityId":cur.lastrowid})
+            if path.startswith("/api/communities/") and path.endswith("/join"):
+                """Join a community — persisted membership so 'Your crews' lists it forever."""
+                cid=int(path.split("/")[3]); uid=self.current_user()
+                with connect() as db:
+                    if not db.execute("SELECT 1 FROM communities WHERE id=?",(cid,)).fetchone():
+                        return self.send_json(404,{"error":"Community not found"})
+                    db.execute("INSERT OR IGNORE INTO community_members VALUES (?,?,?,?)",(cid,uid,"member",now()))
+                return self.send_json(200,{"ok":True,"joined":True})
+            if path.startswith("/api/communities/") and path.endswith("/leave"):
+                cid=int(path.split("/")[3]); uid=self.current_user()
+                with connect() as db:
+                    db.execute("DELETE FROM community_members WHERE community_id=? AND user_id=? AND role='member'",(cid,uid))
+                return self.send_json(200,{"ok":True,"joined":False})
             if path == "/api/communities":
                 name=str(data.get("name","")).strip(); description=str(data.get("description","")).strip()
                 if not name or not description:return self.send_json(400,{"error":"Community name and description are required"})
@@ -2280,7 +2308,11 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 with connect() as db:
                     cur=db.execute("INSERT INTO nutrition_logs (user_id,meal,name,kcal,protein_g,carbs_g,fat_g,fiber_g,qty,logged_on,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",(uid,str(data.get("meal","breakfast"))[:20],name,int(data.get("kcal",0)),float(data.get("protein_g",0)),float(data.get("carbs_g",0)),float(data.get("fat_g",0)),float(data.get("fiber_g",0)),float(data.get("qty",1)),day,now()))
                     award_xp(db,uid,5,"Meal logged","meal",str(cur.lastrowid))
-                return self.send_json(201,{"ok":True,"logId":cur.lastrowid})
+                    # Echo back the freshly-updated day totals so the UI updates instantly,
+                    # with no stale-cache or disappearing-rows glitch.
+                    fresh=[dict(r) for r in db.execute("SELECT * FROM nutrition_logs WHERE user_id=? AND logged_on=? ORDER BY id",(uid,day))]
+                    tot={"kcal":sum(int(x["kcal"] or 0) for x in fresh),"protein":round(sum(float(x["protein_g"] or 0) for x in fresh)),"carbs":round(sum(float(x["carbs_g"] or 0) for x in fresh)),"fat":round(sum(float(x["fat_g"] or 0) for x in fresh))}
+                return self.send_json(201,{"ok":True,"logId":cur.lastrowid,"totals":tot,"items":fresh,"day":day})
             if path.startswith("/api/nutrition/"):
                 uid=self.current_user(); lid=int(path.split("/")[3])
                 with connect() as db:
@@ -2315,6 +2347,10 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     db.execute("INSERT INTO ai_messages (conversation_id,role,content,created_at) VALUES (?,?,?,?)",(cid,'user',msg,now()))
                     db.execute("INSERT INTO ai_messages (conversation_id,role,content,created_at) VALUES (?,?,?,?)",(cid,'coach',r['reply'],now()))
                 return self.send_json(200,{"ok":True,"reply":r['reply'],"kind":r.get('kind','brief')})
+            if path == "/api/health/suggest":
+                """AI training suggestion built from the user's imported health data."""
+                import platform_service
+                return self.send_json(200, platform_service.training_suggestion(self.current_user()))
             if path == "/api/ai/workout":
                 import ai_service
                 plan=ai_service.generate_workout(self.current_user(),data)

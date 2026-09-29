@@ -326,6 +326,8 @@ def import_health_connect_records(uid: int, records: list, source_label: str = "
             if metric and day and len(day) == 10 and val > 0:
                 col = {"steps": "steps", "sleep_min": "sleep_min", "resting_hr": "resting_hr",
                        "weight_kg": "weight_kg", "hydration_ml": "hydration_ml"}[metric]
+                if metric == "sleep_min" and val < 24:
+                    val = val * 60  # exports often use hours; <24h is unambiguous — convert to minutes
                 db.execute(
                     f"""INSERT INTO daily_metrics (user_id,day,{col},source,updated_at) VALUES (?,?,?,?,?)
                         ON CONFLICT(user_id,day) DO UPDATE SET {col}=COALESCE(MAX({col},excluded.{col}),excluded.{col}),
@@ -980,3 +982,67 @@ def groq_health_insights(uid: int) -> dict:
                 "need": "Track a few days (metrics form below) or import your Health data — then the Health Brain analyzes it instantly.",
                 "stats": stats}
     return {"insufficient": False, "stats": stats, "ai": groq_answer, "engine": "groq" if groq_answer else "built-in"}
+
+
+def training_suggestion(uid: int) -> dict:
+    """AI (or smart-rule) training suggestion built from imported health data.
+    Uses daily_metrics + health_activities + onboarding goal/equipment to decide
+    WHAT to train next and WHY, referencing the user's real numbers."""
+    import datetime as _dt
+    today = datetime.now().strftime("%Y-%m-%d")
+    with connect() as db:
+        s = ai_service.get_settings(db, uid) if ai_service else {}
+        goal = (s.get("goal") or "general fitness") if isinstance(s, dict) else "general fitness"
+        equipment = (s.get("equipment") or "full gym") if isinstance(s, dict) else "full gym"
+        days = db.execute("SELECT day, steps, sleep_min, resting_hr FROM daily_metrics WHERE user_id=? ORDER BY day DESC LIMIT 7", (uid,)).fetchall()
+        acts = db.execute("SELECT sport, name, distance_km, moving_s, kcal, started_at FROM health_activities WHERE user_id=? ORDER BY started_at DESC LIMIT 10", (uid,)).fetchall()
+        last_ws = db.execute("SELECT title, created_at FROM workout_sessions WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
+    d7 = [dict(r) for r in days]
+    steps7 = [int(d["steps"]) for d in d7 if d["steps"]]
+    sleep7 = [int(d["sleep_min"]) for d in d7 if d["sleep_min"]]
+    hrs7 = [int(d["resting_hr"]) for d in d7 if d["resting_hr"]]
+    km_ran = round(sum(float(a["distance_km"] or 0) for a in acts if str(a["sport"] or "").lower() in ("running", "walk", "running walk hiking", "treadmill")), 1)
+    rode = [a for a in acts if str(a["sport"] or "").lower() in ("cycling", "bike", "biking")]
+    acts7 = len(acts)
+    last_act_days = None
+    if acts:
+        try:
+            last_act_days = (datetime.now() - datetime.fromisoformat(str(acts[0]["started_at"]).replace("Z", ""))).days
+        except Exception:
+            last_act_days = None
+    avg_steps = round(sum(steps7) / len(steps7)) if steps7 else 0
+    avg_sleep_h = round(sum(sleep7) / len(sleep7) / 60, 1) if sleep7 else None
+    avg_hr = round(sum(hrs7) / len(hrs7)) if hrs7 else None
+    tired = (avg_sleep_h is not None and avg_sleep_h < 6.5) or (avg_hr is not None and avg_hr > 78) or last_act_days == 0
+    enough_cardio = km_ran >= 12 or len(rode) >= 2
+    enough_sessions = acts7 >= 4 or (last_ws is not None and str(last_ws["created_at"] or "")[:10] >= today)
+
+    if not steps7 and not acts and last_ws is None:
+        return {"insufficient": True, "need": "Import your health data (Takeout / Health Connect) or log a few days below — then training suggestions appear here, tuned to YOUR numbers.", "days": 0}
+
+    # Rule engine (deterministic baseline — always works, no API needed)
+    if tired:
+        title, why, focus = "Recovery day", f"Sleep is averaging {avg_sleep_h or '—'}h and resting HR {avg_hr or '—'} bpm — your body is asking for a lighter day.", "mobility + easy walk"
+    elif not enough_cardio and goal.lower() in ("lose weight", "endurance", "general fitness"):
+        title, why, focus = f"Zone-2 cardio · {max(25, 45 if avg_steps > 8000 else 30)} min", f"Only {km_ran} km of cardio in your recent history and {avg_steps or 'low'} avg steps — your aerobic base needs work for {goal.lower()}.", "easy-pace cardio"
+    elif not enough_sessions:
+        title, why, focus = "Full-body strength", f"{acts7} imported sessions in your recent log — frequency is your limiter. {equipment} day.", "compound lifts"
+    else:
+        title, why, focus = "Push day (progressive overload)", f"You've hit {acts7} sessions and {km_ran} km cardio recently — add load on presses today.", "strength"
+    suggestion = {"title": title, "why": why, "focus": focus, "duration": 45, "goal": goal, "equipment": equipment,
+                  "facts": {"avg_steps": avg_steps, "avg_sleep_h": avg_sleep_h, "avg_resting_hr": avg_hr, "km_cardio": km_ran, "sessions_recent": acts7, "last_workout": (last_ws["title"] if last_ws else None)}}
+
+    # Groq refinement (natural wording, still grounded in facts)
+    ai_text = None
+    try:
+        import groq_ai
+        if groq_ai.configured():
+            line = f"goal={goal} | equipment={equipment} | avg_steps_7d={avg_steps} | avg_sleep_h={avg_sleep_h} | resting_hr={avg_hr} | cardio_km={km_ran} | sessions_recent={acts7} | last_workout={suggestion['facts']['last_workout']} | tired_signal={'yes' if tired else 'no'}"
+            sys = ("You are the FITVERSE Health Brain training advisor. From the user's REAL imported "
+                   "health data, decide what training they should do NEXT and why. One punchy headline, "
+                   "2-3 sentences referencing their actual numbers, then 3 short bullet steps for today's "
+                   "session. No medical claims. Under 110 words.")
+            ai_text = groq_ai._chat([{"role": "system", "content": sys}, {"role": "user", "content": line}], max_tokens=500, temperature=0.55, timeout=12)
+    except Exception:
+        ai_text = None
+    return {"insufficient": False, "suggestion": suggestion, "ai": ai_text, "engine": "groq" if ai_text else "built-in", "days": len(d7)}

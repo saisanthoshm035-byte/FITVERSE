@@ -286,6 +286,20 @@ async function loadDashboard() {
     today_line: wk && wk.item.workouts ? `You've trained ${wk.item.workouts}× this week — ${wk.item.workouts >= 4 ? 'goal crushed. ' : 'keep it rolling. '}${wk.item.new_prs ? wk.item.new_prs + ' new PR' + (wk.item.new_prs > 1 ? 's' : '') + '!' : ''}` : 'Here’s your day at a glance.',
   };
   if (state.page === 'home') render();
+  startDashLive();
+}
+// Nutrition/water totals refresh every 15s on home, plus right after any log action.
+function startDashLive() {
+  if (window.__dashLive) return; window.__dashLive = true;
+  setInterval(async () => {
+    if (document.hidden || state.page !== 'home' || !sessionToken) return;
+    const [nut, wat] = await Promise.all([api('/api/nutrition').catch(() => null), api('/api/water').catch(() => null)]);
+    if (!nut && !wat) return;
+    pageData.nutrition = nut || pageData.nutrition; pageData.water = wat || pageData.water;
+    pageData.dash.kcal = nut ? { eaten: nut.totals.kcal, target: nut.targets.kcal_target, protein: nut.totals.protein, proteinTarget: nut.targets.protein_target } : pageData.dash.kcal;
+    pageData.dash.water = wat || pageData.dash.water;
+    render();
+  }, 15000);
 }
 function applyServerState(s) {
   Object.assign(state, {
@@ -340,6 +354,10 @@ async function loadPageData(page) {
   if (page === 'friends') { if (sessionToken) add('fitmatch', api('/api/fitmatch').then(d => d.items || [])); add('friendsData', api('/api/friends').then(d => d).catch(() => ({}))); }
   if (page === 'library') add('exercises', api('/api/exercises').then(d => d.items || []));
   if (page === 'coach') add('coachChat', api('/api/ai/coach').then(d => d.items || []).catch(() => []));
+  // Joined crews power the Communities + Bookings panels (real data, no demo rows).
+  add('myCommunities', api('/api/communities').then(d => (d.items || []).filter(c => c.joined)).catch(() => []));
+  // AI training suggestion from imported health data (nutrition page strip).
+  add('healthSuggest', api('/api/health/suggest', { method: 'POST', body: '{}' }).catch(() => null));
   if (page === 'connectHealth') {
     add('healthIntegrations', api('/api/health/integrations').then(d => d).catch(() => null));
     add('healthOverview', api('/api/health/overview').then(d => d).catch(() => null));
@@ -510,8 +528,11 @@ function communityCard(c) {
   return `<article class="community-card" data-community="${c.id}"><div class="community-cover photo" style="background-image:linear-gradient(rgba(11,23,17,.25), rgba(11,23,17,.45)), url('${sportPhoto(c.activity)}')" data-action="communityOpen" data-id="${c.id}" role="button" title="Open community"><span>🏀</span><small>${(c.member_count || 0).toLocaleString()} members</small></div><div><h3 data-action="communityOpen" data-id="${c.id}" role="button">${escapeHtml(c.name)}</h3>${socialChip('communities', c.id)}<p>${escapeHtml(c.description)}</p><button class="${c.joined ? 'outline' : 'primary small'}" data-action="${c.joined ? 'leaveCommunity' : 'joinCommunity'}" data-id="${c.id}">${c.joined ? 'Joined ✓' : 'Join community'}</button><button class="more" data-action="communityMenu" data-id="${c.id}">•••</button></div></article>`;
 }
 function communities() {
+  const mine = (pageData.myCommunities || []).filter(c => c.joined);
   return shell(`${pageHeader('Communities', 'Find a place to belong, wherever you move.')}
-<div class="community-hero"><span class="pill lime">YOUR COMMUNITIES</span><h2>Move with your <em>people.</em></h2><p>From first-time runners to court regulars — your next crew is here.</p><button class="primary" data-action="createCommunity">＋ Create community</button></div><div class="community-grid">${pageData.communities.map(communityCard).join('') || '<p class="loading">Loading communities…</p>'}</div>`);
+<div class="community-hero"><span class="pill lime">YOUR COMMUNITIES</span><h2>Move with your <em>people.</em></h2><p>From first-time runners to court regulars — your next crew is here.</p><button class="primary" data-action="createCommunity">＋ Create community</button></div>
+${mine.length ? `<section class="section-head"><div><span class="eyebrow">✓ YOUR CREWS</span><h2>Communities you joined</h2></div></section><div class="community-grid">${mine.map(communityCard).join('')}</div>` : ''}
+<div class="community-grid">${pageData.communities.map(communityCard).join('') || '<p class="loading">Loading communities…</p>'}</div>`);
 }
 function eventCard(e) {
   return `<article class="event-card" data-event="${e.id}"><div class="event-img photo" style="background-image:url('img/${e.photo}')"><span>${escapeHtml(e.category.toUpperCase())}</span><b>${dayShort(e.starts_at)}</b></div><div><h3>${escapeHtml(e.name)}</h3>${socialChip('activities', e.id)}<p>⌖ ${escapeHtml(e.location_label)} · ${e.booked_count || 0} attending</p><strong>${inr(e.price_inr)}</strong><div style="display:flex;gap:6px"><button class="outline" data-action="bookEvent" data-id="${e.id}">${e.booked ? 'Booked ✓' : 'Book now'}</button><button class="more" data-action="eventDetail" data-id="${e.id}" title="Details">ℹ</button></div></div></article>`;
@@ -552,8 +573,9 @@ function profile() {
 <div id="ptab-achievements" style="display:none"><div class="achievement-row">${pageData.achievements.map(a => `<article class="${a.unlocked_at ? '' : 'locked'}" style="${a.unlocked_at ? '' : 'opacity:.45'}"><span>${a.icon}</span><b>${escapeHtml(a.name)}</b><small>${escapeHtml(a.description)}</small></article>`).join('')}</div><p class="loading">${unlocked}/${pageData.achievements.length} unlocked</p></div>`);
 }
 function bookings() {
+  const items = pageData.bookings || [];
   return shell(`${pageHeader('My bookings', 'Your upcoming experiences, all in one place.')}
-<section class="section-head"><div><span class="eyebrow">YOUR TICKETS</span><h2>Ready when you are</h2></div><button class="link" data-page="events">Find events <b>→</b></button></section><div class="booking-list">${pageData.bookings.length ? pageData.bookings.map(item => `<article class="booking-item"><span class="ticket-check">✓</span><div><span class="eyebrow">${escapeHtml(item.status.toUpperCase())}</span><h3>${escapeHtml(item.name)}</h3><p>${dayShort(item.starts_at)} · ${escapeHtml(item.location_label)} · ${item.quantity} ticket${item.quantity > 1 ? 's' : ''}</p><strong>${escapeHtml(item.booking_code)}</strong></div><div class="qr">▦<br/>▥</div></article>`).join('') : `<article class="booking-item"><span>🎟️</span><div><h3>No bookings yet</h3><p>Find an event that moves you, then your digital ticket will appear here.</p></div><button class="outline" data-page="events">Browse events</button></article>`}</div>`);
+<section class="section-head"><div><span class="eyebrow">YOUR TICKETS</span><h2>Ready when you are</h2></div><button class="link" data-page="events">Find events <b>→</b></button></section><div class="booking-list">${items.length ? items.map(item => `<article class="booking-item"><span class="ticket-check">✓</span><div><span class="eyebrow">${escapeHtml(String(item.status || 'CONFIRMED').toUpperCase())}</span><h3>${escapeHtml(item.name)}</h3><p>${dayShort(item.starts_at)} · ${escapeHtml(item.location_label)} · ${item.quantity} ticket${item.quantity > 1 ? 's' : ''}</p><strong>${escapeHtml(item.booking_code)}</strong></div><div style="display:flex;gap:6px;margin-left:auto"><button class="outline small" data-action="bookingsDownload" data-code="${escapeHtml(item.booking_code)}" data-name="${escapeHtml(item.name)}">⬇ Ticket</button></div><div class="qr">▦<br/>▥</div></article>`).join('') : `<article class="booking-item"><span>🎟️</span><div><h3>No bookings yet</h3><p>Find an event that moves you, then your digital ticket will appear here.</p></div><button class="outline" data-page="events">Browse events</button></article>`}</div>`);
 }
 function coach() {
   return shell(`${pageHeader('FITVERSE Coach', 'Contextual recommendations from your profile and the FITVERSE network.')}
@@ -591,13 +613,26 @@ function nutritionPage() {
 </div></div>
 <div class="water-card"><div><span class="eyebrow">HYDRATION</span><div class="macro-big"><b>${((water.today_ml || 0) / 1000).toFixed(2)}L</b><em>/ ${((water.target_ml || 2500) / 1000).toFixed(1)}L</em></div><div class="bar"><i style="width:${Math.min(100, (water.today_ml || 0) / Math.max(1, water.target_ml || 2500) * 100)}%"></i></div></div>
 <div class="water-actions"><button class="outline" data-action="addWater" data-ml="250">+250ml</button><button class="outline" data-action="addWater" data-ml="500">+500ml</button><button class="primary small" data-action="addWater" data-ml="750">+750ml</button><button class="outline small" data-action="addWaterCustom">＋ Add Water</button></div></div>
+${suggestStrip()}
 <div class="section-head" style="margin-top:22px"><div><span class="eyebrow">FOOD DIARY</span><h2>Today's meals</h2></div><button class="primary small" data-action="logMeal">＋ Log food</button><button class="outline small" data-action="scanMeal">✦ AI meal scan</button></div>
 ${meals.map(m => {
   const items = (n.items || []).filter(x => x.meal === m);
   const mkcal = items.reduce((a, b) => a + b.kcal, 0);
   return `<div class="meal-block"><h4>${m[0].toUpperCase() + m.slice(1)} <small>${mkcal ? mkcal + ' kcal' : ''}</small></h4>
+  <div class="meal-quick"><button class="text-btn" data-action="quickMeal" data-meal="${m}">＋ quick add</button><button class="text-btn" data-action="aiSuggestLog" data-meal="${m}">✦ ask AI</button></div>
   ${items.length ? items.map(i => `<div class="meal-item"><span>${escapeHtml(i.name)}</span><b>${i.kcal} kcal · ${Math.round(i.protein_g)}g protein</b><button class="more" data-action="delMeal" data-id="${i.id}" aria-label="Delete">×</button></div>`).join('') : '<p class="loading">Nothing logged yet.</p>'}</div>`;
 }).join('')}`);
+}
+// AI training suggestion, built from the user's imported health data.
+function suggestStrip() {
+  const s = pageData.healthSuggest;
+  if (!s) return `<div class="ai-suggest" id="health-suggest"><span class="spin">✦</span><p>Checking your imported health data for today's best training…</p></div>`;
+  if (s.insufficient) return `<div class="ai-suggest"><span>📥</span><p><b>Unlock AI training suggestions:</b> import your health data (Takeout or Health Connect file) or log a few days of metrics — the Health Brain then picks your training from YOUR numbers.</p></div>`;
+  const g = s.suggestion || {};
+  const facts = (g.facts || {});
+  return `<div class="ai-suggest"><span>🧠</span><div><b>${escapeHtml(g.title || 'Today\'s session')}</b><p>${escapeHtml(g.why || '')}</p><small class="dim">Your numbers: ${facts.avg_steps || 0} avg steps · ${facts.avg_sleep_h ?? '—'}h sleep · ${facts.km_cardio || 0} km cardio · ${facts.sessions_recent || 0} recent sessions</small></div>
+  <div class="as-actions"><button class="primary small" data-action="aiSuggestWorkout">Build this workout</button><button class="outline small" data-action="saveSuggestion">Save to plan</button></div>
+  ${s.ai ? `<p class="as-ai">✦ ${mdLite(s.ai)}</p>` : ''}${s.engine === 'groq' ? '<span class="ai-status-chip live"><i></i>GROQ</span>' : ''}</div>`;
 }
 // Calorie bar color contract (uses each user's OWN configured target):
 // <50% red · 51–70% orange · 71–90% yellow · 91–100% green · >target+300 red + glow.
@@ -649,12 +684,15 @@ function friendsPage() {
   const fr = pageData.friendsData || {};
   const friends = fr.items || [];
   const incoming = fr.incoming || [];
+  // Real activity: recent friend-type notifications turned into a live timeline.
+  const friendNews = (pageData.notifications || []).filter(n => n.type === 'friend' || n.type === 'friend_request').slice(0, 6);
   return shell(`${pageHeader('Friends', 'Your people. Your crew. Your competition.')}
-${incoming.length ? `<section class="req-strip"><span class="pill coral">${incoming.length} REQUEST${incoming.length > 1 ? 'S' : ''}</span>${incoming.map(r => `<div class="req-row">${photoAvatar(r.name, r.id)}<div><b>${escapeHtml(r.name)}</b><small>@${escapeHtml(r.username)}</small></div><button class="primary small" data-action="acceptFriend" data-id="${r.req_id}">Accept</button><button class="more" data-action="rejectFriend" data-id="${r.req_id}">×</button></div>`).join('')}</section>` : ''}
+${incoming.length ? `<section class="req-strip"><span class="pill coral">${incoming.length} REQUEST${incoming.length > 1 ? 'S' : ''}</span>${incoming.map(r => `<div class="req-row">${photoAvatar(r.name, r.id)}<div><b>${escapeHtml(r.name)}</b><small>@${escapeHtml(r.username)} sent you a friend request</small></div><button class="primary small" data-action="acceptFriend" data-id="${r.req_id}">Accept</button><button class="more" data-action="rejectFriend" data-id="${r.req_id}">×</button></div>`).join('')}</section>` : ''}
+${friendNews.length ? `<section class="req-strip"><span class="pill lime">RECENT FRIEND ACTIVITY</span>${friendNews.map(n => `<div class="req-row"><span class="notif-ico">👥</span><div><b>${escapeHtml(n.title)}</b><small>${escapeHtml(n.body)}</small></div></div>`).join('')}</section>` : ''}
 <section class="section-head"><div><span class="eyebrow">✦ AI MATCHING</span><h2>FIT MATCH</h2></div></section>
 ${fm.length ? `<div class="people-grid">${fm.map(p => personCard(p)).join('')}</div>` : emptyState('🧬', 'No matches yet', 'Set your goals in onboarding so FIT MATCH can find your training partners.')}
 <section class="section-head"><div><span class="eyebrow">YOUR CIRCLE</span><h2>${friends.length} friend${friends.length === 1 ? '' : 's'}</h2></div></section>
-${friends.length ? `<div class="friend-rows">${friends.map(f => `<div class="req-row" data-action="athlete" data-id="${f.id}" style="cursor:pointer">${photoAvatar(f.name, f.id)}<div><b>${escapeHtml(f.name)}</b><small>${escapeHtml(f.favorite_activity || '')} · ${f.streak}-day streak</small></div><button class="outline small" data-action="challenge" data-id="${f.id}">Challenge</button><button class="primary small" data-action="messageUser" data-id="${f.id}">Message</button></div>`).join('')}</div>` : emptyState('👥', 'No friends yet', 'Send friend requests from Discover or FIT MATCH — fitness is better together.')}`);
+${friends.length ? `<div class="friend-rows">${friends.map(f => `<div class="req-row" data-action="athlete" data-id="${f.id}" style="cursor:pointer">${photoAvatar(f.name, f.id)}<div><b>${escapeHtml(f.name)}</b><small>${escapeHtml(f.favorite_activity || '')} · ${f.streak}-day streak${f.city ? ' · ' + escapeHtml(f.city) : ''}</small></div><button class="outline small" data-action="challenge" data-id="${f.id}">Challenge</button><button class="primary small" data-action="messageUser" data-id="${f.id}">Message</button></div>`).join('')}</div>` : emptyState('👥', 'No friends yet', 'Send friend requests from Discover or FIT MATCH — fitness is better together.')}`);
 }
 function libraryPage() {
   const ex = pageData.exercises || [];
@@ -673,13 +711,16 @@ function coachPage() {
   const brain = ai.configured
     ? `<span class="ai-status-chip live" title="Real LLM via Groq is answering"><i></i>GROQ · ${escapeHtml((ai.model || '').split('/').pop())} ONLINE</span>`
     : `<span class="ai-status-chip demo" title="Set GROQ_API_KEY on the server to enable the full model"><i></i>BUILT-IN COACH — add GROQ_API_KEY for full AI</span>`;
-  return shell(`${pageHeader('FITVERSE AI', 'Your personal coach — Groq-powered, grounded in your real data.')}
+  const html = shell(`${pageHeader('FITVERSE AI', 'Your personal coach — Groq-powered, grounded in your real data.')}
 <section class="ai-chat" id="ai-chat">
   <div class="ai-intro"><span class="pill lime">✦ FITVERSE AI</span>${brain}<p>Ask me anything: workouts, nutrition, your progress, or plan my week.</p></div>
   ${chat.map(m => `<div class="ai-msg ${m.role}"><p>${m.content.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</p></div>`).join('')}
 </section>
 <div class="coach-prompts wrap"><button data-action="coachAsk" data-q="What workout should I do today?">Today's workout?</button><button data-action="coachAsk" data-q="How much protein should I eat?">Protein target?</button><button data-action="coachAsk" data-q="Create a 5-day gym routine">5-day routine</button><button data-action="coachAsk" data-q="I only have dumbbells">Home workout</button><button data-action="generateWorkout">✦ Generate workout</button><button data-action="weeklyReview">📊 Weekly recap</button></div>
 <form class="composer wide" id="coach-form"><input placeholder="Ask FITVERSE anything..." maxlength="500" required/><button aria-label="Send">➤</button></form>`);
+  // Land the user at the latest message, not the top of history.
+  requestAnimationFrame(() => { const c = $('#ai-chat'); if (c) c.scrollTop = c.scrollHeight; window.scrollTo(0, document.body.scrollHeight); });
+  return html;
 }
 function intelligencePage() {
   const d = pageData.intel || {};
@@ -699,7 +740,7 @@ function intelligencePage() {
   const poly = sc.map(([, v], i) => pt(i, v).map(n => n.toFixed(1)).join(',')).join(' ');
   const grid = [25, 50, 75, 100].map(g => `<polygon points="${sc.map((_, i) => pt(i, g).map(n => n.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="rgba(163,230,53,.14)" stroke-width="1"/>`).join('');
   const spokes = sc.map((_, i) => { const [x, y] = pt(i, 100); return `<line x1="${CX}" y1="${CY}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="rgba(163,230,53,.12)"/>`; }).join('');
-  const labels = sc.map(([k, v], i) => { const [x, y] = pt(i, 112); const anchor = x < CX - 15 ? 'start' : x > CX + 15 ? 'end' : 'middle'; const tx = anchor === 'start' ? x + 3 : anchor === 'end' ? x - 3 : x; return `<text x="${tx.toFixed(1)}" y="${y.toFixed(1)}" fill="#cbe8d4" font-size="10" text-anchor="${anchor}">${k} ${v}</text>`; }).join('');
+    const labels = sc.map(([k, v], i) => { const [x, y] = pt(i, 112); const anchor = x < CX - 15 ? 'start' : x > CX + 15 ? 'end' : 'middle'; const tx = anchor === 'start' ? x + 3 : anchor === 'end' ? x - 3 : x; return `<text x="${tx.toFixed(1)}" y="${y.toFixed(1)}" fill="rgba(201,231,255,.66)" font-size="10" text-anchor="${anchor}">${k} ${v}</text>`; }).join('');
   const debtColor = debt.level === 'clear' ? 'var(--lime)' : debt.level === 'low' ? '#facc15' : debt.level === 'moderate' ? '#fb923c' : '#f87171';
   return shell(`${pageHeader('Fitness DNA', 'How you train, decoded from your real activity.')}
 <div class="intel-grid">
@@ -1186,6 +1227,13 @@ function startPolling() {
     try {
       const n = await api(`/api/notifications/since?since=${pageData.notifications[0]?.id || 0}`);
       if (n.items?.length) { pageData.notifications = [...n.items, ...pageData.notifications]; n.items.slice(0, 2).forEach(x => toast(`${x.title} — ${x.body}`)); if (state.page !== 'messages') render(); }
+      // Live home stats: nutrition + water stay current without any manual refresh.
+      if (state.page === 'home') {
+        const [nut, wat] = await Promise.all([api('/api/nutrition').catch(() => null), api('/api/water').catch(() => null)]);
+        if (nut) { pageData.nutrition = nut; pageData.dash.kcal = { eaten: nut.totals.kcal, target: nut.targets.kcal_target, protein: nut.totals.protein, proteinTarget: nut.targets.protein_target }; }
+        if (wat) { pageData.water = wat; pageData.dash.water = wat; }
+        if (nut || wat) render();
+      }
       if (state.page === 'messages') {
         const fresh = (await api(`/api/conversations/${pageData.activeConversation}`)).items || [];
         const newest = fresh[fresh.length - 1]?.id || 0;
@@ -1770,12 +1818,20 @@ async function action(a, btn) {
           const CATS = [['friend', '👥', 'Friend requests'], ['message', '💬', 'Messages'], ['achievement', '🏆', 'Achievements'], ['challenge', '⚔️', 'Challenges'], ['workout', '🏋', 'Workouts'], ['hydration', '💧', 'Hydration'], ['event', '🎉', 'Events'], ['community', '◌', 'Community'], ['business', '📣', 'Businesses'], ['ai', '🤖', 'AI coach']];
           const ICONS = { friend: '👥', message: '💬', achievement: '🏆', challenge: '⚔️', workout: '🏋', hydration: '💧', event: '🎉', community: '◌', business: '📣', ai: '🤖', xp: '⚡', activity: '🏀' };
           modalWide(`<div class="notif-center notif-scroll"><div class="notif-head"><span class="eyebrow">NOTIFICATION CENTER</span><h2 style="font-size:20px;margin:2px 0">All activity</h2><button class="outline small" data-action="readNotifications">Mark all read</button></div>
-          <div class="notif-list">${(data.items || []).slice(0, 30).map(n => `<div class="notif-item ${n.is_read ? 'read' : ''}"><span class="notif-ico">${ICONS[n.type] || '🔔'}</span><div><b>${escapeHtml(n.title)}</b><p>${escapeHtml(n.body)}</p><small>${timeShort(n.created_at)}</small></div>${n.is_read ? '' : '<i class="notif-dot"></i>'}</div>`).join('') || '<p class="muted">No notifications yet — they\'ll appear here.</p>'}</div>
+          <div class="notif-list">${(data.items || []).slice(0, 30).map(n => {
+            const jump = n.type === 'friend' || n.type === 'friend_request' ? 'friends' : n.type === 'event' || String(n.title || '').toLowerCase().includes('book') ? 'bookings' : n.type === 'community' ? 'communities' : n.type === 'challenge' ? 'challenges' : n.type === 'message' ? 'messages' : n.type === 'achievement' ? 'profile' : n.type === 'business' ? 'business' : null;
+            return `<button class="notif-item ${n.is_read ? 'read' : ''}" data-notif-jump="${jump || ''}"><span class="notif-ico">${ICONS[n.type] || '🔔'}</span><div><b>${escapeHtml(n.title)}</b><p>${escapeHtml(n.body)}</p><small>${timeShort(n.created_at)}</small></div>${n.is_read ? '' : '<i class="notif-dot"></i>'}</button>`;
+          }).join('') || '<p class="muted">No notifications yet — they\'ll appear here.</p>'}</div>
           <span class="eyebrow">PREFERENCES</span>
           <div class="notif-prefs">${CATS.map(([c, ic, label]) => `<label class="notif-pref"><span>${ic} ${label}</span><input type="checkbox" data-npref="${c}" ${prefs[c] && prefs[c].enabled ? 'checked' : ''}/></label>`).join('')}</div>
           <label class="notif-pref sound"><span>🔊 Notification sound</span><input type="checkbox" id="notif-sound-toggle" ${localStorage.getItem('fvSound') === '1' ? 'checked' : ''}/></label>
           <p class="hc-note">Sound is a subtle tone and only plays after you've interacted with the app (browser rule). Mute categories anytime.</p></div>`);
           bind();
+          $$('#modal [data-notif-jump]').forEach(b => b.onclick = () => {
+            const target = b.dataset.notifJump;
+            $('#modal').innerHTML = '';
+            if (target && target !== 'null') { state.page = target; render(); loadPageData(target); window.scrollTo(0, 0); }
+          });
           $$('#modal [data-npref]').forEach(cb => cb.onchange = async () => {
             await api('/api/notifications/prefs', { method: 'POST', body: JSON.stringify({ category: cb.dataset.npref, enabled: cb.checked }) });
             toast(cb.checked ? 'Notifications on for this category' : 'Muted — you won\'t be notified');
@@ -1819,10 +1875,39 @@ async function action(a, btn) {
       api(`/api/events/${id}/book`, { method: 'POST', body: JSON.stringify({ quantity: 1 }) })
         .then(async (d) => {
           $('#modal').innerHTML = ''; await loadPageData(state.page); render();
-          modal(`<span class="ticket-check">✓</span><span class="eyebrow">BOOKING CONFIRMED</span><h2>You’re in.</h2><div class="ticket"><div class="qr">▦<br/>▥</div><div><b>${escapeHtml(d.bookingCode)}</b><small>${dayShort(new Date().toISOString())} · Show at the gate</small></div></div><button class="primary" data-action="close">Done</button>`);
+          modal(`<span class="ticket-check">✓</span><span class="eyebrow">BOOKING CONFIRMED</span><h2>You’re in.</h2><div class="ticket"><div class="qr">▦<br/>▥</div><div><b>${escapeHtml(d.bookingCode)}</b><small>${dayShort(new Date().toISOString())} · Show at the gate</small></div></div><div class="hero-actions"><button class="primary" data-action="close">Done</button><button class="outline" data-action="downloadTicket" data-code="${escapeHtml(d.bookingCode)}" data-name="Event ticket">⬇ Download ticket</button></div>`);
           toast('Booking confirmed'); bind();
         }).catch(e => toast(e.message));
       return;
+    case 'downloadTicket': {
+      const code = btn?.dataset?.code || 'FITVERSE-TICKET';
+      const evName = btn?.dataset?.name || 'FITVERSE Event';
+      const w = open('', '_blank');
+      if (!w) { toast('Allow pop-ups to download your ticket'); return; }
+      w.document.write(`<!doctype html><title>Ticket ${escapeHtml(code)}</title><body style="font-family:Arial,sans-serif;background:#0a0f22;color:#eaf2ff;display:grid;place-items:center;min-height:100vh;margin:0">
+      <div style="border:2px dashed rgba(0,229,255,.6);border-radius:18px;padding:34px;text-align:center;background:linear-gradient(160deg,rgba(22,28,58,.9),rgba(9,13,30,.95))">
+      <p style="letter-spacing:2px;font-size:11px;color:#00e5ff;margin:0">FITVERSE · OFFICIAL TICKET</p>
+      <h1 style="margin:10px 0">${escapeHtml(evName)}</h1>
+      <div style="font-size:40px;letter-spacing:6px;margin:14px 0;font-weight:800">${escapeHtml(code)}</div>
+      <p style="color:#93a0c8;margin:0">Show this code at the gate · Screenshot or print this page</p>
+      <button onclick="window.print()" style="margin-top:18px;padding:10px 22px;border-radius:10px;border:0;background:linear-gradient(92deg,#00e5ff,#8b5cf6);color:#04060f;font-weight:800;cursor:pointer">⬇ Save / Print ticket</button></div></body>`);
+      w.document.close();
+      return;
+    }
+    case 'bookingsDownload': {
+      const code = btn?.dataset?.code, nm = btn?.dataset?.name || 'Event';
+      const w2 = open('', '_blank');
+      if (!w2) { toast('Allow pop-ups to download your ticket'); return; }
+      w2.document.write(`<!doctype html><title>Ticket ${escapeHtml(code)}</title><body style="font-family:Arial,sans-serif;background:#0a0f22;color:#eaf2ff;display:grid;place-items:center;min-height:100vh;margin:0">
+      <div style="border:2px dashed rgba(0,229,255,.6);border-radius:18px;padding:34px;text-align:center;background:linear-gradient(160deg,rgba(22,28,58,.9),rgba(9,13,30,.95))">
+      <p style="letter-spacing:2px;font-size:11px;color:#00e5ff;margin:0">FITVERSE · OFFICIAL TICKET</p>
+      <h1 style="margin:10px 0">${escapeHtml(nm)}</h1>
+      <div style="font-size:40px;letter-spacing:6px;margin:14px 0;font-weight:800">${escapeHtml(code)}</div>
+      <p style="color:#93a0c8;margin:0">Show this code at the gate · Screenshot or print this page</p>
+      <button onclick="window.print()" style="margin-top:18px;padding:10px 22px;border-radius:10px;border:0;background:linear-gradient(92deg,#00e5ff,#8b5cf6);color:#04060f;font-weight:800;cursor:pointer">⬇ Save / Print ticket</button></div></body>`);
+      w2.document.close();
+      return;
+    }
     case 'eventFilter': toast('Filters coming to the demo soon — all categories shown'); return;
     case 'challenge': {
       let chFriends = (pageData.challengeFriends || []);
@@ -1970,25 +2055,94 @@ async function action(a, btn) {
       return;
     }
     case 'logMeal': {
-      modal(`<span class="eyebrow">LOG FOOD</span><h2>What did you eat?</h2><form class="activity-form" id="meal-form">
-      <label>Meal<select name="meal"><option value="breakfast">Breakfast</option><option value="lunch" selected>Lunch</option><option value="dinner">Dinner</option><option value="snacks">Snack</option></select></label>
+      const preMeal = btn?.dataset?.meal || null;
+      const guess = (() => { const h = new Date().getHours(); return h < 11 ? 'breakfast' : h < 16 ? 'lunch' : h < 21 ? 'dinner' : 'snacks'; })();
+      const mealSel = (cls, auto) => `<label>Meal<select name="meal" class="${cls}"><option value="breakfast" ${auto === 'breakfast' ? 'selected' : ''}>Breakfast</option><option value="lunch" ${auto === 'lunch' ? 'selected' : ''}>Lunch</option><option value="dinner" ${auto === 'dinner' ? 'selected' : ''}>Dinner</option><option value="snacks" ${auto === 'snacks' ? 'selected' : ''}>Snack</option></select></label>`;
+      modal(`<span class="eyebrow">LOG FOOD</span><h2>What did you eat?</h2><p class="loading">Add everything at once, or let AI estimate each item — just type the food.</p>
+      <form class="activity-form" id="meal-form">
+      ${mealSel('meal-sel', preMeal || guess)}
       <label>Food<input name="name" placeholder="Grilled chicken and rice" required maxlength="100"></label>
-      <label>Calories<input name="kcal" type="number" value="400" min="0" max="3000" required></label>
-      <label>Protein (g)<input name="protein_g" type="number" value="30" min="0" max="300"></label>
-      <label>Carbs (g)<input name="carbs_g" type="number" value="0" min="0" max="500"></label>
-      <label>Fats (g)<input name="fat_g" type="number" value="0" min="0" max="200"></label>
-      <button class="primary" type="submit">Add to diary</button></form>`);
+      <div class="macro-mini"><label>Calories<input name="kcal" type="number" value="400" min="0" max="3000" required></label><label>Protein (g)<input name="protein_g" type="number" value="30" min="0" max="300"></label><label>Carbs (g)<input name="carbs_g" type="number" value="0" min="0" max="500"></label><label>Fats (g)<input name="fat_g" type="number" value="0" min="0" max="200"></label></div>
+      <div class="hero-actions"><button class="outline" type="button" id="meal-add-another">＋ Add another item</button><button class="primary" type="submit">Add to diary</button></div>
+      <div id="meal-queue"></div></form>`);
       bind();
+      const queue = [];
+      const drawQueue = () => { $('#meal-queue').innerHTML = queue.map((q, i) => `<div class="meal-item"><span>${escapeHtml(q.name)}</span><b>${q.kcal} kcal · ${Math.round(q.protein_g)}g protein · ${escapeHtml(q.meal)}</b><button type="button" class="more" data-qdel="${i}">×</button></div>`).join(''); $$('#meal-queue [data-qdel]').forEach(b => b.onclick = () => { queue.splice(Number(b.dataset.qdel), 1); drawQueue(); }); };
+      $('#meal-add-another').onclick = (e) => {
+        e.preventDefault(); const f = Object.fromEntries(new FormData($('#meal-form')));
+        if (!f.name?.trim()) { toast('Type the food name first'); return; }
+        queue.push({ name: f.name.trim(), meal: f.meal, kcal: Number(f.kcal) || 0, protein_g: Number(f.protein_g) || 0, carbs_g: Number(f.carbs_g) || 0, fat_g: Number(f.fat_g) || 0 });
+        $('#meal-form input[name=name]').value = ''; drawQueue(); toast('Queued — add more or hit Add to diary');
+      };
       $('#meal-form').onsubmit = async (e) => {
         e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
-        try { await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ ...f, kcal: Number(f.kcal), protein_g: Number(f.protein_g), carbs_g: Number(f.carbs_g || 0), fat_g: Number(f.fat_g || 0) }) }); $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); toast('Meal logged · +5 XP'); }
-        catch (err) { toast(err.message); }
+        const items = [...queue, { name: f.name.trim(), meal: f.meal, kcal: Number(f.kcal) || 0, protein_g: Number(f.protein_g) || 0, carbs_g: Number(f.carbs_g) || 0, fat_g: Number(f.fat_g) || 0 }].filter(x => x.name);
+        if (!items.length) { toast('Add at least one food'); return; }
+        try {
+          let last = null;
+          for (const it of items) last = await api('/api/nutrition', { method: 'POST', body: JSON.stringify(it) });
+          if (last?.totals) { pageData.nutrition = { ...(pageData.nutrition || {}), totals: last.totals, items: last.items, targets: pageData.nutrition?.targets || {} }; }
+          $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); if (state.page === 'home') render();
+          toast(`${items.length} item${items.length > 1 ? 's' : ''} logged · +${items.length * 5} XP`);
+        } catch (err) { toast(err.message); }
       };
       return;
     }
+    case 'aiSuggestWorkout': {
+      const s = pageData.healthSuggest || {};
+      const g = s.suggestion || {};
+      clearOnboarding();
+      action('generateWorkout', null);
+      setTimeout(() => { const inp = $('#gen-form textarea[name=preferences]') || $('#gen-form input[name=preferences]'); if (inp && g.focus) { inp.value = `Focus: ${g.focus}. Health facts: ${JSON.stringify(g.facts || {})}`; } }, 400);
+      return;
+    }
+    case 'saveSuggestion': {
+      const g2 = (pageData.healthSuggest || {}).suggestion || {};
+      modal(`<span class="eyebrow">SAVED PLAN</span><h2>${escapeHtml(g2.title || 'Training suggestion')}</h2><div class="scan-result"><p>${escapeHtml(g2.why || '')}</p><p class="loading est-note">Focus: ${escapeHtml(g2.focus || '—')} · ${g2.duration || 45} min</p></div><p class="loading">Tip: tap “Build this workout” to turn it into a full logged session with exercises.</p><div class="hero-actions"><button class="primary" data-action="close">Got it</button></div>`);
+      bind();
+      return;
+    }
+    case 'quickMeal': {
+      const m = btn?.dataset?.meal || 'snacks';
+      const name = prompt(`Quick add to ${m} — what did you eat?`);
+      if (!name?.trim()) return;
+      try {
+        const r = await api('/api/ai/meal', { method: 'POST', body: JSON.stringify({ desc: name, grams: 350 }) });
+        const it = r.item || {};
+        const t = it.totals || { kcal: 350, protein_g: 15, carbs_g: 30, fat_g: 10 };
+        await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: it.title || name.trim(), meal: m, kcal: t.kcal, protein_g: t.protein_g, carbs_g: t.carbs_g, fat_g: t.fat_g }) });
+        await loadPageData('nutrition'); render(); toast(`Logged to ${m} · AI estimated ${t.kcal} kcal`);
+      } catch (e) { toast(e.message); }
+      return;
+    }
+    case 'aiSuggestLog': {
+      const m = btn?.dataset?.meal || 'lunch';
+      const name = prompt(`What did you have for ${m}? AI will estimate the macros.`);
+      if (!name?.trim()) return;
+      try {
+        const r = await api('/api/ai/meal', { method: 'POST', body: JSON.stringify({ desc: name.trim(), grams: 400 }) });
+        const it = r.item || {};
+        if (!it.matched && !it.totals) { toast(it.note || 'Could not estimate that — try Log food instead'); return; }
+        const t = it.totals || { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
+        modal(`<span class="eyebrow">✦ AI ESTIMATE</span><h2>${escapeHtml(it.title || name.trim())}</h2>
+        <div class="scan-result"><div class="scan-big"><b>${t.kcal}</b><em>kcal</em></div>
+        <div class="scan-macros"><span><b>${t.protein_g}g</b><small>protein</small></span><span><b>${t.carbs_g}g</b><small>carbs</small></span><span><b>${t.fat_g}g</b><small>fat</small></span></div></div>
+        <div class="hero-actions"><button class="primary" id="ai-log-add">Add to ${escapeHtml(m)}</button><button class="outline" data-action="close">Cancel</button></div>`);
+        bind();
+        $('#ai-log-add').onclick = async () => {
+          try {
+            const rr = await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: it.title || name.trim(), meal: m, kcal: t.kcal, protein_g: t.protein_g, carbs_g: t.carbs_g, fat_g: t.fat_g }) });
+            $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); if (state.page === 'home') render(); toast(`Added to ${m}`);
+          } catch (e2) { toast(e2.message); }
+        };
+      } catch (e) { toast(e.message); }
+      return;
+    }
     case 'scanMeal': {
+      const h0 = new Date().getHours(); const autoMeal = h0 < 11 ? 'breakfast' : h0 < 16 ? 'lunch' : h0 < 21 ? 'dinner' : 'snacks';
       modal(`<span class="eyebrow">✦ AI MEAL SCANNER</span><h2>Describe your meal</h2><p class="loading">The AI estimates nutrition from your description. Photo scanning with real vision models is coming soon.</p>
       <form class="activity-form" id="scan-form"><label>What's on the plate?<input name="desc" placeholder="grilled chicken with rice and broccoli" required maxlength="200"></label>
+      <label>Add to<select name="meal"><option value="breakfast" ${autoMeal === 'breakfast' ? 'selected' : ''}>Breakfast</option><option value="lunch" ${autoMeal === 'lunch' ? 'selected' : ''}>Lunch</option><option value="dinner" ${autoMeal === 'dinner' ? 'selected' : ''}>Dinner</option><option value="snacks" ${autoMeal === 'snacks' ? 'selected' : ''}>Snack</option></select></label>
       <label>Portion (grams)<input name="grams" type="number" value="400" min="50" max="2000"></label>
       <button class="primary" type="submit">✦ Analyze</button></form>`);
       bind();
@@ -2002,10 +2156,10 @@ async function action(a, btn) {
           <div class="scan-macros"><span><b>${r.totals.protein_g}g</b><small>protein</small></span><span><b>${r.totals.carbs_g}g</b><small>carbs</small></span><span><b>${r.totals.fat_g}g</b><small>fat</small></span></div>
           ${r.items.map(i => `<p class="loading">${escapeHtml(i.food)} · ${i.grams}g · ${i.kcal} kcal</p>`).join('')}
           <p class="loading est-note">${escapeHtml(r.note)}</p></div>
-          <div class="hero-actions"><button class="primary" id="scan-add" data-meal="lunch">Add to diary</button><button class="outline" data-action="close">Edit instead</button></div>`);
+          <div class="hero-actions"><button class="primary" id="scan-add" data-meal="${f.meal}">Add to ${escapeHtml(f.meal)}</button><button class="outline" data-action="close">Edit instead</button></div>`);
           bind();
           $('#scan-add').onclick = async () => {
-            try { await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: r.title, meal: 'lunch', kcal: r.totals.kcal, protein_g: r.totals.protein_g, carbs_g: r.totals.carbs_g, fat_g: r.totals.fat_g }) }); $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); toast('Added to diary'); } catch (err) { toast(err.message); }
+            try { const rr = await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: r.title, meal: f.meal, kcal: r.totals.kcal, protein_g: r.totals.protein_g, carbs_g: r.totals.carbs_g, fat_g: r.totals.fat_g }) }); $('#modal').innerHTML = ''; if (rr?.totals) pageData.nutrition = { ...(pageData.nutrition || {}), totals: rr.totals, items: rr.items }; await loadPageData('nutrition'); render(); if (state.page === 'home') render(); toast(`Added to ${f.meal}`); } catch (err) { toast(err.message); }
           };
         } catch (err) { toast(err.message); }
       };

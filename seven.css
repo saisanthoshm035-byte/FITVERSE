@@ -403,7 +403,34 @@ html,body{overflow-x:clip}
 .mini-ring::before{background:conic-gradient(var(--fv-lime),var(--fv-cyan),var(--fv-violet),var(--fv-magenta),var(--fv-lime)) !important}
 .dna-mini{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important}
 .dna-mini small{color:var(--fv-mut) !important}
-.radar text{fill:#c9e7ff !important}
+.radar text{fill:rgba(201,231,255,.62) !important;text-shadow:0 1px 6px rgba(4,6,15,.9);font-weight:500}
+.radar polygon{fill:rgba(163,230,53,.16) !important}
+
+/* -- modals scroll internally: tall forms (add business, onboarding) stay reachable -- */
+.modal-card{max-height:calc(100vh - 40px) !important;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+.modal-card::-webkit-scrollbar{width:8px}
+html{scroll-behavior:smooth}
+
+/* -- AI training suggestion strip (nutrition page) ----------------------------------- */
+.ai-suggest{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;background:linear-gradient(92deg, rgba(0,229,255,.10), rgba(139,92,246,.14));border:1px solid rgba(0,229,255,.4);border-radius:16px;padding:16px 18px;margin:0 0 16px;box-shadow:0 0 24px rgba(0,229,255,.1)}
+.ai-suggest > span{font-size:24px;filter:drop-shadow(0 0 8px rgba(0,229,255,.6))}
+.ai-suggest b{color:var(--fv-ink)}
+.ai-suggest p{color:var(--fv-mut);margin:3px 0;font-size:12px}
+.ai-suggest small.dim{color:var(--fv-mut);opacity:.85}
+.ai-suggest .as-actions{display:flex;gap:8px;margin-left:auto;align-items:center}
+.ai-suggest .as-ai{width:100%;border-top:1px dashed var(--fv-line);padding-top:9px;color:var(--fv-mut) !important}
+.ai-suggest .spin{display:inline-block;animation:fv-spin 1.6s linear infinite}
+
+/* -- nutrition: quick-add row + macro mini-grid --------------------------------------- */
+.meal-quick{display:flex;gap:12px;margin:2px 0 8px}
+.meal-quick .text-btn{font-size:10.5px}
+.macro-mini{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.macro-mini label{font-size:9.5px}
+
+/* -- notification items are now clickable jump cards ---------------------------------- */
+button.notif-item{width:100%;text-align:left;cursor:pointer;transition:border-color .2s, box-shadow .2s, transform .15s}
+button.notif-item:hover{border-color:var(--fv-cyan) !important;box-shadow:0 0 16px rgba(0,229,255,.2);transform:translateY(-1px)}
+button.notif-item:hover b{color:var(--fv-cyan) !important}
 .dna-row .bar{background:rgba(139,92,246,.16) !important;border-radius:999px}
 .dna-row .bar i{background:linear-gradient(90deg,var(--fv-cyan),var(--fv-lime)) !important;box-shadow:0 0 10px rgba(163,255,18,.45)}
 .dna-row b{color:var(--fv-ink)}
