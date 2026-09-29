@@ -327,3 +327,145 @@ html,body{overflow-x:clip}
   background:linear-gradient(135deg,var(--fv-cyan),var(--fv-violet)) !important;border:0 !important;
   color:#04060f !important;box-shadow:0 0 18px rgba(0,229,255,.45) !important;
 }
+
+/* ==== FITVERSE 2030 · patch v62: workout + DNA de-white, vibrant reactions, Discord avatars ==== */
+
+/* -- onboarding wizard + reminder ---------------------------------------------- */
+.activity-form label{color:var(--fv-ink) !important}
+.modal-card .ob-note{color:var(--fv-mut);border-top:1px dashed var(--fv-line);padding-top:9px;margin:10px 0 0;font-size:10.5px}
+.modal-card .ob-note b{color:var(--fv-cyan)}
+.scan-result{background:rgba(0,229,255,.08) !important;border:1px solid rgba(0,229,255,.35) !important;box-shadow:inset 0 0 24px rgba(0,229,255,.07)}
+.scan-macros span{background:rgba(139,92,246,.14) !important;border:1px solid var(--fv-line) !important}
+.est-note{color:var(--fv-mut) !important}
+.ob-reminder{
+  display:flex;align-items:center;gap:13px;flex-wrap:wrap;
+  background:linear-gradient(92deg, rgba(0,229,255,.12), rgba(139,92,246,.15));
+  border:1px solid rgba(0,229,255,.4);border-radius:16px;padding:14px 16px;margin:0 0 16px;
+  box-shadow:0 0 26px rgba(0,229,255,.12), inset 0 0 22px rgba(0,229,255,.05);
+}
+.ob-reminder > span{font-size:22px;filter:drop-shadow(0 0 8px rgba(0,229,255,.6))}
+.ob-reminder b{color:var(--fv-ink)}
+.ob-reminder p{color:var(--fv-mut);margin:2px 0 0;font-size:11px}
+.ob-reminder button{margin-left:auto}
+.profile-tools .ob-btn{border-color:rgba(163,255,18,.55) !important;color:var(--fv-lime) !important}
+.profile-tools .ob-btn:hover{box-shadow:0 0 18px rgba(163,255,18,.35) !important;border-color:var(--fv-lime) !important}
+
+/* -- workout page: white cards → glass session panels --------------------------- */
+.workout-top{gap:10px}
+.session-card{
+  background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  box-shadow:0 12px 34px rgba(0,0,0,.45);border-radius:16px;
+  transition:transform .18s ease, box-shadow .25s ease, border-color .25s ease;
+}
+.session-card:hover{
+  border-color:rgba(0,229,255,.5) !important;transform:translateY(-2px);
+  box-shadow:0 0 24px rgba(0,229,255,.16), 0 16px 40px rgba(0,0,0,.5);
+}
+.session-date b{color:var(--fv-ink)}
+.session-date small{color:var(--fv-mut)}
+.session-card h3{color:var(--fv-ink)}
+.setline{color:var(--fv-mut);border-bottom:1px dashed rgba(139,92,246,.2)}
+.setline b{color:var(--fv-cyan);text-shadow:0 0 10px rgba(0,229,255,.4)}
+.pr-flag{background:rgba(163,255,18,.15) !important;color:var(--fv-lime) !important;box-shadow:0 0 10px rgba(163,255,18,.3);border-radius:999px;padding:1px 8px}
+.session-stats span{color:var(--fv-mut);background:rgba(0,229,255,.07);border:1px solid var(--fv-line);border-radius:999px;padding:3px 9px}
+.pr-card{
+  background:linear-gradient(140deg, rgba(255,46,166,.17), rgba(139,92,246,.15)) !important;
+  border:1px solid rgba(255,46,166,.42) !important;border-radius:13px;
+  box-shadow:0 0 22px rgba(255,46,166,.15);
+}
+.pr-card b{color:#ffb8e0 !important}
+.pr-card strong{color:var(--fv-ink) !important;text-shadow:0 0 16px rgba(255,46,166,.45)}
+.pr-card small{color:var(--fv-mut) !important}
+.gen-row{background:rgba(10,15,34,.65) !important;border:1px solid var(--fv-line) !important}
+.gen-row small,.gen-row .dim{color:var(--fv-mut) !important}
+
+/* -- fitness DNA page: white intel cards → neon glass ---------------------------- */
+.intel-grid .card{
+  background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;border-radius:18px;
+  -webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
+  box-shadow:0 16px 44px rgba(0,0,0,.5);
+}
+.intel-grid .card h2,.intel-grid .card h3{color:var(--fv-ink)}
+.intel-grid .muted,.intel-grid .disclaimer{color:var(--fv-mut) !important}
+.chip{
+  background:rgba(10,15,34,.65) !important;border:1px solid var(--fv-line) !important;
+  color:var(--fv-mut) !important;border-radius:999px;
+  transition:border-color .2s, box-shadow .2s, transform .15s, color .2s;
+}
+.chip:hover{border-color:var(--fv-cyan) !important;color:var(--fv-ink) !important;box-shadow:0 0 14px rgba(0,229,255,.3);transform:translateY(-1px)}
+.chip.active{
+  background:linear-gradient(92deg,var(--fv-cyan),var(--fv-violet)) !important;
+  color:#04060f !important;border-color:transparent !important;
+  box-shadow:0 0 18px rgba(0,229,255,.45);
+}
+.dna-ring::before{background:conic-gradient(var(--fv-cyan),var(--fv-violet),var(--fv-magenta),var(--fv-lime),var(--fv-cyan)) !important}
+.mini-ring::before{background:conic-gradient(var(--fv-lime),var(--fv-cyan),var(--fv-violet),var(--fv-magenta),var(--fv-lime)) !important}
+.dna-mini{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important}
+.dna-mini small{color:var(--fv-mut) !important}
+.radar text{fill:#c9e7ff !important}
+.dna-row .bar{background:rgba(139,92,246,.16) !important;border-radius:999px}
+.dna-row .bar i{background:linear-gradient(90deg,var(--fv-cyan),var(--fv-lime)) !important;box-shadow:0 0 10px rgba(163,255,18,.45)}
+.dna-row b{color:var(--fv-ink)}
+.twin-stats > div{background:rgba(0,229,255,.06);border:1px solid var(--fv-line);border-radius:12px}
+.twin-stats small{color:var(--fv-mut)}
+.traj-result{background:rgba(139,92,246,.10) !important;border:1px solid rgba(139,92,246,.38) !important}
+.dna3d-hud{color:var(--fv-mut) !important}
+.pick-list button{
+  background:rgba(10,15,34,.65) !important;border:1px solid var(--fv-line) !important;color:var(--fv-ink) !important;
+  transition:border-color .2s, box-shadow .2s, transform .15s;
+}
+.pick-list button:hover{border-color:var(--fv-cyan) !important;box-shadow:0 0 14px rgba(0,229,255,.3);transform:translateY(-1px)}
+
+/* -- vibrant reaction chips (per-emoji colors on active) -------------------------- */
+.react-row{gap:6px;flex-wrap:wrap}
+.react{
+  background:rgba(10,15,34,.65) !important;border:1px solid var(--fv-line) !important;
+  color:var(--fv-mut) !important;border-radius:999px;
+  transition:transform .15s ease, box-shadow .2s ease, border-color .2s ease, color .2s ease, background .2s ease;
+}
+.react:hover{transform:translateY(-2px) scale(1.06);border-color:var(--fv-cyan) !important;color:var(--fv-ink) !important;box-shadow:0 0 16px rgba(0,229,255,.35)}
+.react:active{transform:scale(.92)}
+.react.on:nth-child(1){background:rgba(163,255,18,.16) !important;border-color:rgba(163,255,18,.6) !important;color:var(--fv-lime) !important;box-shadow:0 0 14px rgba(163,255,18,.35)}
+.react.on:nth-child(2){background:rgba(0,229,255,.16) !important;border-color:rgba(0,229,255,.6) !important;color:var(--fv-cyan) !important;box-shadow:0 0 14px rgba(0,229,255,.35)}
+.react.on:nth-child(3){background:rgba(139,92,246,.18) !important;border-color:rgba(139,92,246,.65) !important;color:#c4b5fd !important;box-shadow:0 0 14px rgba(139,92,246,.4)}
+.react.on:nth-child(4){background:rgba(255,46,166,.16) !important;border-color:rgba(255,46,166,.6) !important;color:#ff9de0 !important;box-shadow:0 0 14px rgba(255,46,166,.35)}
+.react.on:nth-child(5){background:rgba(251,146,60,.16) !important;border-color:rgba(251,146,60,.6) !important;color:#fdba74 !important;box-shadow:0 0 14px rgba(251,146,60,.35)}
+.post-actions button{color:var(--fv-mut);transition:color .2s, text-shadow .2s}
+.post-actions button:hover{color:var(--fv-cyan);text-shadow:0 0 12px rgba(0,229,255,.5)}
+
+/* -- Discord-style avatar effects: neon ring + 3D hover tilt ---------------------- */
+.avatar,.pavatar{
+  position:relative;border-radius:50%;
+  box-shadow:0 0 0 2px rgba(6,10,24,.9), 0 0 0 3.5px var(--fv-line), 0 3px 12px rgba(0,0,0,.5) !important;
+  transition:transform .18s ease, box-shadow .25s ease;
+}
+.avatar::after,.pavatar::after{
+  content:'';position:absolute;inset:-4px;border-radius:50%;z-index:-1;
+  background:conic-gradient(from 140deg,var(--fv-lime),var(--fv-cyan),var(--fv-violet),var(--fv-magenta),var(--fv-lime));
+  opacity:0;filter:blur(7px);transition:opacity .25s ease;
+}
+.avatar:hover,.pavatar:hover{
+  transform:translateY(-2px) rotate3d(1,-1,0,9deg) scale(1.07);
+  box-shadow:0 0 0 2px rgba(4,6,15,.95), 0 0 0 4px var(--fv-cyan), 0 10px 26px rgba(0,229,255,.35) !important;
+}
+.avatar:hover::after,.pavatar:hover::after{opacity:.85;animation:fv-spin 3s linear infinite}
+.pavatar-spacer{visibility:hidden}
+@keyframes fv-spin{to{transform:rotate(1turn)}}
+
+/* -- futuristic button sheen sweep ------------------------------------------------ */
+.primary{position:relative;overflow:hidden}
+.primary::after{
+  content:'';position:absolute;top:0;left:-80%;width:50%;height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.5),transparent);
+  transform:skewX(-20deg);transition:left .55s ease;pointer-events:none;
+}
+.primary:hover::after{left:135%}
+
+/* -- motion safety for the new effects --------------------------------------------- */
+@media (prefers-reduced-motion: reduce){
+  .avatar::after,.pavatar::after{animation:none}
+  .avatar:hover,.pavatar:hover,.react:hover,.react:active,.chip:hover,.pick-list button:hover,.session-card:hover{transform:none}
+  .primary::after{display:none}
+}
+

@@ -457,14 +457,15 @@ def goal_plan(user_id: int, goal_text: str) -> dict:
 
 
 def fit_match(user_id: int, limit: int = 6) -> list[dict]:
-    """Compatibility from goal overlap, schedule, sport and activity level."""
+    """Compatibility from goal overlap, schedule, sport, activity level and onboarding prefs."""
     with connect() as db:
-        me = db.execute("""SELECT u.*,p.availability FROM users u LEFT JOIN profiles p ON p.user_id=u.id WHERE u.id=?""", (user_id,)).fetchone()
+        me = db.execute("""SELECT u.*,p.availability,s.goal AS ob_goal,s.equipment AS ob_equipment,s.diet_pref AS ob_diet,s.activity_level AS ob_activity,s.days_per_week AS ob_days FROM users u LEFT JOIN profiles p ON p.user_id=u.id LEFT JOIN user_settings s ON s.user_id=u.id WHERE u.id=?""", (user_id,)).fetchone()
         if not me:
             return []
         others = db.execute("""SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,
-            g.xp,g.streak, p.bio FROM users u JOIN user_game_state g ON g.user_id=u.id
-            LEFT JOIN profiles p ON p.user_id=u.id WHERE u.id<>? ORDER BY g.xp DESC""", (user_id,)).fetchall()
+            g.xp,g.streak, p.bio, s.goal AS ob_goal, s.equipment AS ob_equipment, s.diet_pref AS ob_diet, s.activity_level AS ob_activity, s.days_per_week AS ob_days
+            FROM users u JOIN user_game_state g ON g.user_id=u.id
+            LEFT JOIN profiles p ON p.user_id=u.id LEFT JOIN user_settings s ON s.user_id=u.id WHERE u.id<>? ORDER BY g.xp DESC""", (user_id,)).fetchall()
         blocked = {r["blocked_id"] for r in db.execute("SELECT blocked_id FROM blocks WHERE blocker_id=?", (user_id,))}
         items = []
         for o in others:
@@ -482,6 +483,24 @@ def fit_match(user_id: int, limit: int = 6) -> list[dict]:
                 score += 4; reasons.append("Nearby")
             if o["fitness_level"] == me["fitness_level"]:
                 score += 5; reasons.append("Similar experience")
+            # Onboarding-pref compatibility (user_settings) — tuned by the setup wizard
+            def _same(a, b):
+                return bool(a and b and str(a).strip().lower() == str(b).strip().lower())
+            if _same(me["ob_goal"], o["ob_goal"]):
+                score += 7; reasons.append(f"Same onboarding goal · {o['ob_goal']}")
+            try:
+                my_days = int(me["ob_days"] or 0); ot_days = int(o["ob_days"] or 0)
+            except (TypeError, ValueError):
+                my_days = ot_days = 0
+            if my_days and ot_days and abs(my_days - ot_days) <= 1:
+                score += 6; reasons.append(f"Both train ~{min(my_days, ot_days)}x a week")
+            if _same(me["ob_equipment"], o["ob_equipment"]):
+                score += 5; reasons.append(f"Both train with {str(o['ob_equipment']).lower()}")
+            if _same(me["ob_diet"], o["ob_diet"]):
+                score += 3; reasons.append("Matching diet style")
+            lv = {"low": 0, "moderate": 1, "high": 2}
+            if me["ob_activity"] in lv and o["ob_activity"] in lv and me["ob_activity"] != o["ob_activity"] and abs(lv[me["ob_activity"]] - lv[o["ob_activity"]]) == 1:
+                score += 2; reasons.append("Similar daily activity")
             score = min(97, score)
             items.append({"id": o["id"], "name": o["name"], "username": o["username"], "photo": f"img/p{1 + (o['id'] % 12)}.jpg",
                           "score": score, "activity": o["favorite_activity"], "fitnessLevel": o["fitness_level"],

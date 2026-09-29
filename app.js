@@ -36,7 +36,10 @@ const photoAvatar = (name, i, size = 36, url = '') => {
 };
 const sportLabel = (sport) => (String(sport || '').toLowerCase().includes('run') ? 'Run' : String(sport || '').toLowerCase().includes('cycl') ? 'Cycling' : String(sport || '').toLowerCase().includes('yoga') ? 'Yoga' : String(sport || '').toLowerCase().includes('gym') ? 'Gym' : 'Basketball');
 let sessionToken = localStorage.getItem('fitverse-session') || '';
-const state = { page: 'home', xp: 0, streak: 0, activities: 0, friends: false, joined: false, challenge: 'pending', booking: false, liked: false, comments: 0, detailId: 0 };
+const state = { page: 'home', xp: 0, streak: 0, activities: 0, friends: false, joined: false, challenge: 'pending', booking: false, liked: false, comments: 0, detailId: 0, onboardingActive: false };
+// Restart the onboarding wizard after any full re-render (render() rewrites #app, which contains #modal).
+function redrawOnboarding() { if (state.onboardingActive && typeof drawOnboardingStep === 'function') drawOnboardingStep(); }
+function clearOnboarding() { state.onboardingActive = false; $('#modal').innerHTML = ''; }
 // Back navigation: every programmatic/page navigation pushes onto navTrail so
 // the ← button in the header returns you to the PREVIOUS screen, not Home.
 const navTrail = ['home'];
@@ -47,7 +50,8 @@ function goBack() {
   const p = navTrail[navTrail.length - 1] || 'home';
   state.page = p; render(); loadPageData(p); window.scrollTo(0, 0);
 }
-const pageData = { bookings: [], businesses: [], users: [], allUsers: [], challenges: [], communities: [], events: [], activities: [], feed: [], conversations: [], activeConversation: 1, messages: [], notifications: [], achievements: [], friends: [], reports: [], xpLedger: [], recommendations: [], counts: {}, stats: {}, coach: 'Ask about people, activities, challenges or events.', profile: {}, reels: [], dash: {}, buddy: [], fitmatch: [], exercises: [], workouts: [], nutrition: {}, water: {}, progressEntries: [], settings: {}, coachChat: [], review: {}, leaderboards: {} };
+const pageData = { bookings: [], businesses: [], users: [], allUsers: [], challenges: [], communities: [], events: [], activities: [], feed: [], conversations: [], activeConversation: 1, messages: [], notifications: [], achievements: [], friends: [], reports: [], xpLedger: [], recommendations: [], counts: {}, stats: {}, coach: 'Ask about people, activities, challenges or events.', profile: {}, reels: [], dash: {}, buddy: [], fitmatch: [], exercises: [], workouts: [], nutrition: {}, water: {}, progressEntries: [], settings: {}, coachChat: [], review: {}, leaderboards: {}, mySettings: null };
+let drawOnboardingStep = null; // set by runOnboarding; render() re-draws the wizard if a re-render wipes #modal
 const apiHeaders = () => ({ 'Content-Type': 'application/json', ...(sessionToken ? { 'X-Session': sessionToken } : {}) });
 async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...apiHeaders(), ...(options.headers || {}) } });
@@ -250,7 +254,7 @@ async function hydrate() {
     signedIn ? safe('/api/intelligence', {}) : guestItems({}),
   ]);
   pageData.intel = (intel && intel.dna) ? intel : pageData.intel;
-  if (boot) {
+  if (boot && boot.state) {
     applyServerState(boot.state);
     pageData.profile = boot.user || {};
     pageData.counts = boot.counts || {};
@@ -401,6 +405,7 @@ function home() {
   <article class="stat-card"><span>💧</span><div><small>WATER</small><strong>${s.water ? `${(s.water.today_ml / 1000).toFixed(1)}<em>/${(s.water.target_ml / 1000).toFixed(1)}L</em>` : '—'}</strong></div><i>${s.water ? Math.round(s.water.today_ml / Math.max(1, s.water.target_ml) * 100) + '%' : ''}</i><div class="bar slim"><i style="width:${s.water ? Math.min(100, s.water.today_ml / Math.max(1, s.water.target_ml) * 100) : 0}%"></i></div></article>
   <article class="stat-card"><span>🏋</span><div><small>THIS WEEK</small><strong>${s.week && s.week.sessions != null ? `${s.week.sessions}<em> workouts</em>` : `${Math.min(4, state.activities)}<em>/4</em>`}</strong></div><i>${s.week && s.week.kcal ? `${s.week.kcal} kcal` : ''}</i></article>
 </section>
+${me().name && pageData.mySettings && !pageData.mySettings.onboarded ? `<section class="ob-reminder"><span>🧭</span><div><b>Finish your FITVERSE setup</b><p>Answer a few quick questions so AI, meals, workouts and friend matches actually fit you.</p></div><button class="primary small" data-action="runOnboarding">Finish setup</button><button class="outline small" data-action="dismissOnboarding">Dismiss</button></section>` : ''}
 ${notes.length ? `<section class="buddy-strip"><span class="pill lime">✦ FITVERSE AI</span>${notes.slice(0, 3).map(n => `<p>${n.note}</p>`).join('')}</section>` : ''}
 <section class="eco-strip">
   <a class="eco-card dna" data-page="intelligence"><span class="eyebrow">🧬 FITNESS DNA</span><div class="eco-main"><div class="dna-ring" style="--v:${dsc.consistency || 0}"><b>${dsc.consistency ?? '—'}</b></div><div><h3>${escapeHtml(dna.personality || 'The Explorer')}</h3><p>Focus: ${escapeHtml(dna.focus || 'Log a session to unlock')}</p></div></div><span class="eco-more">Open DNA →</span></a>
@@ -540,7 +545,7 @@ function profile() {
   const p = me();
   const unlocked = pageData.achievements.filter(a => a.unlocked_at).length;
   return shell(`${pageHeader('Your profile', 'Your progress tells a story.')}
-<section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Your profile')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'you')} · ${escapeHtml(p.city || 'Your city')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
+<section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Your profile')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'you')} · ${escapeHtml(p.city || 'Your city')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button><button class="outline ob-btn" data-action="runOnboarding">🧭 Setup wizard${pageData.mySettings && !pageData.mySettings.onboarded ? ' · not finished' : ''}</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
 <a class="pill lime" data-page="connectHealth" style="cursor:pointer;text-decoration:none;display:inline-block;margin:0 0 14px">🔌 Connect Health Data — Google Fit, steps, sleep →</a>
 <div id="ptab-posts">${pageData.feed.filter(x => x.username === p.username).map(postCard).join('') || '<p class="loading">No posts yet — create one from the ＋ button.</p>'}</div>
 <div id="ptab-friends" style="display:none">${pageData.friends.map(f => `<article class="person-card" style="max-width:420px"><div class="person-info" style="padding:14px">${avatar(f.name, 'teal')}<h3>${escapeHtml(f.name)} <i>✓</i></h3><p>@${escapeHtml(f.username)} · ${escapeHtml(f.status)}</p></div></article>`).join('') || '<p class="loading">No friends yet — find matches on Discover.</p>'}</div>
@@ -866,10 +871,10 @@ function connectHealth() {
       ? `<div class="hc-actions"><button class="primary small" data-action="googleSync">Sync now</button><button class="outline small" data-action="googleDisconnect">Disconnect</button></div>`
       : gf.configured
         ? `<div class="hc-actions"><button class="primary small" data-action="googleConnect">Connect Google Fit</button><small class="hc-scope">You'll approve read-only fitness access on Google's own sign-in page.</small></div>`
-        : `<div class="hc-setup"><p><b>One-tap sign-in isn't configured on this server yet</b> — but you have two free ways to bring real data in:</p>
-            <p><b>Way 1 · zero setup, works right now:</b> import your history with the Google Takeout importer below 👇</p>
-            <p><b>Way 2 · full auto-sync (free, ~5 min):</b> at <span class="code">console.cloud.google.com</span> create a project → enable <b>Fitness API</b> → create an OAuth client (Web) with redirect <span class="code">${location.origin}/api/health/google/callback</span> → set <span class="code">GOOGLE_FIT_CLIENT_ID</span> and <span class="code">GOOGLE_FIT_CLIENT_SECRET</span>.</p>
-            <p class="hc-note">FITVERSE never fakes health data — real data only arrives through these two paths.</p></div>`}
+        : `<div class="hc-setup"><p><b>Direct sign-in isn't available right now</b> (Google OAuth isn't configured on this server) — so FITVERSE gives you the two paths that actually work, today:</p>
+            <p><b>Way 1 · zero setup, works right now:</b> import your full history with the <b>Google Takeout importer</b> below 👇 — steps, workouts, everything, in one upload.</p>
+            <p><b>Way 2 · instant tracking:</b> log metrics in the <b>Daily metrics</b> form below — feeds the Health Brain immediately.</p>
+            <p class="hc-note">Want one-tap sync restored? Ask the admin to set <span class="code">GOOGLE_FIT_CLIENT_ID</span> + <span class="code">GOOGLE_FIT_CLIENT_SECRET</span> — the button reappears automatically once it's live. FITVERSE never fakes health data.</p></div>`}
   </article>
   <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">📥</span><div><h3>Import from Google Takeout</h3><p>No accounts, no setup: export your Google Fit history from Google and upload it here. Works instantly on desktop and mobile.</p></div></div>
     <div class="hc-actions"><label class="hc-import-btn">📎 Choose Takeout file(s)<input id="takeout-input" type="file" accept=".json" multiple style="display:none"/></label><small class="hc-scope">From <span class="code">takeout.google.com</span> → select only <b>Fit</b> → export → unzip → pick the .json files.</small></div>
@@ -880,7 +885,7 @@ function connectHealth() {
       <p><b>Honest note:</b> Health Connect is a device-local Android API — a website can't read it directly. FITVERSE never fakes health data, so here's what genuinely works today:</p>
       <ol class="hc-steps">
         <li><b>Import your export:</b> on your phone open Health Connect → ⚙ Settings → <b>Export data</b> (or use Google Takeout → Fit), then use the importer below. Everything lands in <i>your</i> account.</li>
-        <li><b>Connect Google Fit</b> (card above) for automatic workout sync — free, read-only.</li>
+        <li><b>Import your Google history</b> with the Takeout importer (card above) — no sign-in needed.</li>
         <li><b>Log manually</b> in the Daily metrics form below — it feeds the same insights.</li>
       </ol>
       <p class="hc-note">A future FITVERSE Android app can sync Health Connect automatically. ${hc.imported_days ? `You currently have <b>${hc.imported_days}</b> imported day${hc.imported_days == 1 ? '' : 's'} and <b>${hc.imported_activities || 0}</b> activit${hc.imported_activities == 1 ? 'y' : 'ies'}.` : 'No imported data yet.'}</p>
@@ -1026,6 +1031,7 @@ function render() {
   const pages = { home, discover, posts: reels, reels, challenges, communities, events, messages, profile, bookings, business, admin, businesses, communityDetail, athleteProfile, workout: workoutPage, nutrition: nutritionPage, progress: progressPage, friends: friendsPage, library: libraryPage, coach: coachPage, weeklyReview: weeklyReviewPage, intelligence: intelligencePage, connectHealth, businessChannel };
   $('#app').innerHTML = (pages[state.page] || home)();
   bind();
+  redrawOnboarding(); // keeps the setup wizard alive across re-renders (fixes pop-in-then-vanish glitch)
 }
 function modal(content) { $('#modal').innerHTML = `<div class="modal-backdrop" data-action="close"></div><section class="modal-card">${content}<button class="modal-x" data-action="close">×</button></section>`; }
 function modalWide(content) { $('#modal').innerHTML = `<div class="modal-backdrop" data-action="close"></div><section class="modal-card wide">${content}<button class="modal-x" data-action="close">×</button></section>`; }
@@ -2185,7 +2191,12 @@ async function action(a, btn) {
       } catch (err) { toast(err.message); }
       return;
     }
-    case 'genWorkoutFromOnboarding': $('#modal').innerHTML = ''; action('generateWorkout', null); return;
+    case 'genWorkoutFromOnboarding': clearOnboarding(); action('generateWorkout', null); return;
+    case 'runOnboarding': runOnboarding(); return;
+    case 'dismissOnboarding': {
+      const el = document.querySelector('.ob-reminder'); if (el) el.remove();
+      toast('Hidden for this visit — find it later in Profile → Setup wizard.'); return;
+    }
     case 'cmdk': cmdk(); return;
     case 'close': $('#modal').innerHTML = ''; return;
     case 'goBack': goBack(); return;
@@ -2248,9 +2259,9 @@ async function authWithGoogle() {
     if (evtSource) { evtSource.close(); evtSource = null; }
     location.href = r.url;
   } catch (e) { toast(e.message); }
-}
-// Onboarding: multi-step profile setup for new users
+}  // Onboarding: multi-step profile setup for new users (shown once; re-openable from Profile)
 function runOnboarding() {
+  state.onboardingActive = true;
   const steps = [
     { title: 'Welcome to FITVERSE 👋', body: `<p class="loading">Let's personalize your experience. A few quick questions — skip anything you'd rather not share.</p><label>Your age<input name="age" type="number" min="13" max="90" placeholder="21"></label><label>Sex (for calorie estimates)<select name="sex"><option value="male">Male</option><option value="female">Female</option></select></label>` },
     { title: 'Your body stats', body: `<label>Height (cm)<input name="height_cm" type="number" min="120" max="230" placeholder="175"></label><label>Weight (kg)<input name="weight_kg" type="number" min="30" max="300" step="0.5" placeholder="70"></label>` },
@@ -2263,7 +2274,7 @@ function runOnboarding() {
   function draw() {
     const s = steps[step];
     modal(`<span class="eyebrow">SETUP ${step + 1}/${steps.length}</span><h2>${s.title}</h2><form class="activity-form" id="ob-form">${s.body}
-    <div class="hero-actions"><button class="primary" type="submit">${step === steps.length - 1 ? 'Finish → generate my plan' : 'Next →'}</button>${step > 0 ? '<button class="text-btn" type="button" id="ob-back">Back</button>' : ''}<button class="text-btn" type="button" id="ob-skip">Skip all</button></div></form>`);
+    <div class="hero-actions"><button class="primary" type="submit">${step === steps.length - 1 ? 'Finish → generate my plan' : 'Next →'}</button>${step > 0 ? '<button class="text-btn" type="button" id="ob-back">Back</button>' : ''}<button class="text-btn" type="button" id="ob-skip">Skip all</button></div><p class="loading ob-note">You can skip now and finish later from your <b>Profile → Setup</b> — everything you share tunes your AI, meals, workouts and friend matches.</p></form>`);
     bind();
     $('#ob-form').onsubmit = async (e) => {
       e.preventDefault();
@@ -2276,6 +2287,7 @@ function runOnboarding() {
       if (answers.session_minutes) payload.session_minutes = Number(answers.session_minutes);
       try {
         const r = await api('/api/onboarding', { method: 'POST', body: JSON.stringify(payload) });
+        state.onboardingActive = false;
         $('#modal').innerHTML = '';
         const t = r.targets || {};
         modal(`<span class="eyebrow">✦ YOUR PLAN IS READY</span><h2>Welcome to FITVERSE!</h2>
@@ -2288,8 +2300,9 @@ function runOnboarding() {
       } catch (err) { toast(err.message); }
     };
     const back = $('#ob-back'); if (back) back.onclick = () => { step--; draw(); };
-    $('#ob-skip').onclick = () => { api('/api/settings', { method: 'POST', body: JSON.stringify({ onboarded: 1 }) }).finally(() => { $('#modal').innerHTML = ''; }); };
+    $('#ob-skip').onclick = () => { api('/api/settings', { method: 'POST', body: JSON.stringify({ onboarded: 1 }) }).finally(() => { state.onboardingActive = false; $('#modal').innerHTML = ''; toast('Skipped — finish anytime from Profile → Setup'); }); };
   }
+  drawOnboardingStep = draw;
   draw();
 }
 render();
@@ -2297,7 +2310,9 @@ hydrate().then(async () => {
   render(); loadPageData(state.page); startPolling(); startSSE(); loadWeather(); loadQuote();
   if (sessionToken) try {
     const s = await api('/api/me/settings');
+    // Show the setup wizard only for users who haven't onboarded (or skipped) yet.
     if (s.item && !s.item.onboarded) runOnboarding();
+    else { pageData.mySettings = s.item; render(); }
   } catch (_) {}
   // Welcome toast after returning from Google sign-in (callback redirects here with ?welcome=Name)
   const w = new URLSearchParams(location.search).get('welcome');
