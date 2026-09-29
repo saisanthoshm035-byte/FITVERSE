@@ -13,15 +13,14 @@ This module fixes persistence with the smallest possible change:
    server-side with a 30-day expiry, and never appear in URLs. Logout deletes
    the row. Restarting the server no longer logs anyone out.
 
-2. OPTIONAL REMOTE DATABASE (double opt-in via environment)
-   Remote libsql/Turso mode requires ALL of: FITVERSE_DB_URL +
-   FITVERSE_DB_TOKEN set AND FITVERSE_DB_MODE=remote.
-   REVERT (2026-09-28): the Turso round-trip made every query an HTTP call
-   and the app felt slow, so remote mode is now DISABLED BY DEFAULT — plain
-   local SQLite is used even when the URL/token env vars are still present.
-   To re-enable Turso later, set FITVERSE_DB_MODE=remote (Render dashboard).
-   NOTE: SQLite on Render's free tier is ephemeral — data resets on redeploys
-   and spin-downs. That trade-off was accepted for speed "for now".
+2. CLOUD DATABASE (Turso/libsql) — ON BY DEFAULT when URL+token exist
+   REVERTED-REVERT (2026-09-29): the earlier perf complaint is fixed by the
+   persistent-connection client below, so cloud mode is now the default the
+   moment FITVERSE_DB_URL + FITVERSE_DB_TOKEN are both set — no extra flag
+   needed (Render users kept forgetting FITVERSE_DB_MODE and losing data).
+   To force local SQLite anyway (dev only), set FITVERSE_DB_MODE=sqlite.
+   Cloud storage means sessions, workouts, nutrition, friends, challenges,
+   health imports and AI history SURVIVE redeploys, spin-downs and restarts.
 
 The returned object mirrors the small sqlite3 surface this app actually uses
 (`with connect() as db:` + execute/fetchone/fetchall/lastrowid/rowcount/
@@ -35,6 +34,7 @@ import base64
 import json
 import os
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -58,11 +58,14 @@ def _env(name: str) -> str:
 _REMOTE_MODE_VALUES = ("remote", "turso", "libsql", "1", "true", "yes", "on")
 
 
+_REMOTE_OFF_VALUES = ("sqlite", "local", "0", "false", "no", "off")
+
+
 def _remote_db_enabled() -> bool:
-    """Remote DB is double opt-in: URL/token present AND FITVERSE_DB_MODE=remote."""
-    if not _env("FITVERSE_DB_URL"):
+    """Cloud DB is on whenever URL+token exist. Set FITVERSE_DB_MODE=sqlite to force local."""
+    if not _env("FITVERSE_DB_URL") or not _env("FITVERSE_DB_TOKEN"):
         return False
-    return _env("FITVERSE_DB_MODE").lower() in _REMOTE_MODE_VALUES
+    return _env("FITVERSE_DB_MODE").lower() not in _REMOTE_OFF_VALUES
 
 
 def storage_mode() -> str:
@@ -384,11 +387,33 @@ class RemoteConn:
 # dual-mode connect() — the single seam every module already imports
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# small connection pool — one handle per thread, kept warm between requests
+# ---------------------------------------------------------------------------
+_pool: dict[int, tuple] = {}
+_pool_max = 64
+
+
+def _pooled_remote(url: str, token: str):
+    """Reuse one RemoteConn per thread; recycle if the previous one was closed."""
+    global _pool
+    entry = _pool.get(id(threading.current_thread()))
+    if entry is not None:
+        conn, cfg = entry
+        if cfg == (url, token) and not conn._closed:
+            return conn
+    conn = RemoteConn(url, token)
+    if len(_pool) >= _pool_max:
+        _pool.clear()  # simple overflow: drop all, threads lazily reconnect
+    _pool[id(threading.current_thread())] = (conn, (url, token))
+    return conn
+
+
 def connect(database: str = "fitverse.db"):
-    """Return a local sqlite3 connection, or a remote one when explicitly enabled."""
+    """Return a local sqlite3 connection, or a pooled remote one when cloud mode is on."""
     url, token = _env("FITVERSE_DB_URL"), _env("FITVERSE_DB_TOKEN")
-    if url and _remote_db_enabled():
-        return RemoteConn(url, token)
+    if url and token and _remote_db_enabled():
+        return _pooled_remote(url, token)
     db = sqlite3.connect(database, timeout=15)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
@@ -398,6 +423,16 @@ def connect(database: str = "fitverse.db"):
     except sqlite3.OperationalError:
         pass
     return db
+
+
+def storage_report() -> dict:
+    """Human-readable storage story for /api/health and the boot banner."""
+    remote = bool(_env("FITVERSE_DB_URL") and _env("FITVERSE_DB_TOKEN") and _remote_db_enabled())
+    return {
+        "mode": "libsql-remote (cloud, persistent)" if remote else "sqlite (local, ephemeral on Render)",
+        "cloud": remote,
+        "warning": None if remote else "Set FITVERSE_DB_URL + FITVERSE_DB_TOKEN (Turso) or data resets on redeploys.",
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -341,6 +341,7 @@ async function loadPageData(page) {
     add('healthOverview', api('/api/health/overview').then(d => d).catch(() => null));
     add('healthCardio', api('/api/health/cardio').then(d => d).catch(() => null));
     add('healthRec', api('/api/health/recommendation').then(d => d).catch(() => null));
+    add('healthInsights', api('/api/health/insights').then(d => d).catch(() => null));
   }
   if (page === 'businesses') {
     // PERF: single /api/businesses fetch (the page was fetched twice before).
@@ -819,11 +820,31 @@ function dailyCompanionCard() {
   const rec = d.recommendation;
   return `<section class="daily-companion" id="daily-companion"><div class="dc-head"><span class="pill lime">✦ AI COMPANION</span><b>${escapeHtml(d.greeting || 'Hello')}</b>${d.streak ? `<span class="dc-streak">🔥 ${d.streak} day streak</span>` : ''}</div>
   ${d.lines.map(l => `<p class="dc-line">${escapeHtml(l)}</p>`).join('')}
-  ${d.ai_tip ? `<p class="dc-line ai-tip">✦ <b>Tip of the day:</b> ${escapeHtml(d.ai_tip)}</p>` : ''}
+  ${d.ai_tip ? `<p class="dc-line ai-tip">✦ <b>Tip of the day:</b> ${mdLite(d.ai_tip)}</p>` : ''}
   <div class="dc-rec"><b>${escapeHtml(rec.title)}</b><p>${escapeHtml(rec.why)}</p></div>
   <div class="dc-actions"><button class="primary small" data-action="dailyPlan">Build my plan</button><a class="outline small" href="#" data-action="dailyCoach" style="text-decoration:none;display:inline-block">Ask the coach</a></div></section>`;
 }
+function mdLite(t) {
+  return escapeHtml(t)
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/^#{1,4}\s*(.+)$/gm, '<b>$1</b>')
+    .replace(/^[-*]\s+(.+)$/gm, '• $1')
+    .replace(/\n/g, '<br/>');
+}
+
+function healthBrainCard(ins) {
+  if (!ins) return `<div class="hc-rec"><b>⚡ Health Brain warming up…</b><p>Analyzing your stored data.</p></div>`;
+  if (ins.insufficient) return `<div class="hc-rec"><b>🧠 No data to analyze yet</b><p>${escapeHtml(ins.need || 'Track a few days of metrics first.')}</p></div>`;
+  const st = ins.stats || {};
+  const badge = ins.engine === 'groq'
+    ? `<span class="ai-status-chip live"><i></i>GROQ · instant analysis</span>`
+    : `<span class="ai-status-chip demo"><i></i>BUILT-IN ANALYSIS — add GROQ_API_KEY for full AI</span>`;
+  const facts = `<div class="hc-stats wide"><div><b>${st.workouts_7d ?? 0}</b><small>workouts (7d)</small></div><div><b>${st.kcal_burned_7d ?? 0}</b><small>kcal burned</small></div><div><b>${st.km_7d ?? 0} km</b><small>distance (7d)</small></div><div><b>${st.steps_avg ?? 0}</b><small>avg steps</small></div><div><b>${st.sleep_avg_min ? Math.round(st.sleep_avg_min / 60 * 10) / 10 + 'h' : '—'}</b><small>avg sleep</small></div><div><b>${st.resting_hr_avg || '—'}</b><small>resting HR</small></div></div>`;
+  return `${badge}${facts}${ins.ai ? `<div class="hc-rec"><b>🧠 Health Brain says</b><p>${mdLite(ins.ai)}</p></div>` : ''}`;
+}
+
 function connectHealth() {
+  const insights = pageData.healthInsights || null;
   const integ = pageData.healthIntegrations || { items: [] };
   const ov = pageData.healthOverview || {};
   const cardio = pageData.healthCardio || {};
@@ -873,6 +894,9 @@ function connectHealth() {
 </section>
 <section class="hc-section"><div class="section-head"><div><span class="eyebrow">CARDIO ANALYSIS</span><h2>Heart & legs, in numbers</h2></div><small class="hc-note">From your logged distance workouts${gf.connected ? ' + Google Fit' : ''}</small></div>
   ${cardioBody}
+</section>
+<section class="hc-section"><div class="section-head"><div><span class="eyebrow">GROQ HEALTH BRAIN</span><h2>Instant AI analysis of YOUR data</h2></div></div>
+  ${healthBrainCard(insights)}
 </section>
 <section class="hc-section"><div class="section-head"><div><span class="eyebrow">SMART RECOMMENDATION</span><h2>Today's smart suggestion</h2></div></div>
   <div class="hc-rec"><b>${escapeHtml(rec.title || 'Log a workout to unlock')}</b><p>${escapeHtml(rec.why || '')}</p>${(rec.tips || []).map(t => `<p class="hc-tip">💡 ${escapeHtml(t)}</p>`).join('')}</div>
@@ -2197,7 +2221,19 @@ function startSSE() {
         if (el) el.style.display = show ? 'flex' : 'none';
       } catch (_) {}
     });
-    evtSource.onerror = () => { /* browser auto-reconnects */ };
+    evtSource.onerror = () => { /* browser auto-reconnects */ }
+    // LIVE FEED: silent refresh every 20s while browsing social pages (throttled, hidden-tab aware)
+    if (!startSSE._feedTimer) {
+      startSSE._feedTimer = setInterval(() => {
+        if (document.hidden || !['home', 'posts', 'discover', 'reels'].includes(state.page) || startSSE._feedBusy) return;
+        startSSE._feedBusy = true;
+        api('/api/feed').then(d => {
+          const fresh = d.items || [];
+          const sig = (a) => a.slice(0, 5).map(x => x.id).join(',');
+          if (fresh.length && pageData.feed && sig(fresh) !== sig(pageData.feed)) { pageData.feed = fresh; render(); }
+        }).catch(() => {}).finally(() => { startSSE._feedBusy = false; });
+      }, 20000);
+    };
   } catch (_) { /* SSE unsupported — polling still runs */ }
 }
 // ---- Google sign-in: opens the official OAuth page; the callback stores the session ----

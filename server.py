@@ -1002,6 +1002,17 @@ class FitverseHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        # Cookie fallback: if the browser ever loses localStorage, the session
+        # token still rides along on every request — no forced re-logins.
+        tok = self.headers.get("X-Session", "")
+        if tok:
+            self.send_header("Set-Cookie", f"fv_session={tok}; Path=/; Max-Age=2592000; SameSite=Lax")
+        self.end_headers()
+        self.wfile.write(body)
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers(); self.wfile.write(body)
 
@@ -1017,6 +1028,10 @@ class FitverseHandler(BaseHTTPRequestHandler):
         """0 = anonymous guest. A visitor without a valid session must never be demo
         user 1 — that leaked a real person's name and data to every signed-out visitor."""
         token = self.headers.get("X-Session", "")
+        if not token:  # cookie fallback keeps people logged in across localStorage wipes
+            from http.cookies import SimpleCookie
+            c = SimpleCookie(self.headers.get("Cookie", ""))
+            token = c.get("fv_session").value if c.get("fv_session") else ""
         return store.session_user(token)
 
     def do_GET(self) -> None:
@@ -1342,6 +1357,9 @@ class FitverseHandler(BaseHTTPRequestHandler):
         if path == "/api/health/overview":
             import platform_service
             return self.send_json(200, platform_service.unified_overview(self.current_user()))
+        if path == "/api/health/insights":
+            import platform_service
+            return self.send_json(200, platform_service.groq_health_insights(self.current_user()))
         if path == "/api/health/cardio":
             import platform_service
             return self.send_json(200, platform_service.cardio_analysis(self.current_user()))
@@ -2512,7 +2530,12 @@ if __name__ == "__main__":
     except (TypeError, ValueError): port = 0
     if port <= 0: port = 4173                  # some shells export PORT=0; fall back to the default
     server = ThreadingHTTPServer((host, port), FitverseHandler)
+    _rep = store.storage_report()
     print("FITVERSE is live at http://127.0.0.1:" + str(port) if host in ("127.0.0.1", "localhost") else f"FITVERSE is live on port {port}", flush=True)
+    print(f"[storage] {_rep['mode']}", flush=True)
+    if _rep["warning"]:
+        print(f"[storage] WARNING: {_rep['warning']}", flush=True)
+    print("[ai] brain: " + (("Groq (" + (os.environ.get("GROK_API_KEY") or os.environ.get("GROQ_API_KEY") or "")[:6] + "… set)") if ((os.environ.get("GROQ_API_KEY") or "").strip() or (os.environ.get("GROK_API_KEY") or "").strip()) else "built-in demo engine (set GROQ_API_KEY for full AI)"), flush=True)
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally: server.server_close()

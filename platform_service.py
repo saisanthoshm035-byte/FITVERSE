@@ -885,3 +885,98 @@ def daily_companion(uid: int) -> dict:
 def _part_of_day() -> str:
     h = datetime.now().hour
     return "Good morning 👋" if h < 12 else "Good afternoon 👋" if h < 17 else "Good evening 👋"
+
+
+# ---------------------------------------------------------------------------
+# Groq Health Brain — instant AI analysis over the user's REAL stored data
+# (daily_metrics, health_activities, workouts, nutrition). Replaces the
+# broken Google-Fit-OAuth path as the primary "smart health" experience:
+# no external keys required beyond GROQ_API_KEY, answers in seconds, and
+# always backed by the deterministic engine when the LLM is unavailable.
+# ---------------------------------------------------------------------------
+
+def groq_health_insights(uid: int) -> dict:
+    """Instant, Groq-written health report over this user's stored numbers."""
+    import datetime as _dt
+    stats: dict = {"insufficient": True}
+    try:
+        with connect() as db:
+            s = ai_service.get_settings(db, uid) if ai_service else {}
+            t = ai_service.targets_from_profile(s) if ai_service else {}
+            days = db.execute(
+                """SELECT day, steps, sleep_min, resting_hr, weight_kg, hydration_ml
+                   FROM daily_metrics WHERE user_id=? ORDER BY day DESC LIMIT 14""",
+                (uid,)).fetchall()
+            acts = db.execute(
+                """SELECT ws.title AS name, 'gym' AS sport, ws.duration_min,
+                          COALESCE((SELECT SUM(wl.distance_km) FROM workout_logs wl WHERE wl.session_id=ws.id), 0) AS distance_km,
+                          ws.est_kcal, ws.created_at
+                   FROM workout_sessions ws WHERE ws.user_id=? ORDER BY ws.id DESC LIMIT 14""", (uid,)).fetchall()
+            food = db.execute(
+                """SELECT meal, kcal, protein_g FROM nutrition_logs
+                   WHERE user_id=? AND logged_on>=date('now','-7 days') ORDER BY id DESC LIMIT 20""",
+                (uid,)).fetchall()
+            game = db.execute("SELECT xp, streak FROM user_game_state WHERE user_id=?", (uid,)).fetchone()
+
+        d14 = [dict(r) for r in days]
+        steps = [int(d["steps"]) for d in d14 if d["steps"]]
+        sleep = [int(d["sleep_min"]) for d in d14 if d["sleep_min"]]
+        hrs = [int(d["resting_hr"]) for d in d14 if d["resting_hr"]]
+        weights = [float(d["weight_kg"]) for d in d14 if d["weight_kg"]]
+        hydrated = [int(d["hydration_ml"]) for d in d14 if d["hydration_ml"]]
+        week_sessions = [dict(a) for a in acts if str(a["created_at"] or "")[:10] >= (datetime.now() - _dt.timedelta(days=7)).strftime("%Y-%m-%d")]
+        kcal7 = sum(int(a["est_kcal"] or 0) for a in week_sessions)
+        km7 = sum(float(a["distance_km"] or 0) for a in week_sessions)
+        mins7 = sum(int(a["duration_min"] or 0) for a in week_sessions)
+        protein7 = sum(int(f["protein_g"] or 0) for f in food)
+        kcal_food = sum(int(f["kcal"] or 0) for f in food)
+
+        stats = {
+            "insufficient": False,
+            "days_tracked": len(d14),
+            "steps_avg": round(sum(steps) / len(steps)) if steps else 0,
+            "steps_max": max(steps) if steps else 0,
+            "sleep_avg_min": round(sum(sleep) / len(sleep)) if sleep else 0,
+            "resting_hr_avg": round(sum(hrs) / len(hrs)) if hrs else 0,
+            "weight_kg": weights[0] if weights else 0,
+            "weight_change_kg": round(weights[0] - weights[-1], 1) if len(weights) > 1 else 0,
+            "hydration_avg_ml": round(sum(hydrated) / len(hydrated)) if hydrated else 0,
+            "workouts_7d": len(week_sessions),
+            "kcal_burned_7d": kcal7,
+            "km_7d": round(km7, 1),
+            "active_min_7d": mins7,
+            "protein_7d": protein7,
+            "kcal_eaten_7d": kcal_food,
+            "streak": game["streak"] if game else 0,
+            "goal": (s.get("goal") if isinstance(s, dict) else "") or "general fitness",
+            "targets": {"kcal": t.get("kcal_target", 0), "protein": t.get("protein_target", 0)},
+            "sports": sorted({str(a["sport"] or a["name"] or "").strip() for a in week_sessions if (a["sport"] or a["name"])})[:6],
+        }
+    except Exception as exc:
+        stats = {"insufficient": True, "error": repr(exc)[:120]}
+
+    groq_answer = None
+    try:
+        import groq_ai
+        if groq_ai.configured() and not stats.get("insufficient"):
+            line = (" | ".join(f"{k}={v}" for k, v in stats.items() if k not in ("insufficient", "targets", "sports", "error"))
+                    + f" | sports={','.join(stats.get('sports') or [])}"
+                    + f" | kcal_target={stats['targets'].get('kcal', 0)}, protein_target={stats['targets'].get('protein', 0)}")
+            sys = ("You are the FITVERSE Health Brain. You get one compact line of the user's REAL, "
+                   "stored fitness data. Write a punchy, encouraging analysis for a fitness app: "
+                   "1) headline verdict (one line), 2) 'What's working' (2 bullets), 3) 'Fix this week' "
+                   "(2 specific actions tied to their numbers), 4) one safety note max if relevant. "
+                   "Reference their actual numbers. No medical claims, no diagnosis. Under 150 words. "
+                   "Markdown allowed (bold, bullets).")
+            groq_answer = groq_ai._chat(
+                [{"role": "system", "content": sys},
+                 {"role": "user", "content": line}],
+                max_tokens=700, temperature=0.55, timeout=12)
+    except Exception:
+        groq_answer = None
+
+    if stats.get("insufficient"):
+        return {"insufficient": True,
+                "need": "Track a few days (metrics form below) or import your Health data — then the Health Brain analyzes it instantly.",
+                "stats": stats}
+    return {"insufficient": False, "stats": stats, "ai": groq_answer, "engine": "groq" if groq_answer else "built-in"}

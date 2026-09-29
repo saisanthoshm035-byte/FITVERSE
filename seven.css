@@ -1,0 +1,329 @@
+/* ============================================================================
+   FITVERSE 2030 — FULL-SPECTRUM NEON SKIN  (seven.css · loaded LAST)
+   Additive override layer: deep-space holographic glass, multicolor neon,
+   animated aurora + tech grid. Layout untouched — mobile.css still rules.
+   Strategy: 1) flip the legacy palette vars, 2) repaint literal-white
+   surfaces as holographic glass, 3) neonize controls/chrome.
+   ========================================================================== */
+
+:root{
+  /* legacy palette flip — every rule that used the light theme follows along */
+  --ink:#eaf2ff;
+  --muted:#93a0c8;
+  --line:rgba(140,165,255,.16);
+  --paper:#04060f;
+  --white:#101735;
+  --navy:#0a0f26;
+  /* 2030 neon system */
+  --fv-bg:#04060f;
+  --fv-cyan:#00e5ff;
+  --fv-violet:#8b5cf6;
+  --fv-magenta:#ff2ea6;
+  --fv-lime:#a3ff12;
+  --fv-amber:#ffb020;
+  --fv-ink:#eaf2ff;
+  --fv-mut:#93a0c8;
+  --fv-line:rgba(140,165,255,.16);
+  --fv-card:linear-gradient(160deg, rgba(22,28,58,.88), rgba(9,13,30,.92));
+}
+
+/* ---- atmosphere: aurora blobs + tech grid --------------------------------- */
+body{background:var(--fv-bg) !important;color:var(--fv-ink)}
+body::before{
+  content:"";position:fixed;inset:-22%;z-index:-2;pointer-events:none;
+  background:
+    radial-gradient(38% 42% at 12% 16%, rgba(139,92,246,.30), transparent 62%),
+    radial-gradient(34% 38% at 88% 10%, rgba(0,229,255,.24), transparent 62%),
+    radial-gradient(44% 40% at 80% 84%, rgba(255,46,166,.22), transparent 62%),
+    radial-gradient(30% 34% at 16% 88%, rgba(163,255,18,.15), transparent 62%);
+  filter:blur(34px);
+  animation:fvAurora 26s ease-in-out infinite alternate;
+}
+body::after{
+  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.55;
+  background:
+    linear-gradient(rgba(125,150,255,.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125,150,255,.055) 1px, transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(80% 65% at 50% 28%, #000 25%, transparent 100%);
+          mask-image:radial-gradient(80% 65% at 50% 28%, #000 25%, transparent 100%);
+}
+@keyframes fvAurora{
+  0%{transform:translate3d(0,0,0) scale(1)}
+  50%{transform:translate3d(2.5%,-2%,0) scale(1.07)}
+  100%{transform:translate3d(-2%,2.5%,0) scale(1.03)}
+}
+
+/* ---- holographic glass surfaces (literal whites from the old skin) -------- */
+.sidebar,.modal-card,.message-layout,.post,.stat-card,.activity-card,.person-card,
+.community-card,.event-card,.challenge-list article,.achievement-row article,
+.booking-item,.admin-grid article,.coach-layout,.profile-hero,.hc-card,.cmdk-row,
+.search,.filter,.conversation-list,.data-table,.gen-plan,.coach-prompts button,
+.match-card,.run-card,.hc-week-row,.ticket,.challenge-kpi,.message-search{
+  background:var(--fv-card) !important;
+  border:1px solid var(--fv-line) !important;
+  box-shadow:0 14px 44px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06) !important;
+  -webkit-backdrop-filter:blur(16px) !important;backdrop-filter:blur(16px) !important;
+}
+.data-table{background:rgba(12,17,38,.72) !important}
+.data-table td{color:#c9d4f5}
+.sidebar{border-right-color:rgba(120,140,255,.22) !important}
+.discover-intro,.challenge-hero,.leaderboard,.community-hero{
+  background:linear-gradient(140deg, rgba(139,92,246,.20), rgba(0,229,255,.10) 55%, rgba(255,46,166,.14)) !important;
+  border:1px solid rgba(140,165,255,.25) !important;
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+}
+.coach-answer{
+  background:linear-gradient(150deg, rgba(0,229,255,.12), rgba(139,92,246,.14)) !important;
+  border:1px solid rgba(0,229,255,.3) !important;box-shadow:0 0 30px rgba(0,229,255,.12) !important;
+}
+.hc-rec{background:rgba(22,28,58,.7) !important;border:1px solid rgba(163,255,18,.28) !important}
+.conversation.selected{background:linear-gradient(90deg, rgba(0,229,255,.14), rgba(139,92,246,.10)) !important;border-radius:10px}
+.bubbles .received{background:rgba(24,30,62,.85) !important;border:1px solid var(--fv-line)}
+.bubbles .sent{
+  background:linear-gradient(135deg, rgba(0,229,255,.20), rgba(139,92,246,.26)) !important;
+  border:1px solid rgba(0,229,255,.42);box-shadow:0 0 16px rgba(0,229,255,.10);
+}
+.profile-cover{background:linear-gradient(110deg,#141a4d,#5b1887 60%,#0e5a6e) !important}
+.match-big-art{background:linear-gradient(160deg,var(--fv-violet),#2b0f5e) !important}
+.match-feature,.level-card{background:linear-gradient(150deg,#10142c,#0a0e22) !important;border:1px solid var(--fv-line)}
+.quote-bar{background:linear-gradient(100deg, rgba(139,92,246,.2), rgba(255,46,166,.16)) !important;border:1px solid var(--fv-line)}
+.person-cover{background:linear-gradient(120deg,#1a2470,#4a1a70) !important}
+.event-art{background:linear-gradient(160deg,var(--fv-magenta),#7a1440) !important}
+.moon{background:radial-gradient(circle at 35% 35%, #ffe9a8, var(--fv-amber)) !important;box-shadow:0 0 60px rgba(255,176,32,.5)}
+
+/* ---- chrome & typography -------------------------------------------------- */
+.eyebrow{color:var(--fv-cyan) !important;text-shadow:0 0 12px rgba(0,229,255,.5)}
+.hero h2 span,.discover-intro em,.community-hero em,.event-hero em,.match-feature h2 em{
+  background:linear-gradient(92deg,var(--fv-cyan) 10%,var(--fv-magenta) 90%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.brand{color:var(--fv-ink)}
+.brand i{
+  background:linear-gradient(135deg,var(--fv-cyan),var(--fv-violet)) !important;
+  color:#04060f !important;box-shadow:0 0 18px rgba(0,229,255,.6);
+}
+.mini-profile strong{color:var(--fv-ink)}
+.level-card span{color:var(--fv-cyan) !important}
+.match-score p{color:var(--fv-cyan) !important}
+.stat-card>i{color:var(--fv-lime) !important}
+.rank em{color:var(--fv-lime) !important}
+.rank b{color:var(--fv-mut)}
+.verified,.match-copy h3 i,.person-info i,.profile-info i{color:var(--fv-cyan) !important}
+.tabs button.active:after{background:linear-gradient(90deg,var(--fv-cyan),var(--fv-violet)) !important;height:2px;box-shadow:0 0 8px var(--fv-cyan)}
+.notice b,.achievement-row b,.profile-stats b,.chat-head strong,.post-author strong{color:var(--fv-ink)}
+.chat-head small{color:var(--fv-cyan) !important}
+.live-dot{color:var(--fv-lime) !important}
+
+/* ---- neon controls --------------------------------------------------------- */
+.primary{
+  background:linear-gradient(92deg,var(--fv-cyan),var(--fv-violet) 70%) !important;
+  color:#04060f !important;border:0 !important;
+  box-shadow:0 0 22px rgba(0,229,255,.4), 0 4px 18px rgba(139,92,246,.35) !important;
+  transition:transform .15s ease, box-shadow .2s ease, filter .2s ease;
+}
+.primary:hover{filter:brightness(1.12);box-shadow:0 0 34px rgba(0,229,255,.65), 0 6px 24px rgba(139,92,246,.5) !important;transform:translateY(-1px)}
+.primary:active{transform:scale(.97)}
+.outline{
+  background:rgba(10,15,34,.6) !important;color:var(--fv-ink) !important;
+  border:1px solid rgba(0,229,255,.45) !important;
+  box-shadow:inset 0 0 14px rgba(0,229,255,.08) !important;
+  transition:border-color .2s, box-shadow .2s, transform .15s;
+}
+.outline:hover{border-color:var(--fv-cyan) !important;box-shadow:0 0 18px rgba(0,229,255,.35) !important;transform:translateY(-1px)}
+.create-btn{
+  background:linear-gradient(92deg,var(--fv-magenta),var(--fv-violet)) !important;color:#fff !important;
+  box-shadow:0 0 24px rgba(255,46,166,.45) !important;transition:transform .15s, filter .2s;
+}
+.create-btn:hover{filter:brightness(1.15);transform:translateY(-1px)}
+.sidebar-bottom:after{
+  background:linear-gradient(135deg,var(--fv-cyan),var(--fv-violet)) !important;color:#04060f !important;
+  box-shadow:0 0 16px rgba(0,229,255,.5);
+}
+.join{border-color:rgba(163,255,18,.6) !important;color:var(--fv-lime) !important;box-shadow:inset 0 0 12px rgba(163,255,18,.1)}
+.join.joined{background:rgba(163,255,18,.14) !important;color:var(--fv-lime) !important}
+.pill.lime{background:var(--fv-lime) !important;color:#04060f !important;box-shadow:0 0 16px rgba(163,255,18,.45)}
+.pill.coral{background:var(--fv-magenta) !important;color:#fff !important;box-shadow:0 0 16px rgba(255,46,166,.45)}
+.text-btn,.link{color:var(--fv-cyan) !important}
+.ai-status-chip.live{color:#04120a !important}
+.hc-state.on{color:var(--fv-lime) !important;border-color:rgba(163,255,18,.5) !important}
+.wx-chip{color:#c9e7ff !important;border-color:rgba(0,229,255,.35) !important;background:rgba(0,229,255,.10) !important}
+.tag-row span{background:rgba(0,229,255,.12) !important;color:var(--fv-cyan) !important}
+.bar{background:rgba(120,140,255,.14) !important}
+.bar i{background:linear-gradient(90deg,var(--fv-cyan),var(--fv-violet)) !important;box-shadow:0 0 10px rgba(0,229,255,.6)}
+.level-card .bar i{background:linear-gradient(90deg,var(--fv-lime),var(--fv-cyan)) !important}
+
+/* ---- navigation ------------------------------------------------------------ */
+.nav-item{color:#9aa6d0 !important;position:relative;transition:color .2s, transform .15s}
+.nav-item span{color:inherit}
+.nav-item:hover{color:var(--fv-ink) !important;transform:translateX(3px)}
+.nav-item.active{background:linear-gradient(90deg, rgba(0,229,255,.14), rgba(139,92,246,.10)) !important;color:var(--fv-ink) !important}
+.nav-item.active::before{
+  content:"";position:absolute;left:-12px;top:20%;bottom:20%;width:3px;border-radius:3px;
+  background:linear-gradient(180deg,var(--fv-cyan),var(--fv-violet));box-shadow:0 0 10px var(--fv-cyan);
+}
+.nav-item.active span{filter:drop-shadow(0 0 6px var(--fv-cyan))}
+.nav-item b{background:var(--fv-magenta) !important;color:#fff !important;box-shadow:0 0 10px rgba(255,46,166,.6)}
+.icon-btn em{border-color:var(--fv-bg)}
+.mobile-nav{background:rgba(8,12,28,.92) !important;border-top-color:var(--fv-line) !important;-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+.mobile-nav button{color:#8a94b8 !important}
+.mobile-nav button small{color:inherit !important}
+.mobile-nav .active{color:var(--fv-cyan) !important}
+.mobile-nav button:nth-child(3){background:linear-gradient(135deg,var(--fv-cyan),var(--fv-violet)) !important;box-shadow:0 0 18px rgba(0,229,255,.5) !important}
+.mobile-nav button:nth-child(3) span{color:#04060f !important}
+
+/* ---- cards come alive on hover --------------------------------------------- */
+.stat-card,.activity-card,.person-card,.community-card,.event-card,.post,.challenge-list article{
+  transition:transform .18s ease, box-shadow .25s ease, border-color .25s ease;
+}
+.stat-card:hover,.activity-card:hover,.post:hover{
+  transform:translateY(-3px);border-color:rgba(0,229,255,.4) !important;
+  box-shadow:0 18px 50px rgba(0,0,0,.55), 0 0 26px rgba(0,229,255,.14) !important;
+}
+.person-card:hover,.community-card:hover,.event-card:hover{
+  transform:translateY(-3px);border-color:rgba(255,46,166,.42) !important;
+  box-shadow:0 18px 50px rgba(0,0,0,.55), 0 0 26px rgba(255,46,166,.15) !important;
+}
+.activity-icon{background:rgba(0,229,255,.08) !important;border:1px solid rgba(0,229,255,.18)}
+.cmdk-row:hover{background:rgba(0,229,255,.10) !important}
+
+/* ---- chat ------------------------------------------------------------------- */
+.conversation{color:var(--fv-ink)}
+.conversation strong{color:var(--fv-ink)}
+.conversation small,.conversation time{color:var(--fv-mut)}
+.message-search{color:var(--fv-mut)}
+.chat-head{border-bottom-color:var(--fv-line) !important}
+.bubbles p{color:var(--fv-ink) !important}
+.bubbles time{color:var(--fv-mut) !important}
+.composer{background:rgba(12,17,40,.85) !important;border:1px solid var(--fv-line) !important}
+.composer input{color:var(--fv-ink) !important}
+.composer input::placeholder{color:#5f6b94}
+.composer button{background:linear-gradient(135deg,var(--fv-cyan),var(--fv-violet)) !important;color:#04060f !important;box-shadow:0 0 14px rgba(0,229,255,.4)}
+.day-divider{color:var(--fv-mut) !important}
+.day-divider:before,.day-divider:after{background:var(--fv-line) !important}
+.typing span{background:var(--fv-cyan) !important;box-shadow:0 0 8px var(--fv-cyan)}
+
+/* ---- forms, modals, toast ---------------------------------------------------- */
+.activity-form input,.hc-form input,.search input,.modal-card input,.hc-form select{
+  background:rgba(8,12,30,.85) !important;border:1px solid var(--fv-line) !important;
+  color:var(--fv-ink) !important;transition:border-color .2s, box-shadow .2s;
+}
+.activity-form input:focus,.hc-form input:focus,.search input:focus,.modal-card input:focus{
+  outline:0;border-color:var(--fv-cyan) !important;box-shadow:0 0 0 3px rgba(0,229,255,.18) !important;
+}
+.activity-form input::placeholder,.hc-form input::placeholder,.modal-card input::placeholder,.search input::placeholder{color:#5f6b94}
+.modal-backdrop{background:rgba(3,5,12,.78) !important;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.modal-card p,.modal-card small{color:var(--fv-mut)}
+.modal-x{color:var(--fv-mut) !important}
+.code{background:rgba(0,229,255,.10) !important;color:var(--fv-cyan) !important;border:1px solid rgba(0,229,255,.25)}
+#toast{
+  background:linear-gradient(92deg, rgba(0,229,255,.92), rgba(139,92,246,.92)) !important;
+  color:#04060f !important;font-weight:800;box-shadow:0 0 30px rgba(0,229,255,.45) !important;
+}
+.hc-logo{filter:drop-shadow(0 0 8px rgba(0,229,255,.6))}
+.hc-note{color:var(--fv-mut)}
+
+/* ---- scrollbars & selection --------------------------------------------------- */
+*{scrollbar-width:thin;scrollbar-color:rgba(139,92,246,.6) transparent}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--fv-violet),var(--fv-cyan));border-radius:8px}
+*::-webkit-scrollbar-track{background:transparent}
+::selection{background:rgba(255,46,166,.45);color:#fff}
+
+/* ---- accessibility: calm everything for reduced-motion users ------------------ */
+@media (prefers-reduced-motion: reduce){
+  body::before{animation:none}
+  .primary,.outline,.create-btn,.stat-card,.post,.activity-card,.person-card,
+  .community-card,.event-card{transition:none}
+  .nav-item:hover{transform:none}
+}
+
+/* ---- late-layer patch: headings hardcoded by later sheets + leftover creams */
+h1,h2,h3{color:var(--fv-ink)}
+.top h1,.top h2{color:var(--fv-ink) !important}
+.top p{color:var(--fv-mut) !important}
+.eco-card,.moment-card{
+  background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;
+  box-shadow:0 14px 40px rgba(0,0,0,.45) !important;-webkit-backdrop-filter:blur(14px) !important;backdrop-filter:blur(14px) !important;
+}
+.eco-card b,.eco-card strong,.eco-card h3,.eco-card h4,
+.moment-card b,.moment-card strong,.moment-card h3,.moment-card h4{color:var(--fv-ink)}
+.eco-card p,.eco-card small,.eco-card span,
+.moment-card p,.moment-card small,.moment-card span{color:var(--fv-mut)}
+.eco-card .pill.lime,.moment-card .pill.lime{color:#04060f !important}
+.float-card{
+  background:rgba(14,19,44,.88) !important;border:1px solid var(--fv-line) !important;
+  color:var(--fv-ink) !important;box-shadow:0 12px 34px rgba(0,0,0,.55), 0 0 18px rgba(0,229,255,.12) !important;
+  -webkit-backdrop-filter:blur(10px) !important;backdrop-filter:blur(10px) !important;
+}
+.float-card strong{color:var(--fv-ink) !important}
+.float-card small{color:var(--fv-mut) !important}
+
+/* ---- daily companion strip: cream → neon glass ---------------------------- */
+.daily-companion{
+  background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;
+  box-shadow:0 14px 40px rgba(0,0,0,.45) !important;-webkit-backdrop-filter:blur(14px) !important;backdrop-filter:blur(14px) !important;
+}
+.daily-companion .dc-head b,.daily-companion b{color:var(--fv-ink) !important}
+.daily-companion p{color:var(--fv-mut) !important}
+.daily-companion .dc-rec{background:rgba(0,229,255,.08) !important;border:1px solid rgba(0,229,255,.22) !important}
+.daily-companion .dc-rec b{color:var(--fv-cyan) !important}
+.notif-pref{background:rgba(12,17,40,.8) !important;border-color:var(--fv-line) !important;color:var(--fv-ink) !important}
+.notif-item b{color:var(--fv-ink) !important}
+.notif-item p{color:var(--fv-mut) !important}
+
+/* ---- health page: neonize the four.css survivors --------------------------- */
+.hc-hero{background:linear-gradient(120deg,rgba(139,92,246,.30),rgba(0,229,255,.16) 55%,rgba(255,46,166,.22)) !important;border:1px solid rgba(140,165,255,.25) !important}
+.hc-hero h2,.hc-hero p{color:var(--fv-ink) !important}
+.hc-setup{background:rgba(8,12,30,.75) !important;border:1px dashed rgba(140,165,255,.35) !important;color:var(--fv-mut) !important}
+.hc-setup b{color:var(--fv-ink) !important}
+.hc-setup li{color:var(--fv-mut)}
+.hc-card-head h3{color:var(--fv-ink) !important}
+.hc-card-head p{color:var(--fv-mut) !important}
+.hc-import-btn{background:linear-gradient(92deg,var(--fv-lime),#5fd400) !important;color:#04060f !important;font-weight:800 !important;box-shadow:0 0 18px rgba(163,255,18,.35)}
+.hc-empty b{color:var(--fv-ink) !important}
+.hc-steps b{color:var(--fv-ink) !important}
+.hc-stats b{color:var(--fv-ink) !important}
+.hc-week-row b{color:var(--fv-ink) !important}
+.hc-state{background:rgba(12,17,40,.8) !important;border-color:var(--fv-line) !important}
+
+/* ---- health stats cells: white → glass, numbers visible -------------------- */
+.hc-stats>div{background:rgba(14,19,44,.85) !important;border:1px solid var(--fv-line) !important;border-radius:14px !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+.hc-stats b{color:var(--fv-ink) !important}
+.hc-stats small{color:var(--fv-mut) !important}
+.hc-stats em{color:var(--fv-mut) !important}
+.hc-rec{color:var(--fv-mut)}
+.hc-rec b{color:var(--fv-cyan) !important}
+.hc-rec p{color:var(--fv-mut) !important}
+.hc-tip{color:var(--fv-lime) !important}
+.hc-note{color:var(--fv-mut) !important}
+.hc-form label{color:var(--fv-mut)}
+
+/* ---- coach chat page: light panel → neural glass --------------------------- */
+.ai-chat{
+  background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;
+  box-shadow:0 14px 44px rgba(0,0,0,.5) !important;-webkit-backdrop-filter:blur(16px) !important;backdrop-filter:blur(16px) !important;
+}
+.ai-intro{color:var(--fv-mut) !important}
+.ai-msg.user{background:linear-gradient(135deg, rgba(0,229,255,.22), rgba(139,92,246,.28)) !important;border:1px solid rgba(0,229,255,.4) !important;color:var(--fv-ink) !important}
+.ai-msg.coach,.ai-msg.assistant,.ai-msg.bot{background:rgba(24,30,62,.9) !important;border:1px solid var(--fv-line) !important;color:var(--fv-ink) !important}
+.ai-msg{color:var(--fv-ink)}
+
+/* ---- kill residual sideways scroll without breaking position:sticky -------- */
+html,body{overflow-x:clip}
+
+/* ---- final survivors: buddy strip, ai-tip wash, fa-list, empty-state ------- */
+.buddy-strip{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important}
+.buddy-strip b,.buddy-strip strong{color:var(--fv-ink) !important}
+.buddy-strip small,.buddy-strip p,.buddy-strip span{color:var(--fv-mut) !important}
+.dc-line.ai-tip{background:none !important;color:var(--fv-lime) !important;text-shadow:0 0 14px rgba(163,255,18,.25)}
+.fa-list{background:transparent !important;border:0 !important}
+.fa-list > *{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important;color:var(--fv-ink)}
+.fa-list small,.fa-list p{color:var(--fv-mut) !important}
+.empty-state{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important}
+.empty-state b,.empty-state strong{color:var(--fv-ink) !important}
+.empty-state p,.empty-state small{color:var(--fv-mut) !important}
+.mobile-more-btn{
+  background:linear-gradient(135deg,var(--fv-cyan),var(--fv-violet)) !important;border:0 !important;
+  color:#04060f !important;box-shadow:0 0 18px rgba(0,229,255,.45) !important;
+}
