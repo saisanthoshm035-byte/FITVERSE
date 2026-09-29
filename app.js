@@ -239,6 +239,7 @@ async function hydrate() {
   const safe = (p, fb) => api(p).then(d => d).catch(() => fb);
   const signedIn = !!sessionToken;
   const guestItems = (v) => Promise.resolve(v);
+  pageData.aiStatus = await safe('/api/ai/status', null);   // which brain is answering: groq vs builtin
   const [boot, feed, notifs, convs, achievements, buddy, fitmatch, intel] = await Promise.all([
     api('/api/bootstrap').catch(() => null), safe('/api/feed', { items: [] }),
     signedIn ? safe('/api/notifications', { items: [] }) : guestItems({ items: [] }),
@@ -392,7 +393,7 @@ function home() {
   const mission = pageData.mission || ({});
   const heroTitle = me().name ? `Good ${greeting()}, ${escapeHtml(me().name.split(' ')[0])} 👋` : 'Welcome to FITVERSE 👋';
   return shell(`${pageHeader(heroTitle, me().name ? (s.today_line || 'Here’s your day at a glance.') : 'Fitness is more fun together. Sign in to start your streak.')}
-<section class="hero photo" style="background-image:linear-gradient(100deg, rgba(8,18,13,.96) 42%, rgba(8,18,13,.62) 100%), url('${PHOTOS.heroBasketball}')"><div><span class="pill lime">● WEEK ${weekNumber()}</span><h2>Fitness is better<br/>when it’s a <span>game.</span></h2><p id="wx-advice">${wx ? workoutAdvice() : 'Keep your streak alive. You’re one activity away from your weekly goal.'}</p><div id="wx-chip" class="wx-chip">${wx ? weatherChipHtml() : 'Loading live weather…'}</div><div class="hero-actions"><button class="primary" data-page="workout">Start today’s session <b>→</b></button><button class="text-btn" data-page="coach">Ask FITVERSE AI</button></div></div><div class="hero-orbit"><div class="orbit-core">${state.streak}<small>DAY STREAK</small></div><div class="float-card one">🔥<strong>${pageData.counts.friends || 0} friends</strong><small>in your circle</small></div><div class="float-card two">⚡<strong>Level ${level()}</strong><small>${levelName()}</small></div></div></section>
+<section class="hero photo" style="background-image:linear-gradient(100deg, rgba(8,18,13,.96) 42%, rgba(8,18,13,.62) 100%), url('${PHOTOS.heroBasketball}')"><div><span class="pill lime">● WEEK ${weekNumber()}</span><h2>Fitness is better<br/>when it’s a <span>game.</span></h2><p id="wx-advice">${wx ? workoutAdvice() : 'Keep your streak alive. You’re one activity away from your weekly goal.'}</p><div id="wx-chip" class="wx-chip">${wx ? weatherChipHtml() : 'Loading live weather…'}</div><div class="hero-actions"><button class="primary" data-page="workout">Start today’s session <b>→</b></button><button class="text-btn" data-page="coach">Ask FITVERSE AI</button></div></div><div class="hero-orbit" id="hero3d-mount"><div class="orbit-hud" id="hero3d-hud">drag to rotate · tap for power</div><div class="orbit-core">${state.streak}<small>DAY STREAK</small></div><div class="float-card one">🔥<strong>${pageData.counts.friends || 0} friends</strong><small>in your circle</small></div><div class="float-card two">⚡<strong>Level ${level()}</strong><small>${levelName()}</small></div></div></section>
 <section class="dash-grid">
   <article class="stat-card"><span>🍽</span><div><small>CALORIES</small><strong>${s.kcal ? `${s.kcal.eaten.toLocaleString()} <em>/ ${s.kcal.target.toLocaleString()}</em>` : '—'}</strong></div><i>${s.kcal ? `${Math.round(s.kcal.eaten / Math.max(1, s.kcal.target) * 100)}%` : ''}</i><div class="bar slim"><i style="width:${s.kcal ? Math.min(100, s.kcal.eaten / Math.max(1, s.kcal.target) * 100) : 0}%"></i></div></article>
   <article class="stat-card"><span>🥩</span><div><small>PROTEIN</small><strong>${s.kcal ? `${s.kcal.protein}<em>/${s.kcal.proteinTarget}g</em>` : '—'}</strong></div><i>${s.kcal ? Math.round(s.kcal.protein / Math.max(1, s.kcal.proteinTarget) * 100) + '%' : ''}</i><div class="bar slim"><i style="width:${s.kcal ? Math.min(100, s.kcal.protein / Math.max(1, s.kcal.proteinTarget) * 100) : 0}%"></i></div></article>
@@ -662,9 +663,13 @@ function libraryPage() {
 }
 function coachPage() {
   const chat = pageData.coachChat || [];
+  const ai = pageData.aiStatus || {};
+  const brain = ai.configured
+    ? `<span class="ai-status-chip live" title="Real LLM via Groq is answering"><i></i>GROQ · ${escapeHtml((ai.model || '').split('/').pop())} ONLINE</span>`
+    : `<span class="ai-status-chip demo" title="Set GROQ_API_KEY on the server to enable the full model"><i></i>BUILT-IN COACH — add GROQ_API_KEY for full AI</span>`;
   return shell(`${pageHeader('FITVERSE AI', 'Your personal coach — Groq-powered, grounded in your real data.')}
 <section class="ai-chat" id="ai-chat">
-  <div class="ai-intro"><span class="pill lime">✦ FITVERSE AI</span><p>Ask me anything: workouts, nutrition, your progress, or plan my week.</p></div>
+  <div class="ai-intro"><span class="pill lime">✦ FITVERSE AI</span>${brain}<p>Ask me anything: workouts, nutrition, your progress, or plan my week.</p></div>
   ${chat.map(m => `<div class="ai-msg ${m.role}"><p>${m.content.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</p></div>`).join('')}
 </section>
 <div class="coach-prompts wrap"><button data-action="coachAsk" data-q="What workout should I do today?">Today's workout?</button><button data-action="coachAsk" data-q="How much protein should I eat?">Protein target?</button><button data-action="coachAsk" data-q="Create a 5-day gym routine">5-day routine</button><button data-action="coachAsk" data-q="I only have dumbbells">Home workout</button><button data-action="generateWorkout">✦ Generate workout</button><button data-action="weeklyReview">📊 Weekly recap</button></div>
@@ -695,6 +700,7 @@ function intelligencePage() {
   <section class="card dna-card">
     <div class="dna-head"><div><span class="eyebrow">🧬 YOUR FITNESS DNA</span><h2>${escapeHtml(dna.personality || 'Evolving')}</h2><p class="muted">Updates automatically as you train, eat, and compete.</p></div><button class="outline small" data-action="shareDna">Share card ↗</button></div>
     <div class="dna-body">
+      <div id="dna3d-mount"><div class="dna3d-hud">DRAG YOUR DNA · it never sleeps</div></div>
       <svg viewBox="-10 -20 340 306" class="radar" role="img" aria-label="Fitness DNA radar chart">${grid}${spokes}<polygon points="${poly}" fill="rgba(163,230,53,.22)" stroke="var(--lime)" stroke-width="2"/>${labels}</svg>
       <div class="dna-scores">${sc.map(([k, v]) => `<div class="dna-row"><span>${k}</span><div class="bar"><i style="width:${v}%"></i></div><b>${v}</b></div>`).join('')}</div>
     </div>

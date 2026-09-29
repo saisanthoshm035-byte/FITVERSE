@@ -1023,8 +1023,15 @@ class FitverseHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         query = urlparse(self.path).query
         if path == "/api/health": return self.send_json(200,{"ok":True,"database":store.storage_mode(),"sessions":"database","time":now()})
+        if path == "/api/ai/status":
+            try:
+                import groq_ai
+                return self.send_json(200, groq_ai.status())
+            except Exception:
+                return self.send_json(200, {"provider": "groq", "configured": False,
+                                            "note": "Built-in deterministic AI active — full AI unavailable."})
         # Signed-out visitors may browse PUBLIC content only; personal endpoints need a session.
-        _GUEST_OK = ("/api/auth/", "/api/health", "/api/bootstrap", "/api/leaderboard", "/api/users",
+        _GUEST_OK = ("/api/auth/", "/api/health", "/api/ai/status", "/api/bootstrap", "/api/leaderboard", "/api/users",
                      "/api/feed", "/api/reels", "/api/activities", "/api/events", "/api/communities",
                      "/api/community", "/api/businesses", "/api/challenges", "/api/search",
                      "/api/stream", "/api/friends/activity", "/api/social/context")

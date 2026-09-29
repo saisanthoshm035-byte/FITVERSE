@@ -1,108 +1,158 @@
 /* ============================================================
-   FITVERSE 5.0 — futuristic 3D layer + AI/health v5 styles.
-   Loaded LAST. Only ADDS visual depth (transform/shadow/animation)
-   and styles new v5 elements — never changes layout, so the mobile
-   layer (mobile.css) keeps full authority. All motion respects
-   prefers-reduced-motion and is toned down on small screens.
+   FITVERSE 2026 — futuristic skin + 3D model mounts + AI/health v5.
+   Loaded LAST. Adds depth (glass, neon, motion) and styles v5
+   elements; never changes layout structure, so mobile.css keeps
+   full authority. Motion respects prefers-reduced-motion.
    ============================================================ */
 
-/* ---------- 3D depth: hero panel tilts in 3D, cards lift on hover ---------- */
+/* ---------- 2026 backdrop: aurora wash + faint tech grid ---------- */
+body{
+  background:
+    radial-gradient(900px 520px at 88% -10%, rgba(201,243,107,.14), transparent 60%),
+    radial-gradient(760px 500px at -10% 30%, rgba(143,208,255,.12), transparent 55%),
+    radial-gradient(700px 700px at 55% 115%, rgba(255,118,94,.08), transparent 60%),
+    linear-gradient(180deg,#f6f9f4,#eef4ec);
+  background-attachment:fixed;
+}
+body::before{
+  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.5;
+  background-image:
+    linear-gradient(rgba(21,42,34,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(21,42,34,.05) 1px, transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(80% 60% at 50% 0%, #000 0%, transparent 100%);
+          mask-image:radial-gradient(80% 60% at 50% 0%, #000 0%, transparent 100%);
+}
+#fv3d{opacity:.28}   /* procedural canvas calmed down — three.js models are the stars now */
+
+/* ---------- glassmorphism surfaces ---------- */
+.sidebar,.stat-card,.post,.activity-card,.person-card,.community-card,.event-card,
+.biz-card,.achievement-row article,.modal-card,.review-card,.ai-chat,.message-layout{
+  background:rgba(255,255,255,.72)!important;
+  -webkit-backdrop-filter:blur(14px) saturate(1.25);
+          backdrop-filter:blur(14px) saturate(1.25);
+  border:1px solid rgba(255,255,255,.65)!important;
+  box-shadow:0 10px 40px -18px rgba(11,23,17,.25)!important;
+}
+.sidebar{border-right:1px solid rgba(255,255,255,.7)!important}
+
+/* hero: deep space gradient + neon rim */
 .hero{
-  perspective:900px;
-  background:radial-gradient(120% 160% at 85% -10%, #234a38 0%, #152a22 55%, #0d1b14 100%);
-  box-shadow:0 24px 60px -24px rgba(11,23,17,.45), inset 0 1px 0 rgba(255,255,255,.06);
+  perspective:1000px;
+  background:radial-gradient(120% 170% at 85% -20%, #2b5a44 0%, #16352a 48%, #0a1a12 100%)!important;
+  background-size:cover!important;
+  box-shadow:0 30px 80px -30px rgba(6,20,12,.65), inset 0 1px 0 rgba(255,255,255,.08);
 }
-.hero-orbit{
-  transform-style:preserve-3d;
-  transform:rotateX(6deg) rotateY(-7deg);
-  animation:fv-float 7s ease-in-out infinite;
+.hero::after{
+  content:"";position:absolute;inset:0;border-radius:24px;pointer-events:none;
+  background:linear-gradient(115deg, rgba(201,243,107,.16), transparent 38%),
+             radial-gradient(60% 90% at 80% 20%, rgba(143,208,255,.14), transparent 65%);
+  mix-blend-mode:screen;
 }
-@keyframes fv-float{
-  0%,100%{transform:rotateX(6deg) rotateY(-7deg) translateZ(0)}
-  50%{transform:rotateX(3deg) rotateY(-4deg) translateZ(14px)}
+
+/* ---------- 3D model mounts (three.js canvas lives inside) ---------- */
+.hero-orbit{perspective:1000px}
+#hero3d-mount{position:relative;width:100%;height:300px;cursor:grab}
+#hero3d-mount.grabbing{cursor:grabbing}
+#hero3d-mount canvas{border-radius:18px}
+.orbit-hud{
+  position:absolute;left:50%;bottom:6px;transform:translateX(-50%);
+  font:9px 'DM Mono',monospace;letter-spacing:1px;color:#cfe8d6;
+  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);
+  border-radius:14px;padding:4px 11px;pointer-events:none;white-space:nowrap;
+  -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
 }
 .orbit-core{
-  transform:translateZ(46px);
-  box-shadow:0 0 0 25px #ffffff0b,0 0 0 55px #ffffff08,
-             0 30px 60px -18px rgba(201,243,107,.35);
-  transition:transform .4s ease;
+  position:absolute;right:8px;top:10px;width:92px;height:92px;z-index:3;
+  transform:translateZ(40px);
+  background:linear-gradient(135deg,var(--lime),#9fe870);
+  border-radius:22px;display:grid;place-content:center;text-align:center;
+  font-size:30px;font-weight:800;color:#0b1711;
+  box-shadow:0 18px 44px -12px rgba(201,243,107,.5), inset 0 1px 0 rgba(255,255,255,.5);
 }
-.hero:hover .orbit-core{transform:translateZ(60px) scale(1.02)}
-.float-card{
-  transform:translateZ(30px);
-  box-shadow:0 14px 30px -10px rgba(0,0,0,.4);
-}
-.float-card.one{animation:fv-bob 5.5s ease-in-out infinite}
-.float-card.two{animation:fv-bob 6.5s ease-in-out .8s infinite}
-@keyframes fv-bob{0%,100%{transform:translateZ(30px) translateY(0)}50%{transform:translateZ(38px) translateY(-7px)}}
+.orbit-core small{font:8.5px 'DM Mono',monospace;margin-top:5px;letter-spacing:1px}
+.float-card{transform:translateZ(26px);border:1px solid rgba(255,255,255,.7)}
+.float-card.one{top:-4px;left:-2px}
+.float-card.two{right:-6px;bottom:26px}
 
-/* cards: subtle 3D lift (desktop pointers only — no sticky hover on touch) */
+/* DNA page 3D mount */
+#dna3d-mount{
+  position:relative;height:210px;margin:10px 0 4px;cursor:grab;border-radius:16px;
+  background:radial-gradient(90% 130% at 50% 10%, #123024 0%, #0a1a12 75%);
+  overflow:hidden;box-shadow:inset 0 0 0 1px rgba(201,243,107,.14), 0 18px 44px -20px rgba(6,20,12,.55);
+}
+#dna3d-mount.grabbing{cursor:grabbing}
+#dna3d-mount canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.dna3d-hud{
+  position:absolute;left:12px;bottom:10px;font:9px 'DM Mono',monospace;letter-spacing:1px;
+  color:#bfe9c8;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);
+  border-radius:12px;padding:4px 10px;pointer-events:none;
+  -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
+}
+#dna3d-mount + .radar, .dna-body .radar{margin-top:8px}
+
+/* neon edges on interactive chrome */
+.primary{position:relative;box-shadow:0 8px 24px -8px rgba(169,221,67,.6), inset 0 1px 0 rgba(255,255,255,.45)}
+.nav-item.active{position:relative}
+.nav-item.active::before{
+  content:"";position:absolute;left:-12px;top:20%;bottom:20%;width:3px;border-radius:3px;
+  background:linear-gradient(180deg,var(--lime),#8fd0ff);box-shadow:0 0 12px rgba(201,243,107,.8);
+}
+.brand i{box-shadow:0 0 16px rgba(201,243,107,.65)}
+
+/* cards: 3D hover lift (fine pointers only) */
 @media(hover:hover) and (pointer:fine){
   .stat-card,.post,.activity-card,.person-card,.community-card,.event-card,.biz-card,.achievement-row article{
-    transition:transform .22s ease,box-shadow .22s ease;
-    will-change:transform;
+    transition:transform .22s ease,box-shadow .22s ease;will-change:transform;
   }
   .stat-card:hover,.post:hover,.activity-card:hover,.person-card:hover,.community-card:hover,.event-card:hover,.biz-card:hover,.achievement-row article:hover{
-    transform:translateY(-3px);
-    box-shadow:0 18px 40px -18px rgba(11,23,17,.28);
+    transform:translateY(-4px);
+    box-shadow:0 22px 48px -20px rgba(11,23,17,.32);
   }
-  .stat-card:hover,.post:hover,.activity-card:hover{transform:translateY(-3px) rotateX(1.2deg)}
+  .primary:hover{transform:translateY(-1px)}
 }
-
-/* buttons get pressed-in 3D feel */
-.primary,.outline,.filter{
-  transition:transform .15s ease,box-shadow .15s ease;
-}
-.primary{box-shadow:0 6px 16px -6px rgba(169,221,67,.55)}
-@media(hover:hover){.primary:hover{transform:translateY(-1px)}}
 .primary:active,.outline:active,.filter:active{transform:translateY(1px) scale(.99)}
 
-/* nav icons: tiny 3D flip on hover (sidebar) */
-@media(hover:hover) and (pointer:fine){
-  .nav-item span{transition:transform .2s ease;display:inline-block}
-  .nav-item:hover span{transform:translateZ(6px) scale(1.12)}
-}
-
-/* ---------- 3D backdrop canvas (procedural wireframe globe, app.js five.js) ---------- */
-#fv3d{
-  position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.5;
-}
-@media(max-width:760px){#fv3d{opacity:.32}}
-
 /* ---------- AI (Groq) surfaces ---------- */
+.ai-status-chip{
+  display:inline-flex;align-items:center;gap:7px;margin-left:10px;vertical-align:middle;
+  font:9.5px 'DM Mono',monospace;letter-spacing:.8px;border-radius:16px;padding:5px 11px;
+}
+.ai-status-chip i{width:7px;height:7px;border-radius:50%;font-style:normal;animation:fv-pulse 2.2s infinite}
+.ai-status-chip.live{color:#0e2a1a;background:linear-gradient(90deg,#c9f36b,#9fe870);box-shadow:0 0 18px rgba(201,243,107,.55)}
+.ai-status-chip.live i{background:#0b1711}
+.ai-status-chip.demo{color:#5b4a12;background:#fdf3cf;border:1px solid #eadfae}
+.ai-status-chip.demo i{background:#d9a514}
+@keyframes fv-pulse{50%{opacity:.3}}
 .review-ai{
-  background:linear-gradient(100deg,rgba(201,243,107,.16),rgba(201,243,107,.05));
-  border:1px solid rgba(121,161,52,.25);
+  background:linear-gradient(100deg,rgba(201,243,107,.18),rgba(201,243,107,.04));
+  border:1px solid rgba(121,161,52,.3);border-left:3px solid var(--lime);
   border-radius:12px;padding:13px 15px;font-size:12.5px;line-height:1.6;margin:0 0 8px;
 }
-.dc-line.ai-tip{background:linear-gradient(100deg,rgba(201,243,107,.14),transparent);border-left:3px solid var(--lime);border-radius:6px;padding:8px 11px}
+.dc-line.ai-tip{background:linear-gradient(100deg,rgba(201,243,107,.16),transparent);border-left:3px solid var(--lime);border-radius:6px;padding:8px 11px}
 .composer-ai-bar{
-  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
   background:#f4f7ee;border:1px dashed #c4d3a8;border-radius:9px;
   padding:8px 12px;font-size:10.5px;color:#5b6a52;margin-top:11px;
 }
-.composer-ai-bar span b{color:#3f5a2e}
 #composer-ai-btn{white-space:nowrap}
-.plan-engine-tag{
-  display:inline-block;font:9px 'DM Mono',monospace;letter-spacing:.6px;
-  background:rgba(201,243,107,.2);color:#3c5a1e;border-radius:8px;padding:3px 8px;margin-left:8px;
-}
-.ai-status-chip{
-  display:inline-flex;align-items:center;gap:6px;
-  font:10px 'DM Mono',monospace;color:#4d6b3a;background:#f0f5e3;
-  border:1px solid #d7e4bd;border-radius:16px;padding:5px 10px;
-}
-.ai-status-chip i{width:7px;height:7px;border-radius:50%;background:#57a15f;animation:fv-pulse 2.2s infinite;font-style:normal}
-@keyframes fv-pulse{50%{opacity:.35}}
 
 /* ---------- Health Connect import card bits ---------- */
 .hc-steps{margin:8px 0;padding-left:20px;font-size:12px;color:#4c5a50;line-height:1.65}
 .hc-steps li{margin:4px 0}
 .hc-steps b{color:var(--ink)}
 
-/* ---------- reduced motion: freeze the 3D show ---------- */
+/* ---------- mobile: calm motion, keep all features ---------- */
+@media(max-width:760px){
+  #hero3d-mount{height:230px}
+  .orbit-core{width:74px;height:74px;font-size:24px;right:4px;top:4px}
+  #dna3d-mount{height:170px}
+  body::before{opacity:.35}
+  .sidebar{background:rgba(255,255,255,.9)!important}
+}
 @media(prefers-reduced-motion:reduce){
-  .hero-orbit,.float-card.one,.float-card.two,.ai-status-chip i{animation:none}
-  .hero:hover .orbit-core{transform:translateZ(46px)}
+  .ai-status-chip i{animation:none}
+  #hero3d-mount,.float-card,.orbit-core{transform:none}
+  .orbit-hud,.dna3d-hud{display:none}
   *{transition-duration:.01ms!important}
 }
