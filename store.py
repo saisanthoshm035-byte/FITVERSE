@@ -41,7 +41,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection, HTTPSConnection
 
-SESSION_TTL_DAYS = 30
+SESSION_TTL_DAYS = 365  # stay signed in for a year — only manual sign-out ends a session
 
 # ---------------------------------------------------------------------------
 # helpers

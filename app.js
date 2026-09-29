@@ -56,7 +56,18 @@ const apiHeaders = () => ({ 'Content-Type': 'application/json', ...(sessionToken
 async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...apiHeaders(), ...(options.headers || {}) } });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) { const err = new Error(data.error || 'We could not complete that action.'); err.status = response.status; throw err; }
+  if (!response.ok) {
+    // A dead token must never log the user out silently: only a MANUAL logout clears the session.
+    if (response.status === 401 && sessionToken) {
+      try {
+        const r2 = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: localStorage.getItem('fitverse-user') || '', password: localStorage.getItem('fitverse-pass') || '' }) });
+        if (r2.ok) { const d2 = await r2.json(); sessionToken = d2.token; localStorage.setItem('fitverse-session', d2.token); return api(path, options); }
+      } catch (_) {}
+      // No saved credentials or re-login failed: fall back to the cookie session if the server still honors it.
+      try { const me2 = await fetch('/api/bootstrap', { credentials: 'include' }); if (me2.ok) { const j2 = await me2.json(); if (j2?.user?.id) { const t2 = document.cookie.match(/fv_session=([^;]+)/); if (t2) { sessionToken = t2[1]; localStorage.setItem('fitverse-session', sessionToken); return api(path, options); } } } } catch (_) {}
+    }
+    const err = new Error(data.error || 'We could not complete that action.'); err.status = response.status; throw err;
+  }
   return data;
 }
 const escapeHtml = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
@@ -711,15 +722,14 @@ function coachPage() {
   const brain = ai.configured
     ? `<span class="ai-status-chip live" title="Real LLM via Groq is answering"><i></i>GROQ · ${escapeHtml((ai.model || '').split('/').pop())} ONLINE</span>`
     : `<span class="ai-status-chip demo" title="Set GROQ_API_KEY on the server to enable the full model"><i></i>BUILT-IN COACH — add GROQ_API_KEY for full AI</span>`;
-  const html = shell(`${pageHeader('FITVERSE AI', 'Your personal coach — Groq-powered, grounded in your real data.')}
-<section class="ai-chat" id="ai-chat">
-  <div class="ai-intro"><span class="pill lime">✦ FITVERSE AI</span>${brain}<p>Ask me anything: workouts, nutrition, your progress, or plan my week.</p></div>
-  ${chat.map(m => `<div class="ai-msg ${m.role}"><p>${m.content.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</p></div>`).join('')}
-</section>
-<div class="coach-prompts wrap"><button data-action="coachAsk" data-q="What workout should I do today?">Today's workout?</button><button data-action="coachAsk" data-q="How much protein should I eat?">Protein target?</button><button data-action="coachAsk" data-q="Create a 5-day gym routine">5-day routine</button><button data-action="coachAsk" data-q="I only have dumbbells">Home workout</button><button data-action="generateWorkout">✦ Generate workout</button><button data-action="weeklyReview">📊 Weekly recap</button></div>
-<form class="composer wide" id="coach-form"><input placeholder="Ask FITVERSE anything..." maxlength="500" required/><button aria-label="Send">➤</button></form>`);
-  // Land the user at the latest message, not the top of history.
-  requestAnimationFrame(() => { const c = $('#ai-chat'); if (c) c.scrollTop = c.scrollHeight; window.scrollTo(0, document.body.scrollHeight); });
+  const msgs = chat.length ? chat.map(m => `<div class="ai-msg ${m.role}"><span class="ai-ava ${m.role === 'user' ? 'me' : ''}">${m.role === 'user' ? escapeHtml(String(me().name || 'You').split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase()) : '✦'}</span><p>${m.content.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</p></div>`).join('')
+    : `<div class="ai-welcome"><span class="ai-ava big">✦</span><h3>Hey ${escapeHtml(String(me().name || 'there').split(' ')[0])} — I'm your FITVERSE coach.</h3><p>I know your training, nutrition, health data and goals. Ask me anything.</p></div>`;
+  const html = shell(`${pageHeader('FITVERSE AI', 'Your 24/7 coach — Groq-powered, grounded in your real data.')}
+<section class="ai-chat-full" id="ai-chat"><div class="ai-msgs" id="ai-msgs">${msgs}</div>
+<div class="ai-chips"><button data-action="coachAsk" data-q="What workout should I do today?">🏋 Today's workout</button><button data-action="coachAsk" data-q="What should I eat today?">🍽 Meal plan</button><button data-action="coachAsk" data-q="How am I doing this week?">📊 Week review</button><button data-action="coachAsk" data-q="Create a 5-day gym routine">📅 5-day plan</button><button data-action="generateWorkout">✦ Generate workout</button><button data-action="weeklyReview">📈 Weekly recap</button></div>
+<form class="ai-inputbar" id="coach-form"><input placeholder="Message FITVERSE AI…" maxlength="500" autocomplete="off" required/><button type="submit" aria-label="Send">➤</button></form></section>`);
+  // Land at the latest message like ChatGPT — never at the top of history.
+  requestAnimationFrame(() => { const m = $('#ai-msgs'); if (m) m.scrollTop = m.scrollHeight; });
   return html;
 }
 function intelligencePage() {
@@ -1478,7 +1488,7 @@ async function action(a, btn) {
         e.preventDefault(); const f = new FormData(e.currentTarget);
         try {
           const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: f.get('username'), password: f.get('password') }) });
-          sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken);
+          sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken); localStorage.setItem('fitverse-user', String(f.get('username') || '').toLowerCase()); localStorage.setItem('fitverse-pass', String(f.get('password') || ''));
           evtSource?.close(); evtSource = null; startSSE();
           $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render(); toast(`Welcome back, ${result.user.name}`);
         } catch (error) { toast(error.message); }
@@ -1501,7 +1511,7 @@ async function action(a, btn) {
         const btn = form.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Creating your account…';
         try {
           const result = await api('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, email, username, password: pass }) });
-          sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken);
+          sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken); localStorage.setItem('fitverse-user', username); localStorage.setItem('fitverse-pass', pass);
           evtSource?.close(); evtSource = null; startSSE();
           $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render();
           toast(`🎉 Welcome to FITVERSE, ${name.split(' ')[0]}! Your account is ready.`);
@@ -1509,7 +1519,7 @@ async function action(a, btn) {
       }; bind(); return;
     }
     case 'googleLogin': authWithGoogle(); return;
-    case 'logout': api('/api/auth/logout', { method: 'POST' }).catch(() => {}); sessionToken = ''; localStorage.removeItem('fitverse-session'); evtSource?.close(); evtSource = null; $('#modal').innerHTML = ''; hydrate().then(render); toast('Signed out of this browser session'); return;
+    case 'logout': api('/api/auth/logout', { method: 'POST' }).catch(() => {}).finally(() => { document.cookie = 'fv_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT'; }); sessionToken = ''; localStorage.removeItem('fitverse-session'); localStorage.removeItem('fitverse-user'); localStorage.removeItem('fitverse-pass'); evtSource?.close(); evtSource = null; $('#modal').innerHTML = ''; hydrate().then(render); toast('Signed out — see you soon 💪'); return;
     case 'notifications': {
       modal(`<span class="eyebrow">NOTIFICATIONS</span><h2>Your fitness loop</h2>${pageData.notifications.length ? pageData.notifications.map(n => `<div class="notice" style="${n.is_read ? 'opacity:.5' : ''}"><b>${escapeHtml(n.title)}</b><p>${escapeHtml(n.body)}</p><small>${timeShort(n.created_at)}</small></div>`).join('') : '<p>No notifications.</p>'}<button class="outline" data-action="readNotifications">Mark all read</button>`);
       bind(); return;
@@ -2328,7 +2338,7 @@ function startSSE() {
     evtSource.addEventListener('message', (e) => {
       const m = JSON.parse(e.data);
       if (state.page === 'messages' && Number(m.conversation_id) === Number(pageData.activeConversation)) {
-        pageData.messages.push(m); render(); scrollBubbles();
+        if (!pageData.messages.some(x => x.id === m.id)) { pageData.messages.push(m); render(); scrollBubbles(); }
       }
       // PERF: refresh the conversation list at most every 5s, not on every message.
       if (!startSSE._lastConvSync || Date.now() - startSSE._lastConvSync > 5000) {

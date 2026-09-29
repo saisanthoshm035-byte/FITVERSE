@@ -403,8 +403,6 @@ html,body{overflow-x:clip}
 .mini-ring::before{background:conic-gradient(var(--fv-lime),var(--fv-cyan),var(--fv-violet),var(--fv-magenta),var(--fv-lime)) !important}
 .dna-mini{background:var(--fv-card) !important;border:1px solid var(--fv-line) !important}
 .dna-mini small{color:var(--fv-mut) !important}
-.radar text{fill:rgba(201,231,255,.62) !important;text-shadow:0 1px 6px rgba(4,6,15,.9);font-weight:500}
-.radar polygon{fill:rgba(163,230,53,.16) !important}
 
 /* -- modals scroll internally: tall forms (add business, onboarding) stay reachable -- */
 .modal-card{max-height:calc(100vh - 40px) !important;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
@@ -623,6 +621,70 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
 /* -- Motion safety for new hover lifts ------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce){
   .lib-card:hover{transform:none}
+}
+
+/* ==== FITVERSE 2030 · patch v65: AI full-screen chat, crisp DNA labels, clean stat cards, free scroll ==== */
+
+/* -- home stat cards: crisp numbers, readable kcal bar (kills the blurry blue pill) -- */
+.stat-card{-webkit-backdrop-filter:none !important;backdrop-filter:none !important}
+.stat-card strong,.stat-card b,.stat-card em{opacity:1 !important;filter:none !important;text-shadow:0 0 12px rgba(0,0,0,.45)}
+.dash-grid .stat-card strong{font-size:17px;letter-spacing:.2px}
+.bar.kcal-bar{background:rgba(139,92,246,.22) !important;height:7px !important;border-radius:99px !important;box-shadow:inset 0 0 0 1px rgba(140,165,255,.14)}
+.bar.kcal-bar i{border-radius:99px !important}
+.bar.kcal-bar.empty i{background:linear-gradient(90deg,#ff5d7a,#ff8f6b) !important;box-shadow:0 0 12px rgba(255,93,122,.55) !important}
+.bar.kcal-bar.low i{background:linear-gradient(90deg,#ff9f43,#ffd166) !important;box-shadow:0 0 12px rgba(255,159,67,.5) !important}
+.bar.kcal-bar.mid i{background:linear-gradient(90deg,#ffd166,#a3ff18) !important;box-shadow:0 0 12px rgba(255,209,102,.5) !important}
+.bar.kcal-bar.ok i{background:linear-gradient(90deg,#a3ff18,#00e5ff) !important;box-shadow:0 0 12px rgba(163,255,24,.55) !important}
+.bar.kcal-bar.warn i{background:linear-gradient(90deg,#fb923c,#ffd166) !important;box-shadow:0 0 12px rgba(251,146,60,.5) !important}
+.bar.kcal-bar.over i{background:linear-gradient(90deg,#ef4444,#ff5d7a) !important;box-shadow:0 0 16px rgba(239,68,68,.65) !important}
+.dash-grid .bar{background:rgba(139,92,246,.22) !important;height:7px !important;border-radius:99px !important;box-shadow:inset 0 0 0 1px rgba(140,165,255,.14)}
+.dash-grid .bar i{background:linear-gradient(90deg,#a3ff18,#00e5ff) !important;box-shadow:0 0 12px rgba(163,255,24,.5) !important;border-radius:99px !important}
+
+/* -- DNA radar: crisp readable labels (3px dark stroke halo, bigger text) ------------- */
+.radar text{fill:#bcd8ff !important;font-size:11.5px !important;font-weight:700;text-shadow:0 0 3px #05070f, 0 0 6px #05070f, 0 0 10px #05070f, 0 1px 2px #05070f}
+
+/* -- FITVERSE AI: full-screen ChatGPT-style chat ---------------------------------- */
+.ai-chat-full{
+  display:flex;flex-direction:column;
+  height:calc(100vh - 132px);min-height:480px;
+  background:linear-gradient(160deg, rgba(13,17,38,.92), rgba(6,9,22,.96)) !important;
+  border:1px solid var(--fv-line) !important;border-radius:22px;
+  overflow:hidden;position:relative;
+  box-shadow:0 20px 60px rgba(0,0,0,.55), 0 0 40px rgba(0,229,255,.06);
+}
+.ai-chat-full:before{content:'';position:absolute;inset:0;pointer-events:none;background:radial-gradient(600px 240px at 50% -60px, rgba(0,229,255,.09), transparent 65%)}
+.ai-msgs{flex:1;overflow-y:auto;padding:20px 22px;display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth;overscroll-behavior:contain}
+.ai-msg{display:flex;gap:11px;align-items:flex-start;max-width:82%}
+.ai-msg.coach{align-self:flex-start}
+.ai-msg.user{align-self:flex-end;flex-direction:row-reverse}
+.ai-ava{flex:0 0 34px;width:34px;height:34px;border-radius:12px;display:grid;place-items:center;font-weight:800;font-size:15px;background:linear-gradient(135deg,var(--fv-cyan),var(--fv-violet));color:#04060f;box-shadow:0 0 14px rgba(0,229,255,.4)}
+.ai-ava.me{background:linear-gradient(135deg,var(--fv-lime),var(--fv-cyan));color:#04060f;box-shadow:0 0 12px rgba(163,255,18,.35)}
+.ai-ava.big{width:56px;height:56px;border-radius:18px;font-size:26px;margin:0 auto;box-shadow:0 0 26px rgba(0,229,255,.5)}
+.ai-msg p{margin:0;padding:12px 15px;border-radius:16px;font-size:13.5px;line-height:1.6}
+.ai-msg.coach p{background:rgba(22,28,58,.9);border:1px solid var(--fv-line);color:var(--fv-ink);border-top-left-radius:5px}
+.ai-msg.user p{background:linear-gradient(135deg, rgba(0,229,255,.2), rgba(139,92,246,.3));border:1px solid rgba(0,229,255,.4);color:var(--fv-ink);border-top-right-radius:5px}
+.ai-msg.coach p b{color:var(--fv-cyan)}
+.ai-welcome{text-align:center;padding:34px 20px 16px;margin:auto}
+.ai-welcome h3{color:var(--fv-ink);font-size:19px;margin:14px 0 6px}
+.ai-welcome p{color:var(--fv-mut);margin:0}
+.ai-chips{display:flex;gap:7px;flex-wrap:wrap;padding:10px 16px;border-top:1px solid var(--fv-line);background:rgba(6,9,22,.6)}
+.ai-chips button{background:rgba(10,15,34,.7);border:1px solid var(--fv-line);color:var(--fv-mut);border-radius:999px;padding:7px 12px;font-size:11px;font-weight:700;transition:all .2s}
+.ai-chips button:hover{border-color:var(--fv-cyan);color:var(--fv-ink);box-shadow:0 0 12px rgba(0,229,255,.3);transform:translateY(-1px)}
+.ai-inputbar{display:flex;gap:9px;padding:12px 14px;border-top:1px solid var(--fv-line);background:rgba(6,9,22,.85)}
+.ai-inputbar input{flex:1;background:rgba(8,12,30,.9) !important;border:1px solid var(--fv-line) !important;border-radius:999px;padding:12px 18px;color:var(--fv-ink) !important;font-size:13.5px}
+.ai-inputbar input:focus{outline:0;border-color:var(--fv-cyan) !important;box-shadow:0 0 0 3px rgba(0,229,255,.16) !important}
+.ai-inputbar button{width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,var(--fv-cyan),var(--fv-violet)) !important;color:#04060f !important;font-size:17px;box-shadow:0 0 18px rgba(0,229,255,.45);transition:transform .15s, box-shadow .2s}
+.ai-inputbar button:hover{transform:scale(1.07);box-shadow:0 0 26px rgba(0,229,255,.65)}
+.ai-inputbar button:active{transform:scale(.94)}
+
+/* -- feature slide: free, buttery scrolling (snap jail removed) -------------------- */
+.reels-wrap{scroll-snap-type:none !important}
+.reel{scroll-snap-align:none !important}
+.reel-video, .reel-photo{touch-action:pan-y}
+.modal-card, .ai-msgs, .bubbles{-webkit-overflow-scrolling:touch}
+
+@media (prefers-reduced-motion: reduce){
+  .ai-chips button:hover,.ai-inputbar button:hover{transform:none}
 }
 
 

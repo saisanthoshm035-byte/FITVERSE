@@ -1022,7 +1022,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
         # token still rides along on every request — no forced re-logins.
         tok = self.headers.get("X-Session", "")
         if tok:
-            self.send_header("Set-Cookie", f"fv_session={tok}; Path=/; Max-Age=2592000; SameSite=Lax")
+            self.send_header("Set-Cookie", f"fv_session={tok}; Path=/; Max-Age=31536000; SameSite=Lax")  # 365 days — matches session TTL
         self.end_headers()
         self.wfile.write(body)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
