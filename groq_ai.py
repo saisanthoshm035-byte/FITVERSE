@@ -50,8 +50,33 @@ SAFETY_RULES = (
 
 # ---------------------------------------------------------------- status
 
+_KEY_ALIASES = ("GROQ_API_KEY", "GROK_API_KEY", "GROQCLOUD_API_KEY", "GROQ_AI_KEY")
+
+
+def _clean(val: str) -> str:
+    """Trim whitespace and accidental wrapping quotes from a pasted key."""
+    return (val or "").strip().strip('"').strip("'").strip()
+
+
+def _api_key() -> str:
+    """First non-empty value among GROQ_API_KEY and common misspellings (GROK_API_KEY, ...)."""
+    for name in _KEY_ALIASES:
+        val = _clean(os.environ.get(name))
+        if val:
+            return val
+    return ""
+
+
+def _key_source() -> str:
+    """Name of the env var actually holding the key ('' when none) — for diagnostics only."""
+    for name in _KEY_ALIASES:
+        if _clean(os.environ.get(name)):
+            return name
+    return ""
+
+
 def configured() -> bool:
-    return bool((os.environ.get("GROQ_API_KEY") or "").strip())
+    return bool(_api_key())
 
 
 _model_cache: dict = {"ids": None, "at": 0.0}
@@ -60,7 +85,7 @@ _MODEL_TTL = 600.0  # re-check available models every 10 minutes at most
 
 def available_models() -> list[str]:
     """Model ids this API key can actually use (cached). [] on any failure."""
-    key = (os.environ.get("GROQ_API_KEY") or "").strip()
+    key = _api_key()
     if not key:
         return []
     if _model_cache["ids"] is not None and time.time() - _model_cache["at"] < _MODEL_TTL:
@@ -101,6 +126,7 @@ def status() -> dict:
     return {
         "provider": "groq",
         "configured": configured(),
+        "env_var": _key_source() or None,
         "model": model_name(),
         "fast_model": model_name(fast=True),
         "surfaces": ["coach chat", "workout generator", "meal analyzer", "weekly review", "daily tip", "post assistant"],
@@ -116,7 +142,7 @@ _UA = "FITVERSE/5.0 (fitness-web-app)"  # Cloudflare rejects default Python-urll
 def _chat(messages: list[dict], max_tokens: int = 500, temperature: float = 0.6,
           fast: bool = False, json_mode: bool = False, timeout: int = 10) -> str | None:
     """One Groq chat completion. Returns None on any failure — never raises."""
-    key = (os.environ.get("GROQ_API_KEY") or "").strip()
+    key = _api_key()
     if not (key and messages):
         return None
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}", "User-Agent": _UA}
