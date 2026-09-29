@@ -2327,7 +2327,9 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 ml=int(data.get("ml",250))
                 with connect() as db:
                     db.execute("INSERT INTO water_logs (user_id,ml,logged_on,created_at) VALUES (?,?,?,?)",(uid,ml,day,now()))
-                return self.send_json(200,{"ok":True})
+                    tot=db.execute("SELECT COALESCE(SUM(ml),0) FROM water_logs WHERE user_id=? AND logged_on=?",(uid,day)).fetchone()[0]
+                    tgt=db.execute("SELECT water_target_ml FROM user_settings WHERE user_id=?",(uid,)).fetchone()
+                return self.send_json(200,{"ok":True,"today_ml":tot,"target_ml":(tgt[0] if tgt and tgt[0] else 2500)})
             if path == "/api/progress":
                 uid=self.current_user()
                 import datetime as _dt

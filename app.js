@@ -299,6 +299,13 @@ async function loadDashboard() {
   if (state.page === 'home') render();
   startDashLive();
 }
+// Home nutrition cards flash a LIVE tag + glow for 6s after any food/water log.
+function pulseHome() {
+  if (state.page !== 'home') return;
+  pageData.__livePulse = true; render();
+  clearTimeout(window.__pulseT);
+  window.__pulseT = setTimeout(() => { if (pageData.__livePulse) { pageData.__livePulse = false; if (state.page === 'home') render(); } }, 6000);
+}
 // Nutrition/water totals refresh every 15s on home, plus right after any log action.
 function startDashLive() {
   if (window.__dashLive) return; window.__dashLive = true;
@@ -311,6 +318,14 @@ function startDashLive() {
     pageData.dash.water = wat || pageData.dash.water;
     render();
   }, 15000);
+  // Cross-panel live sync: any page announces fresh nutrition/water/workout data.
+  window.addEventListener('fv:data-updated', (e) => {
+    const d = e.detail || {};
+    if (d.nutrition) { pageData.nutrition = d.nutrition; pageData.dash.kcal = { eaten: d.nutrition.totals.kcal, target: d.nutrition.targets.kcal_target, protein: d.nutrition.totals.protein, proteinTarget: d.nutrition.targets.protein_target }; }
+    if (d.water) { pageData.water = d.water; pageData.dash.water = d.water; }
+    if (d.week) pageData.dash.week = d.week;
+    if (state.page === 'home') { pulseHome(); } else { render(); }
+  });
 }
 function applyServerState(s) {
   Object.assign(state, {
@@ -352,7 +367,7 @@ async function loadPageData(page) {
   if (page === 'home') { if (sessionToken) { add('mission', api('/api/missions').then(d => d.item || {})); add('moments', api('/api/moments').then(d => d.items || [])); } add('friendsActivity', api('/api/friends/activity').then(d => d.items || [])); add('socialCtx', api('/api/social/context').then(d => d).catch(() => ({}))); }
   if (page === 'reels' || page === 'posts') { add('reels', api('/api/reels').then(d => d.items || [])); if (!pageData.feed.length) add('feed', api('/api/feed').then(d => d.items || [])); }
   // PERF: /api/businesses is fetched once, in the businesses block below (was twice).
-  if (page === 'workout' && sessionToken) { add('workouts', api('/api/workouts').then(d => d.items || [])); add('prs', api('/api/workouts/prs').then(d => d.items || [])); }
+  if (page === 'workout' && sessionToken) { add('workouts', api('/api/workouts').then(d => d.items || [])); add('prs', api('/api/workouts/prs').then(d => d.items || [])); if (!pageData.exercises.length) add('exercises', api('/api/exercises').then(d => d.items || []).catch(() => [])); }
   if (page === 'intelligence' && sessionToken) {
     add('intel', api('/api/intelligence').then(d => d));
     add('mission', api('/api/missions').then(d => d.item || {}));
@@ -429,8 +444,8 @@ function home() {
   return shell(`${pageHeader(heroTitle, me().name ? (s.today_line || 'Here’s your day at a glance.') : 'Fitness is more fun together. Sign in to start your streak.')}
 <section class="hero photo" style="background-image:linear-gradient(100deg, rgba(8,18,13,.96) 42%, rgba(8,18,13,.62) 100%), url('${PHOTOS.heroBasketball}')"><div><span class="pill lime">● WEEK ${weekNumber()}</span><h2>Fitness is better<br/>when it’s a <span>game.</span></h2><p id="wx-advice">${wx ? workoutAdvice() : 'Keep your streak alive. You’re one activity away from your weekly goal.'}</p><div id="wx-chip" class="wx-chip">${wx ? weatherChipHtml() : 'Loading live weather…'}</div><div class="hero-actions"><button class="primary" data-page="workout">Start today’s session <b>→</b></button><button class="text-btn" data-page="coach">Ask FITVERSE AI</button></div></div><div class="hero-orbit" id="hero3d-mount"><div class="orbit-hud" id="hero3d-hud">drag to rotate · tap for power</div><div class="orbit-core">${state.streak}<small>DAY STREAK</small></div><div class="float-card one">🔥<strong>${pageData.counts.friends || 0} friends</strong><small>in your circle</small></div><div class="float-card two">⚡<strong>Level ${level()}</strong><small>${levelName()}</small></div></div></section>
 <section class="dash-grid">
-  <article class="stat-card"><span>🍽</span><div><small>CALORIES</small><strong>${s.kcal ? `${s.kcal.eaten.toLocaleString()} <em>/ ${s.kcal.target.toLocaleString()}</em>` : '—'}</strong></div><i>${s.kcal ? `${Math.round(s.kcal.eaten / Math.max(1, s.kcal.target) * 100)}%` : ''}</i><div class="bar slim"><i style="width:${s.kcal ? Math.min(100, s.kcal.eaten / Math.max(1, s.kcal.target) * 100) : 0}%"></i></div></article>
-  <article class="stat-card"><span>🥩</span><div><small>PROTEIN</small><strong>${s.kcal ? `${s.kcal.protein}<em>/${s.kcal.proteinTarget}g</em>` : '—'}</strong></div><i>${s.kcal ? Math.round(s.kcal.protein / Math.max(1, s.kcal.proteinTarget) * 100) + '%' : ''}</i><div class="bar slim"><i style="width:${s.kcal ? Math.min(100, s.kcal.protein / Math.max(1, s.kcal.proteinTarget) * 100) : 0}%"></i></div></article>
+  <article class="stat-card ${pageData.__livePulse ? 'live-pulse' : ''}"><span>🍽</span><div><small>CALORIES${pageData.__livePulse ? '<b class="live-tag">LIVE</b>' : ''}</small><strong>${s.kcal ? `${s.kcal.eaten.toLocaleString()} <em>/ ${s.kcal.target.toLocaleString()}</em>` : '—'}</strong></div><i>${s.kcal ? `${Math.round(s.kcal.eaten / Math.max(1, s.kcal.target) * 100)}%` : ''}</i><div class="bar slim"><i style="width:${s.kcal ? Math.min(100, s.kcal.eaten / Math.max(1, s.kcal.target) * 100) : 0}%"></i></div></article>
+  <article class="stat-card ${pageData.__livePulse ? 'live-pulse' : ''}"><span>🥩</span><div><small>PROTEIN${pageData.__livePulse ? '<b class="live-tag">LIVE</b>' : ''}</small><strong>${s.kcal ? `${s.kcal.protein}<em>/${s.kcal.proteinTarget}g</em>` : '—'}</strong></div><i>${s.kcal ? Math.round(s.kcal.protein / Math.max(1, s.kcal.proteinTarget) * 100) + '%' : ''}</i><div class="bar slim"><i style="width:${s.kcal ? Math.min(100, s.kcal.protein / Math.max(1, s.kcal.proteinTarget) * 100) : 0}%"></i></div></article>
   <article class="stat-card"><span>💧</span><div><small>WATER</small><strong>${s.water ? `${(s.water.today_ml / 1000).toFixed(1)}<em>/${(s.water.target_ml / 1000).toFixed(1)}L</em>` : '—'}</strong></div><i>${s.water ? Math.round(s.water.today_ml / Math.max(1, s.water.target_ml) * 100) + '%' : ''}</i><div class="bar slim"><i style="width:${s.water ? Math.min(100, s.water.today_ml / Math.max(1, s.water.target_ml) * 100) : 0}%"></i></div></article>
   <article class="stat-card"><span>🏋</span><div><small>THIS WEEK</small><strong>${s.week && s.week.sessions != null ? `${s.week.sessions}<em> workouts</em>` : `${Math.min(4, state.activities)}<em>/4</em>`}</strong></div><i>${s.week && s.week.kcal ? `${s.week.kcal} kcal` : ''}</i></article>
 </section>
@@ -596,8 +611,22 @@ function coach() {
 function workoutPage() {
   const w = pageData.workouts || [];
   const prs = pageData.prs || [];
+  const exs = pageData.exercises || [];
+  const sess = pageData.activeSession;
+  const editor = sess ? `<section class="finish-session ${sess.finishing ? 'finishing' : ''}" id="finish-session">
+  <div class="fs-head"><span class="pill lime">● SESSION IN PROGRESS</span><div><h3>${escapeHtml(sess.title)}</h3><small>Started ${timeShort(sess.startedAt)} · volume so far <b>${Math.round(sess.logs.reduce((a, x) => a + (x.weight * x.reps * x.sets || 0), 0)).toLocaleString()} kg</b></small></div></div>
+  <div class="fs-rows" id="fs-rows">${sess.logs.map((x, i) => `<div class="wo-row"><select data-i="${i}" data-k="exercise_id">${(exs.length ? exs : [{ id: 0, name: 'Exercise', muscle: '' }]).map(e => `<option value="${e.id}" ${e.id === x.exercise_id ? 'selected' : ''}>${escapeHtml(e.name)} ${e.muscle ? '(' + escapeHtml(e.muscle) + ')' : ''}</option>`).join('')}</select><input type="number" value="${x.sets}" min="1" max="20" data-i="${i}" data-k="sets" aria-label="Sets"/><input type="number" value="${x.reps}" min="1" max="100" data-i="${i}" data-k="reps" aria-label="Reps"/><input type="number" value="${x.weight}" min="0" step="0.5" data-i="${i}" data-k="weight" aria-label="Weight kg"/><button class="more" data-action="fsRemoveRow" data-i="${i}" aria-label="Remove" title="Remove exercise">×</button></div>`).join('')}</div>
+  <div class="fs-actions">
+    <button class="outline small" data-action="fsAddRow">＋ Exercise</button>
+    <button class="outline small" data-action="fsAiFill">✦ AI fill this session</button>
+    <button class="outline small" data-action="fsDiscard">Discard</button>
+    <button class="primary" data-action="fsFinish">✓ FINISH WORKOUT</button>
+  </div>
+  <p class="loading fs-note">Volume = weight × reps × sets. PRs are detected automatically when you finish.</p>
+</section>` : '';
   return shell(`${pageHeader('Workout', 'Log sessions, track volume, celebrate PRs.')}
-<div class="workout-top"><button class="primary" data-action="logWorkout">＋ Log a workout</button><button class="outline" data-action="generateWorkout">✦ Generate with AI</button><button class="outline" data-page="library">Exercise library</button><button class="outline" data-action="customExercise">✚ Custom exercise</button></div>
+<div class="workout-top"><button class="primary" data-action="logWorkout">＋ Log a workout</button><button class="outline" data-action="fsStart">▶ Start session · Finish later</button><button class="outline" data-action="generateWorkout">✦ Generate with AI</button><button class="outline" data-page="library">Exercise library</button><button class="outline" data-action="customExercise">✚ Custom exercise</button></div>
+${editor}
 <section class="section-head"><div><span class="eyebrow">HISTORY</span><h2>Recent sessions</h2></div></section>
 ${w.length ? `<div class="session-list">${w.map(s => `<article class="session-card">
   <div class="session-date"><b>${dayShort(s.created_at)}</b><small>${timeShort(s.created_at)}</small></div>
@@ -1984,6 +2013,68 @@ async function action(a, btn) {
     case 'createReel': openComposer('reel'); return;
     case 'activityDetail': activityDetail(id); return;
     // ===== FITVERSE 2.0 actions =====
+    case 'fsStart': {
+      const exs0 = pageData.exercises.length ? pageData.exercises : (await api('/api/exercises')).items || [];
+      pageData.exercises = exs0;
+      pageData.activeSession = { title: 'Training session', startedAt: new Date().toISOString(), logs: [{ exercise_id: exs0[0]?.id || 0, sets: 3, reps: 10, weight: 0 }] };
+      render(); toast('Session started — fill it in, then hit FINISH WORKOUT');
+      return;
+    }
+    case 'fsAddRow': {
+      const s1 = pageData.activeSession; if (!s1) return;
+      const exs1 = pageData.exercises || [];
+      s1.logs.push({ exercise_id: exs1[0]?.id || 0, sets: 3, reps: 10, weight: 0 });
+      render();
+      return;
+    }
+    case 'fsRemoveRow': {
+      const s2 = pageData.activeSession; if (!s2) return;
+      s2.logs.splice(Number(btn.dataset.i), 1);
+      render();
+      return;
+    }
+    case 'fsAiFill': {
+      const s3 = pageData.activeSession; if (!s3) return;
+      try {
+        toast('✦ AI is building your session…');
+        const plan = await api('/api/ai/workout', { method: 'POST', body: JSON.stringify({ goal: 'Build muscle', duration: 45, style: 'full', equipment: 'Full gym' }) });
+        const exs3 = pageData.exercises.length ? pageData.exercises : (await api('/api/exercises')).items || [];
+        pageData.exercises = exs3;
+        const byName = Object.fromEntries(exs3.map(e => [e.name, e.id]));
+        s3.title = plan.title || s3.title;
+        s3.logs = (plan.items || []).map(x => ({ exercise_id: byName[x.exercise] || exs3[0]?.id || 0, sets: x.sets || 3, reps: parseInt(x.reps) || 10, weight: 0 })).filter(x => x.exercise_id);
+        render(); toast(`✦ AI filled ${s3.logs.length} exercises — set your weights, then FINISH`);
+      } catch (e) { toast(e.message); }
+      return;
+    }
+    case 'fsDiscard': {
+      pageData.activeSession = null; render(); toast('Session discarded');
+      return;
+    }
+    case 'fsFinish': {
+      const s4 = pageData.activeSession; if (!s4) return;
+      const rows = $$('#fs-rows .wo-row');
+      rows.forEach((r, i) => { if (!s4.logs[i]) return; $$('select,input', r).forEach(el => { if (el.dataset.k) s4.logs[i][el.dataset.k] = el.tagName === 'SELECT' ? Number(el.value) : Number(el.value); }); });
+      s4.logs = s4.logs.filter(x => x.exercise_id && (x.sets > 0 && x.reps > 0));
+      if (!s4.logs.length) { toast('Add at least one exercise with sets & reps'); return; }
+      s4.finishing = true; render();
+      try {
+        const dur = Math.max(5, Math.round((Date.now() - new Date(s4.startedAt).getTime()) / 60000)) || 45;
+        const res = await api('/api/workouts', { method: 'POST', body: JSON.stringify({ title: s4.title, duration_min: dur, logs: s4.logs.map(x => ({ exercise_id: Number(x.exercise_id), sets: Number(x.sets), reps: Number(x.reps), weight: Number(x.weight) })) }) });
+        pageData.activeSession = null;
+        dispatchEvent(new CustomEvent('fv:data-updated', { detail: { week: { sessions: (pageData.dash?.week?.sessions || 0) + 1, kcal: (pageData.dash?.week?.kcal || 0) + (res.est_kcal || 0) } } }));
+        if (res.pr_count > 0) celebrate(res.pr_count);
+        modal(`<span class="ticket-check">✓</span><span class="eyebrow">WORKOUT FINISHED</span><h2>Beast mode complete 💪</h2>
+        <div class="scan-result"><div class="scan-big"><b>${(res.total_volume || 0).toLocaleString()}</b><em>kg total volume</em></div>
+        <div class="scan-macros"><span><b>${res.est_kcal || '—'}</b><small>kcal burned</small></span><span><b>${res.pr_count || 0}</b><small>new PR${res.pr_count === 1 ? '' : 's'}</small></span></div></div>
+        <p class="loading est-note">Saved to your history — your streak, weekly goal, PRs and AI coach now reflect this session.</p>
+        <div class="hero-actions"><button class="primary" data-action="close">Done</button><button class="outline" data-action="weeklyReview">View recap</button></div>`);
+        bind();
+        await hydrate(); await loadPageData('workout'); state.page = 'workout'; render();
+        toast(`Finished · ${(res.total_volume || 0).toLocaleString()} kg volume · +60 XP${res.pr_count ? ` · 🔥 ${res.pr_count} PR!` : ''}`);
+      } catch (err) { s4.finishing = false; render(); toast(err.message); }
+      return;
+    }
     case 'logWorkout': {
       const exs = pageData.exercises.length ? pageData.exercises : (await api('/api/exercises')).items || [];
       pageData.exercises = exs;
@@ -2056,12 +2147,10 @@ async function action(a, btn) {
       pageData.exercises = exs;
       const byName = Object.fromEntries(exs.map(e => [e.name, e.id]));
       const logs = p.items.map(x => ({ exercise_id: byName[x.exercise] || exs[0].id, sets: x.sets, reps: parseInt(x.reps) || 10, weight: 0 })).filter(x => x.exercise_id);
-      try {
-        const res = await api('/api/workouts', { method: 'POST', body: JSON.stringify({ title: p.title, duration_min: parseInt(p.params.duration) || 45, logs }) });
-        if (res.pr_count) celebrate(res.pr_count);
-        toast(`Workout saved — +60 XP${res.pr_count ? ` · 🔥 ${res.pr_count} PR!` : ''}`);
-        state.page = 'workout'; await loadPageData('workout'); render();
-      } catch (err) { toast(err.message); }
+      // Land the plan in the live Finish-Workout editor so the user can tweak weights first.
+      pageData.activeSession = { title: p.title, startedAt: new Date().toISOString(), logs };
+      state.page = 'workout'; await loadPageData('workout'); render();
+      toast('Plan loaded into your session — adjust weights, then FINISH WORKOUT');
       return;
     }
     case 'logMeal': {
@@ -2091,8 +2180,8 @@ async function action(a, btn) {
         try {
           let last = null;
           for (const it of items) last = await api('/api/nutrition', { method: 'POST', body: JSON.stringify(it) });
-          if (last?.totals) { pageData.nutrition = { ...(pageData.nutrition || {}), totals: last.totals, items: last.items, targets: pageData.nutrition?.targets || {} }; }
-          $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); if (state.page === 'home') render();
+          if (last?.totals) { pageData.nutrition = { ...(pageData.nutrition || {}), totals: last.totals, items: last.items, targets: pageData.nutrition?.targets || {} }; dispatchEvent(new CustomEvent('fv:data-updated', { detail: { nutrition: pageData.nutrition } })); }
+          $('#modal').innerHTML = ''; await loadPageData('nutrition'); render();
           toast(`${items.length} item${items.length > 1 ? 's' : ''} logged · +${items.length * 5} XP`);
         } catch (err) { toast(err.message); }
       };
@@ -2120,7 +2209,8 @@ async function action(a, btn) {
         const r = await api('/api/ai/meal', { method: 'POST', body: JSON.stringify({ desc: name, grams: 350 }) });
         const it = r.item || {};
         const t = it.totals || { kcal: 350, protein_g: 15, carbs_g: 30, fat_g: 10 };
-        await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: it.title || name.trim(), meal: m, kcal: t.kcal, protein_g: t.protein_g, carbs_g: t.carbs_g, fat_g: t.fat_g }) });
+        const rr = await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: it.title || name.trim(), meal: m, kcal: t.kcal, protein_g: t.protein_g, carbs_g: t.carbs_g, fat_g: t.fat_g }) });
+        if (rr?.totals) { pageData.nutrition = { ...(pageData.nutrition || {}), totals: rr.totals, items: rr.items, targets: pageData.nutrition?.targets || {} }; dispatchEvent(new CustomEvent('fv:data-updated', { detail: { nutrition: pageData.nutrition } })); }
         await loadPageData('nutrition'); render(); toast(`Logged to ${m} · AI estimated ${t.kcal} kcal`);
       } catch (e) { toast(e.message); }
       return;
@@ -2142,7 +2232,8 @@ async function action(a, btn) {
         $('#ai-log-add').onclick = async () => {
           try {
             const rr = await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: it.title || name.trim(), meal: m, kcal: t.kcal, protein_g: t.protein_g, carbs_g: t.carbs_g, fat_g: t.fat_g }) });
-            $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); if (state.page === 'home') render(); toast(`Added to ${m}`);
+            if (rr?.totals) { pageData.nutrition = { ...(pageData.nutrition || {}), totals: rr.totals, items: rr.items, targets: pageData.nutrition?.targets || {} }; dispatchEvent(new CustomEvent('fv:data-updated', { detail: { nutrition: pageData.nutrition } })); }
+            $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); toast(`Added to ${m}`);
           } catch (e2) { toast(e2.message); }
         };
       } catch (e) { toast(e.message); }
@@ -2169,7 +2260,7 @@ async function action(a, btn) {
           <div class="hero-actions"><button class="primary" id="scan-add" data-meal="${f.meal}">Add to ${escapeHtml(f.meal)}</button><button class="outline" data-action="close">Edit instead</button></div>`);
           bind();
           $('#scan-add').onclick = async () => {
-            try { const rr = await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: r.title, meal: f.meal, kcal: r.totals.kcal, protein_g: r.totals.protein_g, carbs_g: r.totals.carbs_g, fat_g: r.totals.fat_g }) }); $('#modal').innerHTML = ''; if (rr?.totals) pageData.nutrition = { ...(pageData.nutrition || {}), totals: rr.totals, items: rr.items }; await loadPageData('nutrition'); render(); if (state.page === 'home') render(); toast(`Added to ${f.meal}`); } catch (err) { toast(err.message); }
+            try { const rr = await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: r.title, meal: f.meal, kcal: r.totals.kcal, protein_g: r.totals.protein_g, carbs_g: r.totals.carbs_g, fat_g: r.totals.fat_g }) }); $('#modal').innerHTML = ''; if (rr?.totals) { pageData.nutrition = { ...(pageData.nutrition || {}), totals: rr.totals, items: rr.items, targets: pageData.nutrition?.targets || {} }; dispatchEvent(new CustomEvent('fv:data-updated', { detail: { nutrition: pageData.nutrition } })); } await loadPageData('nutrition'); render(); toast(`Added to ${f.meal}`); } catch (err) { toast(err.message); }
           };
         } catch (err) { toast(err.message); }
       };
@@ -2197,7 +2288,7 @@ async function action(a, btn) {
     case 'addWater': {
       const ml = Number(btn.dataset.ml || 0);
       if (!(ml > 0)) return toast('Invalid amount');
-      try { await api('/api/water', { method: 'POST', body: JSON.stringify({ ml }) }); await loadPageData(state.page); render(); toast(`+${ml} ml logged 💧`); }
+      try { const wr = await api('/api/water', { method: 'POST', body: JSON.stringify({ ml }) }); if (wr?.today_ml != null) { pageData.water = { ...(pageData.water || {}), today_ml: wr.today_ml, target_ml: wr.target_ml }; dispatchEvent(new CustomEvent('fv:data-updated', { detail: { water: pageData.water } })); } await loadPageData(state.page); render(); toast(`+${ml} ml logged 💧`); }
       catch (err) { toast(err.message); }
       return;
     }
@@ -2209,7 +2300,7 @@ async function action(a, btn) {
         if (!(amt > 0)) return toast('Enter an amount greater than 0');
         const ML = { ml: 1, l: 1000, oz: 29.5735, gal: 3785.41 };
         const ml = Math.round(amt * (ML[f.unit] || 1));
-        try { await api('/api/water', { method: 'POST', body: JSON.stringify({ ml }) }); $('#modal').innerHTML = ''; await loadPageData('nutrition'); render(); toast(`Added ${(ml / 1000).toFixed(2)} L of water 💧`); }
+        try { const wr = await api('/api/water', { method: 'POST', body: JSON.stringify({ ml }) }); $('#modal').innerHTML = ''; if (wr?.today_ml != null) { pageData.water = { ...(pageData.water || {}), today_ml: wr.today_ml, target_ml: wr.target_ml }; dispatchEvent(new CustomEvent('fv:data-updated', { detail: { water: pageData.water } })); } await loadPageData('nutrition'); render(); toast(`Added ${(ml / 1000).toFixed(2)} L of water 💧`); }
         catch (err) { toast(err.message); }
       };
       bind(); return;

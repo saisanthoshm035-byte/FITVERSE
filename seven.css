@@ -640,6 +640,43 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
 .dash-grid .bar{background:rgba(139,92,246,.22) !important;height:7px !important;border-radius:99px !important;box-shadow:inset 0 0 0 1px rgba(140,165,255,.14)}
 .dash-grid .bar i{background:linear-gradient(90deg,#a3ff18,#00e5ff) !important;box-shadow:0 0 12px rgba(163,255,24,.5) !important;border-radius:99px !important}
 
+/* -- home cards: bigger, unmissable numbers + LIVE pulse after a fresh log -------- */
+.dash-grid .stat-card{position:relative;min-height:112px}
+.dash-grid .stat-card > div{position:relative;z-index:2}
+.dash-grid .stat-card small{font-size:10px;letter-spacing:1.2px}
+.dash-grid .stat-card strong{font-size:24px !important;letter-spacing:-.5px;font-weight:800}
+.dash-grid .stat-card strong em{font-size:11px;color:var(--fv-mut)}
+.dash-grid .stat-card > i{font-size:13px;font-weight:800;color:var(--fv-lime) !important;text-shadow:0 0 10px rgba(163,255,24,.45)}
+.live-tag{
+  display:inline-block;margin-left:7px;padding:1px 7px;border-radius:99px;
+  background:linear-gradient(92deg,var(--fv-lime),var(--fv-cyan));color:#04060f;
+  font:800 8.5px 'DM Mono',monospace;letter-spacing:1px;vertical-align:1px;
+  box-shadow:0 0 12px rgba(163,255,24,.6);animation:fv-blink 1s steps(2) infinite;
+}
+@keyframes fv-blink{50%{opacity:.35}}
+.live-pulse{
+  border-color:rgba(163,255,18,.65) !important;
+  box-shadow:0 0 0 1px rgba(163,255,18,.4), 0 0 26px rgba(163,255,18,.28), 0 14px 44px rgba(0,0,0,.5) !important;
+  animation:fv-pulse 1.1s ease-in-out 3;
+}
+@keyframes fv-pulse{50%{transform:translateY(-3px) scale(1.015)}}
+
+/* -- Finish Workout: live session editor ------------------------------------------ */
+.finish-session{
+  background:linear-gradient(160deg, rgba(22,28,58,.88), rgba(9,13,30,.92)) !important;
+  border:1px solid rgba(163,255,18,.4) !important;border-radius:18px;
+  padding:18px;margin:0 0 18px;box-shadow:0 0 30px rgba(163,255,18,.1), 0 14px 40px rgba(0,0,0,.5);
+}
+.finish-session.finishing{opacity:.65;pointer-events:none;animation:fv-blink 1.2s steps(2) infinite}
+.fs-head{display:flex;gap:13px;align-items:center;margin-bottom:13px;flex-wrap:wrap}
+.fs-head h3{color:var(--fv-ink);margin:0;font-size:16px}
+.fs-head small{color:var(--fv-mut)}
+.fs-head small b{color:var(--fv-lime)}
+.fs-rows{display:grid;gap:8px}
+.fs-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}
+.fs-actions .primary{margin-left:auto;box-shadow:0 0 22px rgba(163,255,18,.45) !important}
+.fs-note{margin:9px 0 0}
+
 /* -- DNA radar: crisp readable labels (3px dark stroke halo, bigger text) ------------- */
 .radar text{fill:#bcd8ff !important;font-size:11.5px !important;font-weight:700;text-shadow:0 0 3px #05070f, 0 0 6px #05070f, 0 0 10px #05070f, 0 1px 2px #05070f}
 
