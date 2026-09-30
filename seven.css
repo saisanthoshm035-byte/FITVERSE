@@ -858,4 +858,39 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
 .ex-hero{height:120px;border-radius:13px;background-size:cover;background-position:center;border:1px solid var(--fv-line);margin-bottom:12px}
 .upi-note{color:var(--fv-lime)}
 
+/* ==== patch v71: crisp scroll, chat fixes, no dead space ==================
+   The app shell padded every page with ~180px of empty bottom space and the
+   AI chat had a fixed tall viewport, so users scrolled into nothing. Cards
+   now end where their content ends; the page ends with the last card. ==== */
+main{padding-bottom:26px !important}
+@media (max-width:760px){ main{padding-bottom:calc(20px + 70px + env(safe-area-inset-bottom, 0px)) !important} }
+
+/* the ambient 3D canvas was appended to <body> unpositioned — it silently
+   added a FULL VIEWPORT of dead scroll to every page. Pin it behind content. */
+#fv3d{position:fixed !important;inset:0;z-index:-1 !important;pointer-events:none}
+
+/* -- FITVERSE AI: chat fills the screen, internal scroll only in messages -- */
+.ai-chat-full{height:calc(100dvh - 190px) !important;min-height:420px}
+.ai-msgs{overscroll-behavior:contain}
+@media (max-width:760px){
+  .ai-chat-full{height:calc(100dvh - 205px) !important}
+  .conv-side{max-height:44dvh;overflow-y:auto}
+}
+
+/* -- Messages: the chat area scrolls INSIDE, names never jump -- */
+.message-layout{height:calc(100dvh - 190px) !important;min-height:440px}
+.message-layout .chat{display:flex !important;flex-direction:column;min-height:0;overflow:hidden}
+.message-layout .bubbles{flex:1 1 auto !important;overflow-y:auto !important;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+.message-layout .chat-head{flex:0 0 auto}
+.message-layout .composer{flex:0 0 auto}
+.bubbles .msg-row{min-height:0}
+.bubbles>*{flex-shrink:0 !important}
+.msg-row .pavatar{flex:0 0 36px}
+@media (max-width:760px){
+  .message-layout{height:auto !important;min-height:0}
+  .message-layout .chat{height:calc(100dvh - 320px);min-height:380px}
+  .conversation-list{max-height:190px}
+  .newchat-strip{max-height:150px;overflow-y:auto}
+}
+
 

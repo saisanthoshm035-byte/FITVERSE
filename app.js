@@ -572,7 +572,7 @@ function postCard(p) {
   const rmap = {}; (p.reactions || []).forEach(r => { rmap[r.reaction] = r.n; });
   const mine = new Set(p.my_reactions || []);
   const reactBtns = REACTIONS.map(([k, ic, lab]) => `<button class="react ${mine.has(k) ? 'on' : ''}" data-action="react" data-id="${p.id}" data-reaction="${k}" aria-label="${lab}">${ic}${rmap[k] ? ` <small>${rmap[k]}</small>` : ''}</button>`).join('');
-  return `<article class="post" data-post="${p.id}"><div class="post-author">${photoAvatar(p.name, p.author_id || p.id)}<div><strong>${escapeHtml(p.name)}</strong><small>${icon} ${label} · ${timeShort(p.created_at)}</small></div><button data-action="postMenu" data-id="${p.id}">•••</button></div>${socialChip('posts', p.id)}<p>${escapeHtml(p.body)}</p>${p.photo ? (p.media === 'video' ? `<video class="post-photo" src="${p.photo}" controls preload="metadata"></video>` : `<img class="post-photo" src="${p.photo}" alt="" loading="lazy"/>`) : ''}<div class="react-row">${reactBtns}</div><div class="post-actions"><button data-action="like" data-id="${p.id}">${p.liked ? '♥ Liked' : '♡ Like'} <small>${p.likes}</small></button><button data-action="comment" data-id="${p.id}">◌ Comment <small>${p.comments}</small></button><button data-action="share" data-id="${p.id}">↗ Share</button></div></article>`;
+  return `<article class="post" data-post="${p.id}"><div class="post-author">${photoAvatar(p.name, p.author_id || p.id)}<div><strong>${escapeHtml(p.name)}</strong><small>${icon} ${label} · ${timeShort(p.created_at)}</small></div><button data-action="postMenu" data-id="${p.id}">•••</button></div>${socialChip('posts', p.id)}<p>${escapeHtml(p.body)}</p>${p.photo ? (p.media === 'video' ? `<video class="post-photo" src="${p.photo}" controls preload="metadata" onerror="this.closest('article').querySelector('.post-photo-wrap')?.remove()"></video>` : `<span class="post-photo-wrap"><img class="post-photo" src="${p.photo}" alt="" loading="lazy" onerror="this.parentElement.remove()"/></span>`) : ''}<div class="react-row">${reactBtns}</div><div class="post-actions"><button data-action="like" data-id="${p.id}">${p.liked ? '♥ Liked' : '♡ Like'} <small>${p.likes}</small></button><button data-action="comment" data-id="${p.id}">◌ Comment <small>${p.comments}</small></button><button data-action="share" data-id="${p.id}">↗ Share</button></div></article>`;
 }
 function activity(icon, title, people, time, place, type, id, joined) {
   return `<article class="activity-card" data-action="activityDetail" data-id="${id || 1}" style="cursor:pointer"><div class="activity-icon photo-tile" style="background-image:url('${sportPhoto(type)}')"><span>${icon}</span></div><div class="activity-meta"><span>${escapeHtml(type)}</span><h3>${escapeHtml(title)}</h3>${socialChip('activities', id)}<p>◉ ${escapeHtml(place)}</p><div><b>◷ ${escapeHtml(time)}</b><b>◉ ${escapeHtml(people)}</b></div></div><button class="join ${joined ? 'joined' : ''}" data-action="joinActivity" data-id="${id || 1}">${joined ? 'Joined ✓' : 'Join +'}</button></article>`;
@@ -660,13 +660,21 @@ ${loadingStrip('Syncing your inbox')}`);
 ${emptyState('✉', 'No conversations yet', 'Open any athlete’s profile and tap Message — your chat stays private between the two of you.', 'discover', 'Find athletes')}`);
   const active = convs.find(c => c.id === pageData.activeConversation) || convs[0];
   const msgs = pageData.messages;
+  // FITVERSE 6.3: every sender carries a resolved name+avatar — optimistic sends
+  // and SSE pushes used to arrive nameless and the row rendered glitchy.
+  const ME_ID = Number(me().id || 1);
+  const nameOf = (m) => {
+    if (m.sender_id === ME_ID) return me().name || 'You';
+    return m.name || active.title || 'Athlete';
+  };
   // Group consecutive messages by sender; day dividers; photo avatars.
   const bubbles = msgs.map((m, i) => {
     const prev = msgs[i - 1];
-    const mine = me().id ? m.sender_id === me().id : m.sender_id === 1;
+    const mine = m.sender_id === ME_ID;
     const grouped = prev && prev.sender_id === m.sender_id;
     const showDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
-    return `${showDay ? `<div class="day-divider"><span>${dayShort(m.created_at)}</span></div>` : ''}<div class="msg-row ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}">${!grouped ? photoAvatar(m.name || (mine ? (me().name || 'You') : (active.title || 'Athlete')), m.sender_id, 36, m.avatar_url) : '<span class="pavatar-spacer"></span>'}<p class="${mine ? 'sent' : 'received'}">${escapeHtml(m.body)}<time>${m.created_at?.includes('T') ? timeShort(m.created_at) : escapeHtml(m.created_at || 'now')}</time></p></div>`;
+    const who = nameOf(m);
+    return `${showDay ? `<div class="day-divider"><span>${dayShort(m.created_at)}</span></div>` : ''}<div class="msg-row ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}">${!grouped ? photoAvatar(who, m.sender_id, 36, m.avatar_url) : '<span class="pavatar-spacer"></span>'}<p class="${mine ? 'sent' : 'received'}">${escapeHtml(m.body)}<time>${m.created_at?.includes('T') ? timeShort(m.created_at) : escapeHtml(m.created_at || 'now')}</time></p></div>`;
   }).join('') || '<p style="opacity:.6">Say hi 👋</p>';
   return shell(`${pageHeader('Messages', 'Real conversations, stored in your database.')}
 <div class="message-layout"><aside class="conversation-list"><div class="message-search">⌕ <input id="chat-search" placeholder="Search chats" style="border:0;background:none;outline:0;width:80%"/></div>${convs.map(c => `<button class="conversation ${c.id === pageData.activeConversation ? 'selected' : ''}" data-conv="${c.id}">${photoAvatar(c.title, c.other_id || c.id, 36, c.other_avatar_url)}<div><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml((c.last_message || 'Say hi').slice(0, 34))}</small></div><time>${c.last_at ? timeShort(c.last_at) : ''}</time></button>`).join('')}
@@ -716,6 +724,7 @@ function workoutPage() {
   <p class="loading fs-note">Volume = weight × reps × sets. PRs are detected automatically when you finish.</p>
 </section>` : '';
   return shell(`${pageHeader('Workout', 'Log sessions, track volume, celebrate PRs.')}
+${(pageData.workouts || []).length && pageData.woFilter ? `<p class="loading">Filtered by <b>${escapeHtml(String(pageData.woFilter))}</b> — <button class="text-btn" data-action="woFilter" data-id="">show all</button></p>` : ''}
 <div class="workout-top"><button class="primary" data-action="logWorkout">＋ Log a workout</button><button class="outline" data-action="fsStart">▶ Start session · Finish later</button><button class="outline" data-action="generateWorkout">✦ Generate with AI</button><button class="outline" data-page="library">Exercise library</button><button class="outline" data-action="customExercise">✚ Custom exercise</button></div>
 <div class="wo-style-chips"><button class="chip" data-action="quickAction" data-qa="easy">🪶 Easy & gentle</button><button class="chip" data-action="genStyle" data-style="cardio">🏃 Cardio</button><button class="chip" data-action="genStyle" data-style="home">🏠 Home workout</button><button class="chip" data-action="genStyle" data-style="yoga">🧘 Yoga</button></div>
 ${editor}
@@ -765,7 +774,8 @@ ${loadingStrip('Opening your food diary')}`);
 <div class="water-actions"><button class="outline" data-action="addWater" data-ml="250">+250ml</button><button class="outline" data-action="addWater" data-ml="500">+500ml</button><button class="primary small" data-action="addWater" data-ml="750">+750ml</button><button class="outline small" data-action="addWaterCustom">＋ Add Water</button></div></div>
 ${suggestStrip()}
 <section class="section-head" style="margin-top:22px"><div><span class="eyebrow">🇮🇳 HEALTH-DATA DIET</span><h2>Indian plate plan</h2></div><button class="outline small" data-action="indianDiet">✦ Build my plan</button></section>
-<p class="loading" style="margin:0 0 14px">Roti-dal-sabzi plates auto-tuned to your calorie target, diet preference and — if you're 30+ and tracking them — your blood pressure and fasting sugar. High BP adds low-salt swaps; high sugar adds low-GI swaps and post-meal walks.</p><div><span class="eyebrow">FOOD DIARY</span><h2>Today's meals</h2></div><button class="primary small" data-action="logMeal">＋ Log food</button><button class="outline small" data-action="scanMeal">✦ AI meal scan</button></div>
+<p class="loading" style="margin:0 0 14px">Roti-dal-sabzi plates auto-tuned to your calorie target, diet preference and — if you're 30+ and tracking them — your blood pressure and fasting sugar. High BP adds low-salt swaps; high sugar adds low-GI swaps and post-meal walks.</p>
+<div class="section-head"><div><span class="eyebrow">FOOD DIARY</span><h2>Today's meals</h2></div><div style="display:flex;gap:8px"><button class="primary small" data-action="logMeal">＋ Log food</button><button class="outline small" data-action="scanMeal">✦ AI meal scan</button></div></div>
 ${meals.map(m => {
   const items = (n.items || []).filter(x => x.meal === m);
   const mkcal = items.reduce((a, b) => a + b.kcal, 0);
@@ -1683,7 +1693,8 @@ function bind() {
     try {
       if (f.dataset.form === 'coach') { const result = await api('/api/coach?q=' + encodeURIComponent(message)); pageData.coach = result.reply; render(); return; }
       // Optimistic send: show instantly, then sync with the server (which may auto-reply).
-      pageData.messages.push({ sender_id: me().id || 1, name: me().name || 'You', body: message, created_at: new Date().toISOString() });
+      // v6.3: carry id=0 + avatar so the pending bubble renders identically.
+      pageData.messages.push({ id: 0, sender_id: me().id || 1, name: me().name || 'You', body: message, created_at: new Date().toISOString(), avatar_url: me().avatar_url || '' });
       render(); scrollBubbles();
       await api('/api/messages', { method: 'POST', body: JSON.stringify({ body: message, conversation_id: f.dataset.conv || 1 }) });
       const fresh = (await api(`/api/conversations/${f.dataset.conv || 1}`)).items || [];

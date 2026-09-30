@@ -404,6 +404,18 @@ CREATE TABLE IF NOT EXISTS notification_prefs (
 CREATE INDEX IF NOT EXISTS idx_biz_products ON business_products(business_id, position);
 CREATE INDEX IF NOT EXISTS idx_biz_follows_user ON business_follows(user_id);
 CREATE INDEX IF NOT EXISTS idx_biz_posts ON business_posts(business_id);
+
+-- ===== durable uploads: cloud hosts wipe the uploads/ folder on every
+-- redeploy, so uploaded post photos vanished while the DB still referenced
+-- them. Bytes now ALSO live in this table; serve_static falls back to it
+-- whenever the disk file is missing. Local sqlite keeps both copies too.
+CREATE TABLE IF NOT EXISTS uploads (
+  filename TEXT PRIMARY KEY,
+  content BLOB NOT NULL,
+  content_type TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 
@@ -2291,6 +2303,16 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 fname=f"up_{secrets.token_hex(8)}.{ext}"
                 (ROOT/"uploads").mkdir(exist_ok=True)
                 (ROOT/"uploads"/fname).write_bytes(raw)
+                # Durable copy in the DB — uploads/ is wiped on Render redeploys,
+                # and serve_static serves from this table when the file is gone.
+                _vext = {"mp4":"mp4","webm":"webm","mov":"quicktime"}.get(ext, ext)
+                _ctype = ("video/" if ext in ("mp4","webm","mov") else "image/") + _vext
+                try:
+                    with connect() as db:
+                        db.execute("INSERT OR REPLACE INTO uploads (filename,content,content_type,bytes,created_at) VALUES (?,?,?,?,?)",
+                                   (fname, raw, _ctype, len(raw), now()))
+                except sqlite3.OperationalError:
+                    pass  # disk copy still exists — DB copy is best-effort
                 return self.send_json(201,{"ok":True,"path":f"uploads/{fname}","media":"video" if ext in ("mp4","webm","mov") else "image"})
             if path == "/api/follow":
                 uid=self.current_user(); fid=int(data.get("user_id",0))
@@ -2661,7 +2683,24 @@ class FitverseHandler(BaseHTTPRequestHandler):
         requested = "index.html" if url_path in ("", "/") else url_path.lstrip("/")
         target = (ROOT / requested).resolve()
         if ROOT not in target.parents and target != ROOT: return self.send_error(HTTPStatus.FORBIDDEN)
-        if not target.is_file(): return self.send_error(HTTPStatus.NOT_FOUND)
+        if not target.is_file():
+            # Durable uploads: when the disk file is gone (cloud hosts wipe
+            # uploads/ on redeploy) serve the bytes from the uploads table.
+            if requested.startswith("uploads/"):
+                try:
+                    with connect() as db:
+                        row = db.execute("SELECT content,content_type FROM uploads WHERE filename=?",
+                                         (requested.split("/", 1)[1],)).fetchone()
+                    if row:
+                        content = bytes(row["content"]); ctype = row["content_type"]
+                        self.send_response(HTTPStatus.OK)
+                        self.send_header("Content-Type", ctype)
+                        self.send_header("Content-Length", str(len(content)))
+                        self.send_header("Cache-Control", "public, max-age=86400")
+                        self.end_headers(); self.wfile.write(content); return
+                except sqlite3.OperationalError:
+                    pass  # fall through to a plain 404
+            return self.send_error(HTTPStatus.NOT_FOUND)
         content = target.read_bytes(); content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         self.send_response(HTTPStatus.OK); self.send_header("Content-Type",content_type + ("; charset=utf-8" if content_type.startswith("text/") or content_type in ("application/javascript",) else "")); self.send_header("Content-Length",str(len(content))); self.end_headers(); self.wfile.write(content)
 
