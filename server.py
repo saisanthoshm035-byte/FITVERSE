@@ -1441,13 +1441,23 @@ class FitverseHandler(BaseHTTPRequestHandler):
             qq=(prms.get("q") or [""])[0].strip().lower()
             include_self=(prms.get("include_self") or ["0"])[0]=="1"
             uid=self.current_user()
-            with connect() as db: rows=db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,p.avatar_url,g.xp,g.streak FROM users u JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id ORDER BY u.name").fetchall()
+            with connect() as db:
+                rows=db.execute("SELECT u.id,u.name,u.username,u.city,u.fitness_level,u.fitness_goal,u.favorite_activity,u.preferred_time,p.bio,p.avatar_url,g.xp,g.streak FROM users u JOIN user_game_state g ON g.user_id=u.id LEFT JOIN profiles p ON p.user_id=u.id ORDER BY u.name").fetchall()
+                friend_ids_set=set()
+                if uid:
+                    try:
+                        friend_ids_set={r[0] for r in db.execute("""SELECT CASE WHEN f.requester_id=? THEN f.addressee_id ELSE f.requester_id END
+                          FROM friendships f WHERE f.status='accepted' AND (f.requester_id=? OR f.addressee_id=?)""",(uid,uid,uid)).fetchall()}
+                    except Exception:
+                        friend_ids_set=set()
             items=[]
             for r in rows:
                 d=dict(r)
                 if not include_self and uid and d["id"]==uid: continue
                 if qq and qq not in str(d["name"]).lower() and qq not in str(d["username"]).lower(): continue
-                d["photo"]=f"img/p{1 + (d['id'] % 12)}.jpg"; items.append(d)
+                d["photo"]=f"img/p{1 + (d['id'] % 12)}.jpg"
+                d["is_friend"]=d["id"] in friend_ids_set  # Discover shows 'Friends ✓' instead of re-adding
+                items.append(d)
             return self.send_json(200,{"items":items})
         if path == "/api/challenges":
             uid=self.current_user()
@@ -1646,11 +1656,15 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     items.append(d)
             return self.send_json(200,{"items":items})
         if path == "/api/workouts/prs":
+            """Personal records. FITVERSE 6.1: bodyweight/cardio rows (weight=0) no
+            longer read as max_w=0 vol=0 — we surface each exercise's best session
+            volume and best sets so the PR card always shows something real."""
             uid=self.current_user()
             with connect() as db:
-                rows=db.execute("""SELECT e.name, MAX(wl.weight) max_w, MAX(wl.reps*wl.weight) max_vol, COUNT(*) n
+                rows=db.execute("""SELECT e.name, MAX(wl.weight) max_w, MAX(wl.reps*wl.weight) max_vol,
+                  MAX(ws.total_volume) best_session_vol, MAX(wl.sets*wl.reps) best_reps, COUNT(*) n
                   FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id JOIN exercises e ON e.id=wl.exercise_id
-                  WHERE ws.user_id=? GROUP BY e.name ORDER BY max_w DESC LIMIT 12""",(uid,)).fetchall()
+                  WHERE ws.user_id=? GROUP BY e.name ORDER BY max_w DESC, best_session_vol DESC LIMIT 12""",(uid,)).fetchall()
             return self.send_json(200,{"items":[dict(r) for r in rows]})
         if path == "/api/nutrition":
             uid=self.current_user(); import datetime as _dt
@@ -2320,9 +2334,11 @@ class FitverseHandler(BaseHTTPRequestHandler):
                         if not eid: continue
                         ex=db.execute("SELECT * FROM exercises WHERE id=?",(eid,)).fetchone()
                         is_pr=0
-                        if weight>0:
-                            prev=db.execute("SELECT MAX(wl.weight) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id WHERE ws.user_id=? AND wl.exercise_id=? AND ws.id<>?",(uid,eid,sid)).fetchone()[0]
-                            if prev is None or weight>prev: is_pr=1; prs+=1
+                        # FITVERSE 6.1: bodyweight & cardio count too — weight=0 is a REAL
+                        # log (bw volume / minutes), not a zero. Yoga poses, planks, runs
+                        # were previously invisible to PRs and volume.
+                        prev=db.execute("SELECT MAX(wl.weight) FROM workout_logs wl JOIN workout_sessions ws ON ws.id=wl.session_id WHERE ws.user_id=? AND wl.exercise_id=? AND ws.id<>?",(uid,eid,sid)).fetchone()[0]
+                        if prev is None or weight>prev: is_pr=1; prs+=1
                         vol=weight*reps*sets; volume+=vol
                         db.execute("INSERT INTO workout_logs (session_id,exercise_id,sets,reps,weight,rpe,is_pr,created_at) VALUES (?,?,?,?,?,?,?,?)",(sid,eid,sets,reps,weight,rpe,is_pr,now()))
                     kcal_est=max(120, min(900, round(duration*6.5*(1+prs*0.1) + volume/1000)))

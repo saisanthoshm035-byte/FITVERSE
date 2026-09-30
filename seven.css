@@ -837,4 +837,12 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
 .conv-item .ci-ops button:hover{color:var(--fv-ink);background:rgba(0,229,255,.12)}
 .conv-item .ci-ops button.ci-del:hover{color:#ff5d7a;background:rgba(255,93,122,.12)}
 
+/* ==== patch v69: AI typing indicator + messages "start new chat" strip ==== */
+.ai-msg p.ai-typing{color:var(--fv-mut) !important;font-style:italic}
+.ai-msg p.ai-typing span{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--fv-cyan);margin:0 3px 1px 0;box-shadow:0 0 8px var(--fv-cyan);animation:fv-blink 1s infinite}
+.ai-msg p.ai-typing span:nth-child(2){animation-delay:.2s}
+.ai-msg p.ai-typing span:nth-child(3){animation-delay:.4s}
+.newchat-strip{border-top:1px solid var(--fv-line);margin-top:8px;padding-top:4px}
+.newchat-strip .conversation{opacity:.92}
+
 

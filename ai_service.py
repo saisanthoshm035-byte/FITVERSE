@@ -101,6 +101,29 @@ def _vitals(db, uid):
     return bp, sg
 
 
+def _ensure_exercises(db, specs: list[dict]) -> dict:
+    """Make sure generic library items (yoga poses, cardio machines, home moves)
+    exist in the shared exercises table so generated plans can be LOGGED —
+    FITVERSE 6.1: yoga plans used to fail because poses weren't in the pool.
+    Returns {name: id}. Idempotent (INSERT OR IGNORE)."""
+    ids = {}
+    for sp in specs:
+        row = db.execute("SELECT id FROM exercises WHERE name=?", (sp["name"],)).fetchone()
+        if row:
+            ids[sp["name"]] = row["id"]
+            continue
+        cur = db.execute(
+            "INSERT OR IGNORE INTO exercises (name,muscle,equipment,difficulty,instructions,mistakes,met) VALUES (?,?,?,?,?,?,?)",
+            (sp["name"], sp.get("muscle", "Full Body"), sp.get("equipment", "Mat / bodyweight"),
+             "Beginner", sp.get("instructions", ""), "", sp.get("met", 4.0)))
+        if cur.lastrowid:
+            ids[sp["name"]] = cur.lastrowid
+        else:
+            row2 = db.execute("SELECT id FROM exercises WHERE name=?", (sp["name"],)).fetchone()
+            if row2: ids[sp["name"]] = row2["id"]
+    return ids
+
+
 def indian_diet_plan(uid: int, meal: str = "") -> dict:
     """Deterministic full-day Indian diet plan built from the user's REAL data:
     kcal/protein targets, diet preference (veg/non-veg), and — the FITVERSE 6.0
@@ -369,6 +392,9 @@ def generate_workout(user_id: int, params: dict) -> dict:
         names = ["Sun Salutation Flow", "Downward Dog Hold", "Warrior II Pose", "Seated Forward Bend",
                  "Cat-Cow Stretch", "Child's Pose Hold", "Bridge Pose", "Legs Up the Wall"]
         have = {e["name"]: e for e in pool}
+        with connect() as db:
+            ids = _ensure_exercises(db, [{"name": n, "muscle": "Full Body", "equipment": "Mat / bodyweight", "met": 3.0,
+                                          "instructions": "Move slowly with the breath; never stretch into pain."} for n in names])
         items = []
         for i, n in enumerate(names[: max(4, min(8, minutes // 7))]):
             e = have.get(n)
@@ -376,7 +402,7 @@ def generate_workout(user_id: int, params: dict) -> dict:
                           "equipment": "Mat / bodyweight", "sets": 2 if i % 2 else 3, "reps": "5 breaths" if i % 2 else "45-60s",
                           "rest_s": 30, "tempo": "slow flow", "difficulty": "Beginner",
                           "tips": "Breathe through the nose; never stretch into pain.", "mistakes": "Locking joints or holding the breath.",
-                          "alt": "—", "id": e["id"] if e else None})
+                          "alt": "—", "id": e["id"] if e else ids.get(n)})
         est = round(minutes * 3.5)
         return {"title": f"Gentle yoga flow · {minutes} min", "params": params, "items": [i for i in items if i["id"]] or items,
                 "est_kcal": est, "engine": "deterministic",
@@ -387,6 +413,22 @@ def generate_workout(user_id: int, params: dict) -> dict:
             n_main = max(3, min(6, minutes // 8))
             cands = [e for e in pool if e["muscle"] == "Cardio" and e["id"] not in {}]
             cands.sort(key=lambda e: ("Beginner" not in e["difficulty"], e["met"] or 0))
+            # If the library has almost no cardio, add the universal starters.
+            if len(cands) < 3:
+                with connect() as db:
+                    extra_ids = _ensure_exercises(db, [
+                        {"name": "Brisk Walk", "muscle": "Cardio", "equipment": "Bodyweight", "met": 4.3,
+                         "instructions": "Steady, conversational pace. Great for BP and blood sugar."},
+                        {"name": "Stationary Bike — Easy Spin", "muscle": "Cardio", "equipment": "Machine", "met": 5.0,
+                         "instructions": "Light resistance, high cadence, nasal breathing."},
+                        {"name": "March in Place", "muscle": "Cardio", "equipment": "Bodyweight", "met": 3.8,
+                         "instructions": "Home-friendly low-impact cardio."}])
+                have2 = {e["name"]: e for e in pool}
+                for n, eid in extra_ids.items():
+                    if n not in {c["name"] for c in cands}:
+                        cands.append({**have2.get(n, {}), "name": n, "muscle": "Cardio", "equipment": "Bodyweight",
+                                      "difficulty": "Beginner", "met": 4.0, "instructions": "", "mistakes": "", "id": eid})
+            cands.sort(key=lambda e: ("Beginner" not in e.get("difficulty", "Beginner"), e.get("met") or 0))
             items = []
             for e in cands:
                 items.append({"exercise": e["name"], "muscle": "Cardio", "equipment": e["equipment"], "sets": 1,
