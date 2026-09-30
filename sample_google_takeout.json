@@ -1,0 +1,102 @@
+{
+  "bucket": [
+    {
+      "startTimeMillis": "1759132200000",
+      "endTimeMillis": "1759218600000",
+      "dataset": [
+        {
+          "dataSourceId": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1759132200000", "endTimeMillis": "1759218600000", "value": [ { "intVal": 8452 } ] } ]
+        },
+        {
+          "dataSourceId": "derived:com.google.distance.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1759132200000", "endTimeMillis": "1759218600000", "value": [ { "fpVal": 6120.000000 } ] } ]
+        }
+      ]
+    },
+    {
+      "startTimeMillis": "1759045800000",
+      "endTimeMillis": "1759132200000",
+      "dataset": [
+        {
+          "dataSourceId": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1759045800000", "endTimeMillis": "1759132200000", "value": [ { "intVal": 9870 } ] } ]
+        },
+        {
+          "dataSourceId": "derived:com.google.distance.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1759045800000", "endTimeMillis": "1759132200000", "value": [ { "fpVal": 7150.000000 } ] } ]
+        }
+      ]
+    },
+    {
+      "startTimeMillis": "1758959400000",
+      "endTimeMillis": "1759045800000",
+      "dataset": [
+        {
+          "dataSourceId": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758959400000", "endTimeMillis": "1759045800000", "value": [ { "intVal": 11240 } ] } ]
+        },
+        {
+          "dataSourceId": "derived:com.google.distance.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758959400000", "endTimeMillis": "1759045800000", "value": [ { "fpVal": 8050.000000 } ] } ]
+        }
+      ]
+    },
+    {
+      "startTimeMillis": "1758873000000",
+      "endTimeMillis": "1758959400000",
+      "dataset": [
+        {
+          "dataSourceId": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758873000000", "endTimeMillis": "1758959400000", "value": [ { "intVal": 6110 } ] } ]
+        },
+        {
+          "dataSourceId": "derived:com.google.distance.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758873000000", "endTimeMillis": "1758959400000", "value": [ { "fpVal": 4410.000000 } ] } ]
+        }
+      ]
+    },
+    {
+      "startTimeMillis": "1758786600000",
+      "endTimeMillis": "1758873000000",
+      "dataset": [
+        {
+          "dataSourceId": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758786600000", "endTimeMillis": "1758873000000", "value": [ { "intVal": 10250 } ] } ]
+        },
+        {
+          "dataSourceId": "derived:com.google.distance.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758786600000", "endTimeMillis": "1758873000000", "value": [ { "fpVal": 7380.000000 } ] } ]
+        }
+      ]
+    },
+    {
+      "startTimeMillis": "1758700200000",
+      "endTimeMillis": "1758786600000",
+      "dataset": [
+        {
+          "dataSourceId": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758700200000", "endTimeMillis": "1758786600000", "value": [ { "intVal": 7305 } ] } ]
+        },
+        {
+          "dataSourceId": "derived:com.google.distance.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758700200000", "endTimeMillis": "1758786600000", "value": [ { "fpVal": 5260.000000 } ] } ]
+        }
+      ]
+    },
+    {
+      "startTimeMillis": "1758613800000",
+      "endTimeMillis": "1758700200000",
+      "dataset": [
+        {
+          "dataSourceId": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758613800000", "endTimeMillis": "1758700200000", "value": [ { "intVal": 9480 } ] } ]
+        },
+        {
+          "dataSourceId": "derived:com.google.distance.delta:com.google.android.gms:aggregated",
+          "point": [ { "startTimeMillis": "1758613800000", "endTimeMillis": "1758700200000", "value": [ { "fpVal": 6840.000000 } ] } ]
+        }
+      ]
+    }
+  ]
+}

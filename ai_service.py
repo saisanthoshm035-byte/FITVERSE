@@ -49,11 +49,17 @@ def targets_from_profile(s: dict) -> dict:
         kcal = tdee
     kcal = max(1300, round(kcal / 10) * 10)
     protein = round((1.6 if "muscle" in goal or "gain" in goal else 1.5) * (s.get("weight_kg") or 70))
+    note = "Estimates from the Mifflin-St Jeor formula — adjust to how your body responds."
+    diet = (s.get("diet_pref") or "").lower()
+    if "indian" in diet:
+        note += " Indian-style plates: roti/rice + dal + sabzi + curd — the split below already fits that pattern."
+    if "vegetarian" in diet:
+        note += " Vegetarian: paneer, dal, curd and soy cover your protein."
     return {
         "bmr": round(bmr), "tdee": round(tdee), "kcal_target": kcal,
         "protein_target": protein, "carbs_target": round(kcal * 0.45 / 4),
         "fat_target": round(kcal * 0.25 / 9),
-        "estimate_note": "Estimates from the Mifflin-St Jeor formula — adjust to how your body responds.",
+        "estimate_note": note,
     }
 
 
@@ -81,6 +87,84 @@ def _macro_day(db, uid, day=None):
 def _water_day(db, uid, day=None):
     day = day or date.today().isoformat()
     return db.execute("SELECT COALESCE(SUM(ml),0) FROM water_logs WHERE user_id=? AND logged_on=?", (uid, day)).fetchone()[0]
+
+
+# ---------------------------------------------------------------- vitals + Indian diet
+
+def _vitals(db, uid):
+    """7-day averaged BP (systolic) + fasting sugar from daily_metrics (0/None if absent)."""
+    row = db.execute(
+        "SELECT AVG(blood_pressure) bp, AVG(blood_sugar) sg FROM daily_metrics "
+        "WHERE user_id=? AND updated_at>=date('now','-7 days') AND (blood_pressure>0 OR blood_sugar>0)", (uid,)).fetchone()
+    bp = round(row["bp"]) if row and row["bp"] else None
+    sg = round(row["sg"]) if row and row["sg"] else None
+    return bp, sg
+
+
+def indian_diet_plan(uid: int, meal: str = "") -> dict:
+    """Deterministic full-day Indian diet plan built from the user's REAL data:
+    kcal/protein targets, diet preference (veg/non-veg), and — the FITVERSE 6.0
+    part — blood pressure & fasting sugar averages. High BP → low-sodium swaps;
+    high sugar → low-GI swaps and post-meal walks. Groq polishes when available."""
+    with connect() as db:
+        s = get_settings(db, uid)
+        t = targets_from_profile(s)
+        bp, sugar = _vitals(db, uid)
+    kcal = t["kcal_target"]
+    protein = t["protein_target"]
+    diet = (s.get("diet_pref") or "balanced").lower()
+    veg = "veg" in diet or "indian" in diet
+    age = int(s.get("age") or 25)
+    bp_high = bp is not None and bp >= 140
+    sugar_high = sugar is not None and sugar >= 126
+    split = {"Breakfast": 0.25, "Lunch": 0.35, "Snacks": 0.12, "Dinner": 0.28}
+    items = []
+    for m, share in split.items():
+        mk = round(kcal * share / 10) * 10
+        mp = round(protein * share)
+        if m == "Breakfast":
+            food = ("2 moong dal chillas + curd + 1 fruit" if veg else "2 egg-white omelette + 1 moong chilla + curd")
+            if sugar_high: food += " · skip juice, whole fruit only (fiber slows glucose)"
+        elif m == "Lunch":
+            food = "2 roti + 1 katori dal + sabzi + big salad + curd" if veg else "2 roti + grilled fish/chicken + dal + sabzi + salad"
+            if bp_high: food += " · low-salt dal & sabzi, no papad/pickle"
+            if sugar_high: food += " · 1 roti instead of 2, extra salad"
+        elif m == "Snacks":
+            food = "roasted chana + buttermilk" if veg else "boiled eggs + buttermilk"
+            if sugar_high: food += " · nuts instead of any sweet"
+        else:
+            food = "1-2 roti + paneer bhurji + sauteed veggies" if veg else "grilled chicken/fish + veggies + small roti"
+            if bp_high: food += " · no added salt at dinner"
+        items.append({"meal": m, "food": food, "kcal": mk, "protein_g": mp})
+    flags = []
+    if bp_high: flags.append("LOW-SODIUM")
+    if sugar_high: flags.append("LOW-GI")
+    if veg: flags.append("VEGETARIAN")
+    flags.append("INDIAN")
+    title = "Indian plate plan"
+    if bp_high and sugar_high: title = "BP + sugar-friendly Indian plan"
+    elif bp_high: title = "BP-friendly Indian plan"
+    elif sugar_high: title = "Sugar-friendly Indian plan"
+    elif veg: title = "Vegetarian Indian plan"
+    note = (f"Built from YOUR numbers: ~{kcal} kcal / {protein}g protein target"
+            + (f", 7-day BP {bp} systolic" if bp else "") + (f", fasting sugar {sugar} mg/dL" if sugar else "")
+            + ". Estimates — adjust portions to hunger and keep your doctor's advice first.")
+    plan = {"title": title, "flags": flags, "items": items, "note": note,
+            "targets": {"kcal": kcal, "protein": protein}, "vitals": {"bp": bp, "sugar": sugar, "age": age or None}}
+    # Groq refinement: same deterministic skeleton, natural Indian-food coaching.
+    try:
+        import groq_ai
+        if groq_ai.configured():
+            line = f"kcal={kcal} protein={protein} diet={'veg' if veg else 'nonveg'} bp={bp or 'na'} sugar={sugar or 'na'} age={age}"
+            sys = ("You are an Indian sports-nutrition coach. From the given REAL targets and vitals, "
+                   "return a compact one-day Indian meal plan: 4 meals with roti/dal/sabzi/paneer/curd "
+                   "style foods, gram-level protein, low-salt if BP high, low-GI if sugar high. "
+                   "Plain text: one line per meal 'Meal: food — kcal kcal'. Under 90 words. No diagnosis.")
+            g = groq_ai._chat([{"role": "system", "content": sys}, {"role": "user", "content": line}], max_tokens=400, temperature=0.5, timeout=12)
+            if g: plan["ai"] = g
+    except Exception:
+        pass
+    return plan
 
 
 # ---------------------------------------------------------------- coach
@@ -144,6 +228,33 @@ def ai_coach(user_id: int, message: str) -> dict:
         return {"reply": parts("🩺", SAFETY,
                 f"While it settles, swap loaded squats for split squats within a comfortable range or hip thrusts, and keep training pain-free areas." if "knee" in q else "While it settles, train around it — pain-free movements only."), "kind": "safety"}
 
+    # --- FITVERSE 6.0: vitals (BP / fasting sugar) shape every answer ---
+    bp_avg = sugar_avg = None
+    try:
+        with connect() as db:
+            _v = db.execute("SELECT AVG(blood_pressure) bp, AVG(blood_sugar) sg FROM daily_metrics WHERE user_id=? AND updated_at>=date('now','-7 days') AND (blood_pressure>0 OR blood_sugar>0)", (user_id,)).fetchone()
+        if _v:
+            bp_avg = round(_v["bp"]) if _v["bp"] else None
+            sugar_avg = round(_v["sg"]) if _v["sg"] else None
+    except Exception:
+        bp_avg = sugar_avg = None
+    if any(k in q for k in ("blood pressure", " bp", "hypertension", "sugar", "diabetes", "bp")):
+        bits = []
+        if bp_avg:
+            bits.append(f"🩺 Your week's averaged BP: **{bp_avg} systolic** — {'above the 140 line, keep your doctor in the loop' if bp_avg >= 140 else 'in a workable zone'}. Easy cardio 30 min most days, less added salt/pickles, and 4-7-8 breathing are the levers.")
+        if sugar_avg:
+            bits.append(f"🩸 Fasting sugar is averaging **{sugar_avg} mg/dL** — {'at or above the 126 line, please review it with your doctor' if sugar_avg >= 126 else 'reasonable'}. Post-meal walks and light resistance training pull glucose down best.")
+        if not bits:
+            bits.append("🩺 Log your BP and fasting sugar in Health Data (Daily metrics) — I'll track the trend and adapt your training and meals around it.")
+        return {"reply": parts(*bits), "kind": "vitals"}
+    if any(k in q for k in ("indian diet", "indian meal", "desi diet", "indian food plan")):
+        plan = indian_diet_plan(user_id)
+        lines = [f"🍛 **{plan['title']}**"]
+        for it in plan["items"]:
+            lines.append(f"• **{it['meal']}:** {it['food']} — {it['kcal']} kcal")
+        lines.append(plan["note"])
+        return {"reply": parts(*lines), "kind": "nutrition"}
+
     # --- nutrition questions ---
     if "calorie" in q or "how much should i eat" in q:
         return {"reply": parts(
@@ -199,6 +310,8 @@ def ai_coach(user_id: int, message: str) -> dict:
                 f"Your week looks {'strong' if len(sessions)>=3 else 'light so far'} — **{weakest} has the least attention in the last 7 days**.",
                 "Ask me for a workout, a meal idea, your protein, or say 'plan my week'.")
             _ctx = f"streak {streak}d | {len(sessions)} sessions this week | today {round(today['kcal'])} kcal, {round(today['p'])}g protein | goal {s.get('goal') or 'general fitness'} | {prs} PRs in 30d"
+            if bp_avg: _ctx += f" | avg_bp_systolic={bp_avg}"
+            if sugar_avg: _ctx += f" | avg_fasting_sugar={sugar_avg}"
             _reply = groq_ai.coach_reply(_ctx, [], q, draft=_draft)
             if _reply:
                 return {"reply": _reply, "kind": "ai"}
@@ -243,6 +356,57 @@ def generate_workout(user_id: int, params: dict) -> dict:
 
     with connect() as db:
         pool = [dict(r) for r in db.execute("SELECT * FROM exercises")]
+        s = get_settings(db, user_id)
+        bp, sugar = _vitals(db, user_id)
+        age = int(s.get("age") or 0)
+
+    # --- FITVERSE 6.0 easy modes: cardio / home / yoga (low-impact, senior-safe) ---
+    # Any of these styles, or a vitals flag, converts the plan to gentle work:
+    # higher reps, short rests, no barbell maxing, Beginner candidates first.
+    easy_mode = style in ("cardio", "home", "yoga") or params.get("easy")
+    vitals_gentle = (bp is not None and bp >= 140) or (sugar is not None and sugar >= 126) or (age and age >= 60)
+    if style == "yoga":
+        names = ["Sun Salutation Flow", "Downward Dog Hold", "Warrior II Pose", "Seated Forward Bend",
+                 "Cat-Cow Stretch", "Child's Pose Hold", "Bridge Pose", "Legs Up the Wall"]
+        have = {e["name"]: e for e in pool}
+        items = []
+        for i, n in enumerate(names[: max(4, min(8, minutes // 7))]):
+            e = have.get(n)
+            items.append({"exercise": n, "muscle": "Full Body" if "Flow" in n or "Pose" in n else "Core",
+                          "equipment": "Mat / bodyweight", "sets": 2 if i % 2 else 3, "reps": "5 breaths" if i % 2 else "45-60s",
+                          "rest_s": 30, "tempo": "slow flow", "difficulty": "Beginner",
+                          "tips": "Breathe through the nose; never stretch into pain.", "mistakes": "Locking joints or holding the breath.",
+                          "alt": "—", "id": e["id"] if e else None})
+        est = round(minutes * 3.5)
+        return {"title": f"Gentle yoga flow · {minutes} min", "params": params, "items": [i for i in items if i["id"]] or items,
+                "est_kcal": est, "engine": "deterministic",
+                "note": "Low-impact flow — great for BP, joint health and recovery. Move within a pain-free range."}
+    if easy_mode:
+        if style == "cardio":
+            focus_m = ["Cardio"]
+            n_main = max(3, min(6, minutes // 8))
+            cands = [e for e in pool if e["muscle"] == "Cardio" and e["id"] not in {}]
+            cands.sort(key=lambda e: ("Beginner" not in e["difficulty"], e["met"] or 0))
+            items = []
+            for e in cands:
+                items.append({"exercise": e["name"], "muscle": "Cardio", "equipment": e["equipment"], "sets": 1,
+                              "reps": f"{max(8, minutes // max(1, len(cands[:n_main])))} min", "rest_s": 60,
+                              "tempo": "conversational pace", "difficulty": e["difficulty"],
+                              "tips": (e.get("instructions") or "")[:120], "mistakes": e.get("mistakes", ""), "alt": "—", "id": e["id"]})
+                if len(items) >= n_main: break
+            est = round(minutes * 6.0)
+            return {"title": f"Easy cardio · {minutes} min", "params": params, "items": items, "est_kcal": est,
+                    "engine": "deterministic",
+                    "note": ("Heart-friendly steady state — you should be able to talk while moving."
+                             + (" BP-aware: keep intensity easy and breathe nasally." if bp is not None and bp >= 140 else ""))}
+        # home: bodyweight strength
+        muscles = muscles or ["Chest", "Legs", "Core", "Cardio"]
+        equipment = "bodyweight"
+        reps = (12, 15)
+        rest = 60
+    else:
+        if sugar is not None and sugar >= 110 and not muscles:
+            muscles = ["Cardio", "Legs", "Core"]  # light resistance + cardio help glucose control
 
     # --- Groq: let the model design the session from the REAL exercise pool ---
     try:
@@ -274,6 +438,8 @@ def generate_workout(user_id: int, params: dict) -> dict:
         reps, rest = (12, 15), 75
     if harder:
         reps, rest = (5, 8), 180
+    if easy_mode or vitals_gentle:
+        reps, rest = (12, 15), 75  # gentle defaults: BP/sugar-aware or senior users
 
     plan, used = [], set()
     for m in focus:

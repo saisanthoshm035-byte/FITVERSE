@@ -97,6 +97,24 @@ async function parseTakeoutFiles(files) {
 }
 const avatar = (name, tone = 'coral') => `<div class="avatar ${tone}">${escapeHtml(String(name || '?').split(' ').map(x => x[0]).join('').slice(0, 2))}</div>`;
 const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600); };
+// FITVERSE 6.0: parse a Takeout-shaped object (bucket → dataset → point) into days.
+// Used by the in-app sample import; real file uploads go through parseTakeoutFiles.
+async function importTakeoutSample(sampleJson) {
+  const days = {};
+  for (const b of (sampleJson.bucket || [])) {
+    const day = new Date(Number(b.startTimeMillis)).toISOString().slice(0, 10);
+    if (!days[day]) days[day] = { day, steps: 0, distance_km: 0 };
+    for (const ds of (b.dataset || [])) {
+      const id = ds.dataSourceId || '';
+      for (const pt of (ds.point || [])) {
+        const v = (pt.value || [])[0] || {};
+        if (id.includes('step_count') && v.intVal != null) days[day].steps += v.intVal;
+        if (id.includes('distance') && v.fpVal != null) days[day].distance_km += v.fpVal / 1000;
+      }
+    }
+  }
+  return { days: Object.values(days).filter(v => v.steps || v.distance_km).map(v => ({ ...v, steps: Math.round(v.steps), distance_km: Math.round(v.distance_km * 100) / 100 })) };
+}
 const inr = (n) => (n > 0 ? `₹${Number(n).toLocaleString('en-IN')}` : 'Free');
 const dayShort = (iso) => { try { return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' }); } catch { return iso; } };
 // FITVERSE 5.0: parse Health Connect exports / Takeout Fit files into flexible records.
@@ -379,7 +397,13 @@ async function loadPageData(page) {
   if (page === 'progress' && sessionToken) { add('progressEntries', api('/api/progress').then(d => d.items || [])); add('review', api('/api/ai/review').then(d => d.item || {}).catch(() => ({}))); }
   if (page === 'friends') { if (sessionToken) add('fitmatch', api('/api/fitmatch').then(d => d.items || [])); add('friendsData', api('/api/friends').then(d => d).catch(() => ({}))); }
   if (page === 'library') add('exercises', api('/api/exercises').then(d => d.items || []));
-  if (page === 'coach') add('coachChat', api('/api/ai/coach').then(d => d.items || []).catch(() => []));
+  if (page === 'posts' && sessionToken && !(pageData.workouts || []).length) add('workouts', api('/api/workouts').then(d => d.items || []).catch(() => []));
+  if (page === 'coach' && sessionToken) {
+    // Conversation-aware AI chat: loads the selected thread + the saved-chat list.
+    // coachConvId === 0 means "explicit blank new chat" — don't fall back to the newest.
+    const blankNew = pageData.coachConvId === 0;
+    add('coachChat', api('/api/ai/coach' + (pageData.coachConvId ? `?conversation_id=${Number(pageData.coachConvId)}` : '')).then(d => { pageData.aiConversations = d.conversations || []; if (!blankNew) pageData.coachConvId = d.conversationId; return blankNew ? [] : (d.items || []); }).catch(() => []));
+  }
   // Joined crews power the Communities + Bookings panels (real data, no demo rows).
   add('myCommunities', api('/api/communities').then(d => (d.items || []).filter(c => c.joined)).catch(() => []));
   // AI training suggestion from imported health data (nutrition page strip).
@@ -548,10 +572,15 @@ function challenges() {
   return `<article><span>⚡</span><div><b>${escapeHtml(ch.title)}</b><p>${escapeHtml(ch.challenge_type)} · vs ${escapeHtml(ch.challenger_id === (me().id || 1) ? ch.opponent_name : ch.challenger_name)} · target ${ch.target_value}</p>${socialChip('challenges', ch.id)}<div class="bar slim"><i style="width:${pct}%"></i></div></div><div class="challenge-progress"><strong>${ch.status}</strong><em>${myP || 0}/${ch.target_value}</em></div><div class="ch-ops">${ops}</div></article>`;
 }).join('') || emptyState('⚔️', 'No challenges yet', 'Challenge a friend and make fitness more fun.', null, '')}</div>
 ${(pageData.challengeBoard || []).length ? `<section class="section-head"><div><span class="eyebrow">HALL OF WINS</span><h2>Most challenge victories</h2></div></section><section class="win-board">${(pageData.challengeBoard || []).map((r, i) => `<div class="rank"><b>0${i + 1}</b>${avatar(r.name, ['blue', 'mint', 'teal', 'orange', 'purple'][i % 5])}<strong>${escapeHtml(r.name === me().name ? 'You' : r.name)}</strong><em>${r.wins} win${r.wins > 1 ? 's' : ''}</em></div>`).join('')}</section>` : ''}
+<section class="section-head"><div><span class="eyebrow">✦ AI COACH</span><h2>Who should you challenge?</h2></div></section>
+<div class="ai-ideas">${(pageData.challengeFriends || []).slice(0, 3).map((f, i) => {
+  const fa = ['Revenge match — they beat you last time.', 'You two are level — settle it this week.', 'Their streak is on fire — break it!'][i % 3];
+  return `<div class="ai-idea-row" role="button" data-action="challengeFriend" data-id="${f.id}"><span>⚔️</span><div><b>${escapeHtml(f.name)}</b><small>${fa}</small></div><button class="primary small" tabindex="-1">Challenge</button></div>`;
+}).join('') || '<p class="loading">Add friends to get AI-powered challenge suggestions.</p>'}</div>
 <section class="leaderboard"><div><span class="eyebrow">CAMPUS LEADERBOARD</span><h2>XP leaders this week</h2>${(pageData.leaderboard || []).slice(0, 5).map((r, i) => `<div class="rank ${r.name === me().name ? 'you' : ''}"><b>0${i + 1}</b>${avatar(r.name, ['blue', 'mint', 'teal', 'orange', 'purple'][i % 5])}<strong>${escapeHtml(r.name === me().name ? 'You' : r.name)}</strong><em>${r.xp.toLocaleString()} XP</em></div>`).join('')}</div><div class="level-card"><span>LEVEL ${level()}</span><h3>${levelName()}</h3><p>${Math.max(0, 500 - (state.xp % 500))} XP until ${levelName(1) || 'next'} level</p><div class="bar"><i style="width:${progress()}%"></i></div></div></section>`);
 }
 function communityCard(c) {
-  return `<article class="community-card" data-community="${c.id}"><div class="community-cover photo" style="background-image:linear-gradient(rgba(11,23,17,.25), rgba(11,23,17,.45)), url('${sportPhoto(c.activity)}')" data-action="communityOpen" data-id="${c.id}" role="button" title="Open community"><span>🏀</span><small>${(c.member_count || 0).toLocaleString()} members</small></div><div><h3 data-action="communityOpen" data-id="${c.id}" role="button">${escapeHtml(c.name)}</h3>${socialChip('communities', c.id)}<p>${escapeHtml(c.description)}</p><button class="${c.joined ? 'outline' : 'primary small'}" data-action="${c.joined ? 'leaveCommunity' : 'joinCommunity'}" data-id="${c.id}">${c.joined ? 'Joined ✓' : 'Join community'}</button><button class="more" data-action="communityMenu" data-id="${c.id}">•••</button></div></article>`;
+  return `<article class="community-card" data-community="${c.id}"><div class="community-cover photo" style="background-image:linear-gradient(rgba(11,23,17,.25), rgba(11,23,17,.45)), url('${sportPhoto(c.activity)}')" data-action="communityOpen" data-id="${c.id}" role="button" title="Open community"><span>🏀</span><small>${(c.member_count || 0).toLocaleString()} members</small></div>    <div><h3 data-action="communityOpen" data-id="${c.id}" role="button">${escapeHtml(c.name)}</h3>${socialChip('communities', c.id)}<p>${escapeHtml(c.description)}</p><button class="${c.joined ? 'outline' : 'primary small'}" data-action="${c.joined ? 'leaveCommunity' : 'joinCommunity'}" data-id="${c.id}">${c.joined ? 'Joined ✓' : 'Join community'}</button><button class="outline small" data-action="communityChallenge" data-id="${c.id}" title="Challenge a member">⚔️</button><button class="more" data-action="communityMenu" data-id="${c.id}">•••</button></div></article>`;
 }
 function communities() {
   const mine = (pageData.myCommunities || []).filter(c => c.joined);
@@ -561,13 +590,15 @@ ${mine.length ? `<section class="section-head"><div><span class="eyebrow">✓ YO
 <div class="community-grid">${pageData.communities.map(communityCard).join('') || '<p class="loading">Loading communities…</p>'}</div>`);
 }
 function eventCard(e) {
-  return `<article class="event-card" data-event="${e.id}"><div class="event-img photo" style="background-image:url('img/${e.photo}')"><span>${escapeHtml(e.category.toUpperCase())}</span><b>${dayShort(e.starts_at)}</b></div><div><h3>${escapeHtml(e.name)}</h3>${socialChip('activities', e.id)}<p>⌖ ${escapeHtml(e.location_label)} · ${e.booked_count || 0} attending</p><strong>${inr(e.price_inr)}</strong><div style="display:flex;gap:6px"><button class="outline" data-action="bookEvent" data-id="${e.id}">${e.booked ? 'Booked ✓' : 'Book now'}</button><button class="more" data-action="eventDetail" data-id="${e.id}" title="Details">ℹ</button></div></div></article>`;
+  return `<article class="event-card" data-event="${e.id}"><div class="event-img photo" style="background-image:url('img/${e.photo}')"><span>${escapeHtml(e.category.toUpperCase())}</span><b>${dayShort(e.starts_at)}</b></div><div><h3>${escapeHtml(e.name)}</h3>${socialChip('activities', e.id)}<p>⌖ ${escapeHtml(e.location_label)} · ${e.booked_count || 0} attending</p><strong>${inr(e.price_inr)}</strong><div style="display:flex;gap:6px"><button class="outline" data-action="bookEvent" data-id="${e.id}">${e.booked ? 'Booked ✓' : 'Book now'}</button><button class="more" data-action="eventDetail" data-id="${e.id}" title="Details">ℹ</button><button class="more" data-action="eventInvite" data-id="${e.id}" title="Invite a friend">✉</button></div></div></article>`;
 }
 function events() {
   const hero = pageData.events.find(e => e.id === 1) || pageData.events[0];
   const rest = pageData.events.filter(e => e !== hero);
   return shell(`${pageHeader('Fitness events', 'Save your spot. Show up for the story.')}
-${hero ? `<div class="event-hero photo" style="background-image:linear-gradient(90deg, rgba(10,16,20,.94) 45%, rgba(10,16,20,.45) 100%), url('${sportPhoto(hero.category)}')"><div><span class="pill coral">FEATURED · ${dayShort(hero.starts_at).toUpperCase()}</span><h2>${escapeHtml(hero.name.split(' ').slice(0, -1).join(' '))} <em>${escapeHtml(hero.name.split(' ').slice(-1))}</em></h2><p>${escapeHtml(hero.description)}</p><div class="event-details"><span>◷ ${dayShort(hero.starts_at)} · ${timeShort(hero.starts_at)}</span><span>⌖ ${escapeHtml(hero.location_label)}</span></div><button class="primary" data-action="bookEvent" data-id="${hero.id}">${hero.booked ? 'Booked ✓' : `Book ${inr(hero.price_inr)}`} <b>→</b></button></div><div class="event-art"><div class="moon"></div><span>RUN<br/>THE<br/>NIGHT</span><small>${escapeHtml(hero.category.toUpperCase())}</small></div></div>` : '<p class="loading">Loading events…</p>'}<section class="section-head"><div><span class="eyebrow">UP NEXT</span><h2>More ways to show up</h2></div><button class="filter" data-action="eventFilter">All categories ⌄</button></section><div class="event-grid">${rest.map(eventCard).join('')}</div>`);
+${hero ? `<div class="event-hero photo" style="background-image:linear-gradient(90deg, rgba(10,16,20,.94) 45%, rgba(10,16,20,.45) 100%), url('${sportPhoto(hero.category)}')"><div><span class="pill coral">FEATURED · ${dayShort(hero.starts_at).toUpperCase()}</span><h2>${escapeHtml(hero.name.split(' ').slice(0, -1).join(' '))} <em>${escapeHtml(hero.name.split(' ').slice(-1))}</em></h2><p>${escapeHtml(hero.description)}</p><div class="event-details"><span>◷ ${dayShort(hero.starts_at)} · ${timeShort(hero.starts_at)}</span><span>⌖ ${escapeHtml(hero.location_label)}</span></div><button class="primary" data-action="bookEvent" data-id="${hero.id}">${hero.booked ? 'Booked ✓' : `Book ${inr(hero.price_inr)}`} <b>→</b></button></div><div class="event-art"><div class="moon"></div><span>RUN<br/>THE<br/>NIGHT</span><small>${escapeHtml(hero.category.toUpperCase())}</small></div></div>` : '<p class="loading">Loading events…</p>'}
+<div class="ai-ideas"><div class="ai-idea-row" role="button" data-action="quickAction" data-qa="workout"><span>🏃</span><div><b>Train for the next event</b><p style="margin:2px 0 0;color:var(--fv-mut);font-size:11px">Build a cardio plan from your health data so you show up race-ready.</p></div><button class="primary small" tabindex="-1">Build</button></div><div class="ai-idea-row" role="button" data-action="eventInvite" data-id="1"><span>✉</span><div><b>Bring your crew</b><p style="margin:2px 0 0;color:var(--fv-mut);font-size:11px">Groups show up and finish — invite a friend to the featured event.</p></div><button class="primary small" tabindex="-1">Invite</button></div></div>
+<section class="section-head"><div><span class="eyebrow">UP NEXT</span><h2>More ways to show up</h2></div><button class="filter" data-action="eventFilter">All categories ⌄</button></section><div class="event-grid">${rest.map(eventCard).join('')}</div>`);
 }
 function messages() {
   const convs = pageData.conversations;
@@ -592,8 +623,9 @@ function profile() {
   const p = me();
   const unlocked = pageData.achievements.filter(a => a.unlocked_at).length;
   return shell(`${pageHeader('Your profile', 'Your progress tells a story.')}
-<section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Your profile')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'you')} · ${escapeHtml(p.city || 'Your city')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button><button class="outline ob-btn" data-action="runOnboarding">🧭 Setup wizard${pageData.mySettings && !pageData.mySettings.onboarded ? ' · not finished' : ''}</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
+<section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Your profile')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'you')} · ${escapeHtml(p.city || 'Your city')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button><button class="outline" data-action="indianDiet">🍛 Indian diet</button><button class="outline ob-btn" data-action="runOnboarding">🧭 Setup wizard${pageData.mySettings && !pageData.mySettings.onboarded ? ' · not finished' : ''}</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
 <a class="pill lime" data-page="connectHealth" style="cursor:pointer;text-decoration:none;display:inline-block;margin:0 0 14px">🔌 Connect Health Data — import, track & AI insights →</a>
+${profileVitalsCard()}
 <div id="ptab-posts">${pageData.feed.filter(x => x.username === p.username).map(postCard).join('') || '<p class="loading">No posts yet — create one from the ＋ button.</p>'}</div>
 <div id="ptab-friends" style="display:none">${pageData.friends.map(f => `<article class="person-card" style="max-width:420px"><div class="person-info" style="padding:14px">${avatar(f.name, 'teal')}<h3>${escapeHtml(f.name)} <i>✓</i></h3><p>@${escapeHtml(f.username)} · ${escapeHtml(f.status)}</p></div></article>`).join('') || '<p class="loading">No friends yet — find matches on Discover.</p>'}</div>
 <div id="ptab-achievements" style="display:none"><div class="achievement-row">${pageData.achievements.map(a => `<article class="${a.unlocked_at ? '' : 'locked'}" style="${a.unlocked_at ? '' : 'opacity:.45'}"><span>${a.icon}</span><b>${escapeHtml(a.name)}</b><small>${escapeHtml(a.description)}</small></article>`).join('')}</div><p class="loading">${unlocked}/${pageData.achievements.length} unlocked</p></div>`);
@@ -626,6 +658,7 @@ function workoutPage() {
 </section>` : '';
   return shell(`${pageHeader('Workout', 'Log sessions, track volume, celebrate PRs.')}
 <div class="workout-top"><button class="primary" data-action="logWorkout">＋ Log a workout</button><button class="outline" data-action="fsStart">▶ Start session · Finish later</button><button class="outline" data-action="generateWorkout">✦ Generate with AI</button><button class="outline" data-page="library">Exercise library</button><button class="outline" data-action="customExercise">✚ Custom exercise</button></div>
+<div class="wo-style-chips"><button class="chip" data-action="quickAction" data-qa="easy">🪶 Easy & gentle</button><button class="chip" data-action="genStyle" data-style="cardio">🏃 Cardio</button><button class="chip" data-action="genStyle" data-style="home">🏠 Home workout</button><button class="chip" data-action="genStyle" data-style="yoga">🧘 Yoga</button></div>
 ${editor}
 <section class="section-head"><div><span class="eyebrow">HISTORY</span><h2>Recent sessions</h2></div></section>  ${w.length ? `<div class="workout-filters"><button class="chip ${!pageData.woFilter ? 'active' : ''}" data-action="woFilter" data-id="">All</button>${['Push', 'Pull', 'Legs', 'Full'].map(f => `<button class="chip ${pageData.woFilter === f ? 'active' : ''}" data-action="woFilter" data-id="${f}">${f}</button>`).join('')}</div>
 <div class="session-list">${w.filter(s => !pageData.woFilter || s.title.toLowerCase().includes(String(pageData.woFilter).toLowerCase())).map(s => {
@@ -663,7 +696,8 @@ function nutritionPage() {
 <div class="water-card"><div><span class="eyebrow">HYDRATION</span><div class="macro-big"><b>${((water.today_ml || 0) / 1000).toFixed(2)}L</b><em>/ ${((water.target_ml || 2500) / 1000).toFixed(1)}L</em></div><div class="bar"><i style="width:${Math.min(100, (water.today_ml || 0) / Math.max(1, water.target_ml || 2500) * 100)}%"></i></div></div>
 <div class="water-actions"><button class="outline" data-action="addWater" data-ml="250">+250ml</button><button class="outline" data-action="addWater" data-ml="500">+500ml</button><button class="primary small" data-action="addWater" data-ml="750">+750ml</button><button class="outline small" data-action="addWaterCustom">＋ Add Water</button></div></div>
 ${suggestStrip()}
-<div class="section-head" style="margin-top:22px"><div><span class="eyebrow">FOOD DIARY</span><h2>Today's meals</h2></div><button class="primary small" data-action="logMeal">＋ Log food</button><button class="outline small" data-action="scanMeal">✦ AI meal scan</button></div>
+<section class="section-head" style="margin-top:22px"><div><span class="eyebrow">🇮🇳 HEALTH-DATA DIET</span><h2>Indian plate plan</h2></div><button class="outline small" data-action="indianDiet">✦ Build my plan</button></section>
+<p class="loading" style="margin:0 0 14px">Roti-dal-sabzi plates auto-tuned to your calorie target, diet preference and — if you're 30+ and tracking them — your blood pressure and fasting sugar. High BP adds low-salt swaps; high sugar adds low-GI swaps and post-meal walks.</p><div><span class="eyebrow">FOOD DIARY</span><h2>Today's meals</h2></div><button class="primary small" data-action="logMeal">＋ Log food</button><button class="outline small" data-action="scanMeal">✦ AI meal scan</button></div>
 ${meals.map(m => {
   const items = (n.items || []).filter(x => x.meal === m);
   const mkcal = items.reduce((a, b) => a + b.kcal, 0);
@@ -679,7 +713,10 @@ function suggestStrip() {
   if (s.insufficient) return `<div class="ai-suggest"><span>📥</span><p><b>Unlock AI training suggestions:</b> import your health data (Takeout or Health Connect file) or log a few days of metrics — the Health Brain then picks your training from YOUR numbers.</p></div>`;
   const g = s.suggestion || {};
   const facts = (g.facts || {});
-  return `<div class="ai-suggest"><span>🧠</span><div><b>${escapeHtml(g.title || 'Today\'s session')}</b><p>${escapeHtml(g.why || '')}</p><small class="dim">Your numbers: ${facts.avg_steps || 0} avg steps · ${facts.avg_sleep_h ?? '—'}h sleep · ${facts.km_cardio || 0} km cardio · ${facts.sessions_recent || 0} recent sessions</small></div>
+  const bpAvg = facts.avg_bp, sugarAvg = facts.avg_sugar;
+  const vPills = `${bpAvg ? `<span class="v-pill ${bpAvg >= 140 ? 'warn' : 'good'}">🩺 BP ${bpAvg}</span>` : ''}${sugarAvg ? `<span class="v-pill ${sugarAvg >= 126 ? 'warn' : 'good'}">🩸 Sugar ${sugarAvg}</span>` : ''}`;
+  const ageNote = facts.age >= 55 ? ' · joint-friendly picks for you' : '';
+  return `<div class="ai-suggest"><span>🧠</span><div><b>${escapeHtml(g.title || 'Today\'s session')}</b><p>${escapeHtml(g.why || '')}</p><small class="dim">Your numbers: ${facts.avg_steps || 0} avg steps · ${facts.avg_sleep_h ?? '—'}h sleep · ${facts.km_cardio || 0} km cardio · ${facts.sessions_recent || 0} recent sessions${ageNote}</small>${vPills ? `<div style="margin-top:7px">${vPills}</div>` : ''}</div>
   <div class="as-actions"><button class="primary small" data-action="aiSuggestWorkout">Build this workout</button><button class="outline small" data-action="saveSuggestion">Save to plan</button></div>
   ${s.ai ? `<p class="as-ai">✦ ${mdLite(s.ai)}</p>` : ''}${s.engine === 'groq' ? '<span class="ai-status-chip live"><i></i>GROQ</span>' : ''}</div>`;
 }
@@ -741,7 +778,13 @@ ${friendNews.length ? `<section class="req-strip"><span class="pill lime">RECENT
 <section class="section-head"><div><span class="eyebrow">✦ AI MATCHING</span><h2>FIT MATCH</h2></div></section>
 ${fm.length ? `<div class="people-grid">${fm.map(p => personCard(p)).join('')}</div>` : emptyState('🧬', 'No matches yet', 'Set your goals in onboarding so FIT MATCH can find your training partners.')}
 <section class="section-head"><div><span class="eyebrow">YOUR CIRCLE</span><h2>${friends.length} friend${friends.length === 1 ? '' : 's'}</h2></div></section>
-${friends.length ? `<div class="friend-rows">${friends.map(f => `<div class="req-row" data-action="athlete" data-id="${f.id}" style="cursor:pointer">${photoAvatar(f.name, f.id)}<div><b>${escapeHtml(f.name)}</b><small>${escapeHtml(f.favorite_activity || '')} · ${f.streak}-day streak${f.city ? ' · ' + escapeHtml(f.city) : ''}</small></div><button class="outline small" data-action="challenge" data-id="${f.id}">Challenge</button><button class="primary small" data-action="messageUser" data-id="${f.id}">Message</button></div>`).join('')}</div>` : emptyState('👥', 'No friends yet', 'Send friend requests from Discover or FIT MATCH — fitness is better together.')}`);
+${friends.length ? `<div class="friend-rows">${friends.map(f => `<div class="req-row" data-action="athlete" data-id="${f.id}" style="cursor:pointer">${photoAvatar(f.name, f.id)}<div><b>${escapeHtml(f.name)}</b><small>${escapeHtml(f.favorite_activity || '')} · ${f.streak}-day streak${f.city ? ' · ' + escapeHtml(f.city) : ''}</small></div><button class="outline small" data-action="challenge" data-id="${f.id}">Challenge</button><button class="primary small" data-action="messageUser" data-id="${f.id}">Message</button></div>`).join('')}</div>` : emptyState('👥', 'No friends yet', 'Send friend requests from Discover or FIT MATCH — fitness is better together.')}
+<section class="section-head"><div><span class="eyebrow">COMPETE TOGETHER</span><h2>Start something</h2></div></section>
+<div class="ai-ideas">
+<div class="ai-idea-row" role="button" data-action="challenge"><span>⚔️</span><div><b>New head-to-head</b><small>Steps, km or sessions — pick a rival and a target.</small></div><button class="primary small" tabindex="-1">Start</button></div>
+<div class="ai-idea-row" role="button" data-action="communityInvite"><span>◌</span><div><b>Bring a friend into a community</b><small>Crews train more — invite someone to your crew.</small></div><button class="primary small" tabindex="-1">Invite</button></div>
+<div class="ai-idea-row" role="button" data-action="quickAction" data-qa="dna"><span>🧬</span><div><b>Compare Fitness DNA</b><small>See how your consistency and cardio scores stack up, then challenge the gap.</small></div><button class="primary small" tabindex="-1">Open</button></div>
+</div>`);
 }
 function libraryPage() {
   const ex = pageData.exercises || [];
@@ -756,19 +799,40 @@ function libraryPage() {
 }
 function coachPage() {
   const chat = pageData.coachChat || [];
+  const convs = pageData.aiConversations || [];
   const ai = pageData.aiStatus || {};
   const brain = ai.configured
     ? `<span class="ai-status-chip live" title="Real LLM via Groq is answering"><i></i>GROQ · ${escapeHtml((ai.model || '').split('/').pop())} ONLINE</span>`
-    : `<span class="ai-status-chip demo" title="Set GROQ_API_KEY on the server to enable the full model"><i></i>BUILT-IN COACH — add GROQ_API_KEY for full AI</span>`;
-  const msgs = chat.length ? chat.map(m => `<div class="ai-msg ${m.role}"><span class="ai-ava ${m.role === 'user' ? 'me' : ''}">${m.role === 'user' ? escapeHtml(String(me().name || 'You').split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase()) : '✦'}</span><p>${m.content.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</p></div>`).join('')
+    : `<span class="ai-status-chip demo" title="Set GROQ_API_KEY on the server to enable the full model"><i></i>BUILT-IN COACH</span>`;
+  const msgs = chat.length ? chat.map(m => {
+    const mine = m.role === 'user';
+    const shared = m.shared ? ' <span class="pill ghost" style="font-size:9px;padding:1px 7px">SHARED</span>' : '';
+    return `<div class="ai-msg ${mine ? 'user' : 'coach'}"><span class="ai-ava ${mine ? 'me' : ''}">${mine ? escapeHtml(String(me().name || 'You').split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase()) : '✦'}</span><p>${mdLite(m.content)}${shared}</p></div>`;
+  }).join('')
     : `<div class="ai-welcome"><span class="ai-ava big">✦</span><h3>Hey ${escapeHtml(String(me().name || 'there').split(' ')[0])} — I'm your FITVERSE coach.</h3><p>I know your training, nutrition, health data and goals. Ask me anything.</p></div>`;
-  const html = shell(`${pageHeader('FITVERSE AI', 'Your 24/7 coach — Groq-powered, grounded in your real data.')}
+  const convItem = c => `<div class="conv-item ${String(c.id) === String(pageData.coachConvId || '') ? 'sel' : ''}" data-action="aiOpenConv" data-id="${c.id}" role="button"><div class="ci-title">${escapeHtml(c.title || 'Coach chat')}${c.pinned ? '<span class="ci-pin"> 📌</span>' : ''}<small>${escapeHtml(String(c.created_at || '').slice(0, 10))}</small></div><div class="ci-ops"><button title="Pin / unpin" data-action="aiPinChat" data-id="${c.id}">📌</button><button title="Rename" data-action="aiRenameChat" data-id="${c.id}">✎</button><button title="Share with a friend" data-action="aiShareChat" data-id="${c.id}">↗</button><button class="ci-del" title="Delete chat" data-action="aiDeleteChat" data-id="${c.id}">🗑</button></div></div>`;
+  const html = shell(`${pageHeader('FITVERSE AI', 'Your 24/7 coach — save, pin, rename and share chats with friends.')}
 <section class="ai-chat-full" id="ai-chat"><div class="ai-msgs" id="ai-msgs">${msgs}</div>
-<div class="ai-chips"><button data-action="coachAsk" data-q="What workout should I do today?">🏋 Today's workout</button><button data-action="coachAsk" data-q="What should I eat today?">🍽 Meal plan</button><button data-action="coachAsk" data-q="How am I doing this week?">📊 Week review</button><button data-action="coachAsk" data-q="Create a 5-day gym routine">📅 5-day plan</button><button data-action="generateWorkout">✦ Generate workout</button><button data-action="weeklyReview">📈 Weekly recap</button></div>
-<form class="ai-inputbar" id="coach-form"><input placeholder="Message FITVERSE AI…" maxlength="500" autocomplete="off" required/><button type="submit" aria-label="Send">➤</button></form></section>`);
+<div class="ai-chips"><button data-action="aiNewChat">＋ New chat</button><button data-action="coachAsk" data-q="What workout should I do today?">🏋 Today's workout</button><button data-action="coachAsk" data-q="Make me an indian diet plan">🍛 Indian diet plan</button><button data-action="coachAsk" data-q="How is my blood pressure and sugar?">🩺 BP & sugar</button><button data-action="generateWorkout">✦ Generate workout</button><button data-action="weeklyReview">📈 Weekly recap</button></div>
+<form class="ai-inputbar" id="coach-form"><input placeholder="Message FITVERSE AI…" maxlength="500" autocomplete="off" required/><button type="submit" aria-label="Send">➤</button></form></section>
+<aside class="conv-side"><div class="conv-side-head"><b>SAVED CHATS</b>${brain}<button class="outline small" data-action="aiNewChat">＋ New</button></div>${convs.length ? convs.map(convItem).join('') : '<p class="loading">No saved chats yet — send your first message and it lands here.</p>'}</aside>`);
   // Land at the latest message like ChatGPT — never at the top of history.
   requestAnimationFrame(() => { const m = $('#ai-msgs'); if (m) m.scrollTop = m.scrollHeight; });
   return html;
+}
+// Friends list helper with pageData cache (used by every invite/share picker).
+async function getFriends() {
+  if (pageData.friends && pageData.friends.length) return pageData.friends;
+  try { const d = await api('/api/friends'); pageData.friends = d.items || []; } catch (_) { pageData.friends = []; }
+  return pageData.friends;
+}
+// Share an AI conversation (or DM) picker: sends a readable copy into Messages.
+async function shareChatModal(convId) {
+  let friends = (pageData.friends && pageData.friends.length ? pageData.friends : null);
+  if (!friends) { try { friends = (await api('/api/friends')).items || []; pageData.friends = friends; } catch (_) { friends = []; } }
+  if (!friends.length) { toast('Add a friend first — then you can share chats with them'); return; }
+  modal(`<span class="eyebrow">🤝 SHARE CHAT</span><h2>Send this conversation to…</h2><p class="loading">They'll get the full chat in Messages — every reply readable.</p><div class="pick-list">${friends.map(f => `<button data-action="aiShareChat" data-id="${convId}" data-fid="${f.id}">${escapeHtml(f.name)}</button>`).join('')}</div>`);
+  bind();
 }
 function intelligencePage() {
   const d = pageData.intel || {};
@@ -926,6 +990,34 @@ function mdLite(t) {
     .replace(/\n/g, '<br/>');
 }
 
+function indianDietCard(plan) {
+  if (!plan || !plan.items) return '';
+  return `<div class="meal-plan-grid" id="indian-diet">${plan.items.map(it => `<div class="meal-plan-row"><span class="mp-ico">${it.meal === 'Breakfast' ? '🌅' : it.meal === 'Lunch' ? '🍛' : it.meal === 'Snacks' ? '🥜' : '🌙'}</span><div><b>${escapeHtml(it.meal)} · ~${it.kcal} kcal · ${it.protein_g}g protein</b><p>${escapeHtml(it.food)}</p></div></div>`).join('')}</div>
+  <div class="hero-actions" style="margin:0 0 18px"><button class="outline small" data-action="indianDietRefresh">✦ Regenerate from my vitals</button><button class="outline small" data-page="connectHealth">🩺 Update BP / sugar</button></div>`;
+}
+
+// Vitals card: BP + sugar trend with color-coded status (feeds profile + health page).
+function vitalsStrip() {
+  const s = pageData.healthSuggest;
+  const f = (s && s.suggestion && s.suggestion.facts) || {};
+  const bp = f.avg_bp, sg = f.avg_sugar, age = f.age;
+  if (!bp && !sg && !(age >= 30)) return '';
+  const pill = (label, val, warnAt) => val ? `<span class="v-pill ${val >= warnAt ? 'warn' : 'good'}">${label} ${val}${label.includes('BP') ? '' : ' mg/dL'}</span>` : '';
+  return `<div class="vitals-strip"><span>🩺</span><div><b>Your vitals, tracked</b><p>${bp || sg ? '7-day averages from your logged readings — your workouts, diet plans and AI coach adapt to these automatically.' : 'You\'re 30+ — log blood pressure and fasting sugar below (or import them). FITVERSE then tunes workouts, Indian diet plans and coaching around them.'}</p>
+  <div>${pill('🩺 BP', bp, 140)}${pill('🩸 Sugar', sg, 126)}${age >= 30 ? '<span class="v-pill good">Age ' + age + ' · vitals mode ON</span>' : ''}</div></div>
+  <div class="vs-actions"><button class="outline small" data-action="gotoMetrics">＋ Log BP / sugar</button><button class="outline small" data-action="indianDiet">🍛 BP/sugar diet</button></div></div>`;
+}
+
+function profileVitalsCard() {
+  const s = pageData.healthSuggest;
+  const f = (s && s.suggestion && s.suggestion.facts) || {};
+  const age = f.age || ((pageData.mySettings || {}).age || 0);
+  const bp = f.avg_bp, sg = f.avg_sugar;
+  if (age < 30 && !bp && !sg) return '';
+  const meta = [bp ? 'BP ' + bp : '', sg ? 'Sugar ' + sg + ' mg/dL' : '', age >= 30 ? 'age ' + age : ''].filter(Boolean).join(' · ');
+  return `<a class="vitals-strip" data-page="connectHealth" role="button" style="cursor:pointer;text-decoration:none"><span>🩺</span><div><b>${bp || sg ? 'Vitals tracked' : 'Vitals mode available'}</b><p>${meta ? meta + ' — tap to update readings; your plan adapts instantly.' : 'Add your readings once — your plan adapts instantly.'}</p></div><span class="outline small" style="padding:8px 12px">Open</span></a>`;
+}
+
 function healthBrainCard(ins) {
   if (!ins) return `<div class="hc-rec"><b>⚡ Health Brain warming up…</b><p>Analyzing your stored data.</p></div>`;
   if (ins.insufficient) return `<div class="hc-rec"><b>🧠 No data to analyze yet</b><p>${escapeHtml(ins.need || 'Track a few days of metrics first.')}</p></div>`;
@@ -953,10 +1045,12 @@ function connectHealth() {
     : `<div class="hc-stats"><div><b>${cardio.sessions ?? '—'}</b><small>sessions (28d)</small></div><div><b>${cardio.total_km ?? '—'} km</b><small>total distance</small></div><div><b>${cardio.avg_pace_min_km ? cardio.avg_pace_min_km + ' min/km' : '—'}</b><small>avg pace</small></div><div><b>${cardio.pace_trend_pct != null ? (cardio.pace_trend_pct > 0 ? '▲ ' : '▼ ') + Math.abs(cardio.pace_trend_pct) + '%' : '—'}</b><small>pace trend</small></div><div><b>${cardio.avg_hr ? cardio.avg_hr + ' bpm' : '—'}</b><small>avg heart rate</small></div><div><b>${cardio.consistency_days ?? '—'}</b><small>active days</small></div></div>
        ${cardio.typical_gap_days ? `<p class="hc-note">Typical gap between cardio sessions: ${cardio.typical_gap_days} days · sports: ${escapeHtml((cardio.sports || []).join(', '))}</p>` : ''}`;
   return shell(`${pageHeader('Connect Health Data', 'Bring your real training data into FITVERSE — always your choice, always private.')}
+${vitalsStrip()}
 <section class="hc-hero"><div><span class="pill lime">🔒 PRIVATE BY DESIGN</span><h2>Your data, <em>your control.</em></h2><p>Health data stays on your account, is never public, and is used only for your own insights. Disconnect anytime to delete synced data.</p></div></section>
 <section class="hc-connections">
   <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">📥</span><div><h3>Google Takeout import</h3><p>The reliable way to bring your full Google Fit history in — no sign-in, no OAuth, works instantly on desktop and mobile.</p></div><span class="hc-state on">Works now</span></div>
-    <div class="hc-actions"><label class="hc-import-btn">📎 Choose Takeout file(s)<input id="takeout-input" type="file" accept=".json" multiple style="display:none"/></label><small class="hc-scope">From <span class="code">takeout.google.com</span> → select only <b>Fit</b> → export → unzip → pick the .json files.</small></div>
+    <div class="hc-actions"><label class="hc-import-btn">📎 Choose Takeout file(s)<input id="takeout-input" type="file" accept=".json" multiple style="display:none"/></label><button class="outline small" data-action="sampleTakeout">🧪 Try our sample file</button></div>
+    <small class="hc-scope">From <span class="code">takeout.google.com</span> → select only <b>Fit</b> → export → unzip → pick the .json files. No account yet? Tap the sample — it imports real demo days so you can see the AI work.</small>
     <p class="hc-note" id="takeout-status"></p>
   </article>
   <article class="hc-card"><div class="hc-card-head"><span class="hc-logo">🤖</span><div><h3>Health Connect (Android)</h3><p>Steps, sleep, heart rate, hydration and more — from your phone's health hub.</p></div>${hc.connected ? '<span class="hc-state on">Imported data active</span>' : '<span class="hc-state">Import available</span>'}</div>
@@ -986,7 +1080,7 @@ function connectHealth() {
   <div class="hc-rec"><b>${escapeHtml(rec.title || 'Log a workout to unlock')}</b><p>${escapeHtml(rec.why || '')}</p>${(rec.tips || []).map(t => `<p class="hc-tip">💡 ${escapeHtml(t)}</p>`).join('')}</div>
 </section>
 <section class="hc-section"><div class="section-head"><div><span class="eyebrow">MANUAL LOG</span><h2>Daily metrics</h2></div></div>
-  <form class="hc-form" id="metrics-form"><label>Steps<input name="steps" type="number" min="0" placeholder="8000"/></label><label>Weight (kg)<input name="weight_kg" type="number" step="0.1" placeholder="68.5"/></label><label>Sleep (min)<input name="sleep_min" type="number" min="0" placeholder="450"/></label><label>Resting HR<input name="resting_hr" type="number" min="30" max="120" placeholder="62"/></label><button class="primary">Save today</button></form>
+  <form class="hc-form" id="metrics-form"><label>Steps<input name="steps" type="number" min="0" placeholder="8000"/></label><label>Weight (kg)<input name="weight_kg" type="number" step="0.1" placeholder="68.5"/></label><label>Sleep (min)<input name="sleep_min" type="number" min="0" placeholder="450"/></label><label>Resting HR<input name="resting_hr" type="number" min="30" max="120" placeholder="62"/></label><label>-blood pressure (systolic)<input name="blood_pressure" type="number" min="60" max="260" placeholder="128"/></label><label>-blood sugar, fasting (mg/dL)<input name="blood_sugar" type="number" min="30" max="600" placeholder="110"/></label><button class="primary">Save today</button></form>
 </section>`);
 }
 function businessChannel() {
@@ -1055,8 +1149,26 @@ function reels() {
 <div class="tabs" id="pr-tabs">
   <button class="${tab === 'reels' ? 'active' : ''}" data-prtab="reels">Reels</button>
   <button class="${tab === 'posts' ? 'active' : ''}" data-prtab="posts">Posts</button>
+  <button class="${tab === 'ai' ? 'active' : ''}" data-prtab="ai">✦ For you</button>
 </div>
-${tab === 'reels' ? reelsGrid : `${postsTab}${postsGrid}`}`);
+${tab === 'ai' ? aiIdeasSection('posts') : tab === 'reels' ? reelsGrid : `${postsTab}${postsGrid}`}`);
+}
+// FITVERSE 6.0 cross-panel brain: AI next-actions linking feed ↔ workout ↔ nutrition ↔ health.
+function aiIdeasSection(page) {
+  const s = pageData.healthSuggest;
+  const g = (s && s.suggestion) || {};
+  const f = g.facts || {};
+  const bp = f.avg_bp, sg = f.avg_sugar;
+  const wr = (pageData.workouts || [])[0];
+  const last = wr ? `last session “${wr.title}”` : 'your first session';
+  const items = [
+    { icon: '🏋', t: 'Train what the data says', d: `${g.title || 'Build today\'s session'} — tuned to ${last}${bp ? ' and your BP' : ''}.`, act: 'quickAction', qa: 'workout', cta: 'Open' },
+    { icon: '🍛', t: 'Eat for your numbers', d: `${bp || sg ? 'BP/sugar-aware Indian plate plan is ready.' : 'Get an Indian diet plan built from your targets.'}`, act: 'indianDiet', cta: 'Plan' },
+    { icon: '⚔️', t: 'Challenge a friend', d: 'Head-to-head on steps, km or sessions — loser buys the protein.', act: 'quickAction', qa: 'challenges', cta: 'Start' },
+    { icon: '🧬', t: 'See your Fitness DNA', d: 'Seven scores decoded from your real training, food and social activity.', act: 'quickAction', qa: 'dna', cta: 'View' },
+  ];
+  if (bp || sg || f.age >= 30) items.splice(1, 0, { icon: '🩺', t: 'Check your vitals trend', d: `${bp ? 'BP ' + bp : ''}${bp && sg ? ' · ' : ''}${sg ? 'Sugar ' + sg + ' mg/dL' : ''} — log today's reading to keep the AI sharp.`, act: 'quickAction', qa: 'health', cta: 'Log' });
+  return `<div class="ai-ideas">${items.map(i => `<div class="ai-idea-row" role="button" data-action="${i.act}" ${i.qa ? `data-qa="${i.qa}"` : ''}><span>${i.icon}</span><div><b>${i.t}</b><small>${i.d}</small></div><button class="primary small" tabindex="-1">${i.cta}</button></div>`).join('')}</div>`;
 }
 function businesses() {
   const mine = pageData.myBusinesses || [];
@@ -1067,6 +1179,7 @@ function businesses() {
   return shell(`${pageHeader('Businesses', 'Gyms, studios, stores and coaches — the FITVERSE business ecosystem.')}
 <div class="community-hero"><span class="pill lime">LOCAL PARTNERS</span><h2>Where the city <em>trains.</em></h2><p>Real businesses, real owners, real reviews. Own one? Put it on the map.</p>
   <div class="biz-cta"><button class="primary" data-action="bizCreate">🏪 Add your business</button>${mine.length ? `<button class="outline" data-action="bizOpenMine" data-id="${mine[0].id}">My business dashboard</button>` : ''}</div></div>
+<div class="ai-ideas"><div class="ai-idea-row" role="button" data-action="quickAction" data-qa="workout"><span>🏋</span><div><b>Pick a venue, build the session</b><p style="margin:2px 0 0;color:var(--fv-mut);font-size:11px">Choose where you train, then let the AI design today's workout for it.</p></div><button class="primary small" tabindex="-1">Start</button></div><div class="ai-idea-row" role="button" data-action="indianDiet"><span>🍛</span><div><b>Fuel around your training</b><p style="margin:2px 0 0;color:var(--fv-mut);font-size:11px">An Indian plate plan matched to your calories and vitals.</p></div><button class="primary small" tabindex="-1">Plan</button></div></div>
 <div class="biz-filters"><div class="tabs" id="biz-cats">${cats.map(c => `<button class="${c === active ? 'active' : ''}" data-bcat="${escapeHtml(c)}">${escapeHtml(c)}</button>`).join('')}</div>
 <div class="search"><input id="biz-search" placeholder="Search gyms, stores, coaches…" value="${escapeHtml(state.bizQuery || '')}"/><span>⌕</span></div></div>
 <div class="biz-grid">${list.map(b => `
@@ -1087,6 +1200,7 @@ function communityDetail() {
   return shell(`${pageHeader(c.name, c.description)}
 <div class="community-cover photo big" style="background-image:linear-gradient(rgba(11,23,17,.35), rgba(11,23,17,.55)), url('${sportPhoto(c.activity)}')"><span>◌</span><small>${c.members.length} members · ${escapeHtml(c.activity)}</small></div>
 <div class="people-row" style="margin:12px 0">${c.members.map(m => `<button class="pavatar-btn" data-action="athlete" data-id="${m.id}" title="${escapeHtml(m.name)}">${photoAvatar(m.name, m.id)}</button>`).join('')}</div>
+<div class="hero-actions" style="margin:0 0 14px"><button class="outline small" data-action="communityChallenge" data-id="${c.id}">⚔️ Challenge a member</button><a class="outline small" style="text-decoration:none;display:inline-block" data-action="communityInvite" data-id="${c.id}">✉ Invite a friend</a></div>
 <form class="composer wide" id="community-post-form" data-cid="${c.id}"><input placeholder="Share something with ${escapeHtml(c.name.split(' ')[0])}..." maxlength="2000" required/><button aria-label="Post">➤</button></form>
 <div class="feed-col">${c.posts.map(postCard).join('') || '<p class="loading">No posts yet — start the conversation!</p>'}</div>
 <section class="section-head"><div><span class="eyebrow">COMMUNITY EVENTS</span><h2>Coming up</h2></div></section>
@@ -1385,6 +1499,7 @@ function bind() {
       const r = await api('/api/ai/companion', { method: 'POST', body: JSON.stringify({ message: msg, conversationId: pageData.coachConvId }) });
       pageData.coachConvId = r.conversationId;
       pageData.coachChat.push({ role: 'coach', content: r.reply });
+      await loadPageData('coach');  // refresh saved-chats sidebar (titles, pins)
     } catch (err) {
       pageData.coachChat.push({ role: 'coach', content: 'I could not reach the server just now — give it another shot.' });
     }
@@ -1403,7 +1518,7 @@ function bind() {
   if (mf) mf.onsubmit = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget));
-    try { await api('/api/health/metrics', { method: 'POST', body: JSON.stringify(f) }); toast('Saved — your unified view updates instantly'); }
+    try { await api('/api/health/metrics', { method: 'POST', body: JSON.stringify(f) }); toast('Saved — vitals, workouts and diet plans update instantly'); await loadPageData(state.page); render(); }
     catch (err) { toast(err.message); }
   };
   // FITVERSE 5.0: Health Connect export / Takeout ZIP import (real data, honest flow)
@@ -1967,7 +2082,7 @@ async function action(a, btn) {
       let chFriends = (pageData.challengeFriends || []);
       if (!chFriends.length) { try { chFriends = (await api('/api/challenges')).friends || []; } catch (_) {} pageData.challengeFriends = chFriends; }
       if (!chFriends.length) { toast('Add a friend first — challenges are between real friends'); return; }
-      modal(`<span class="eyebrow">NEW CHALLENGE</span><h2>Start a rivalry</h2><form class="activity-form" id="challenge-form"><label>Challenge a friend<select name="opponent_id">${chFriends.map(u => `<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('')}</select></label><label>Type<select name="challenge_type"><option value="running_distance">Running distance (km)</option><option value="gym_sessions">Gym sessions</option><option value="cycling_distance">Cycling distance (km)</option></select></label><label>Target value<input name="target_value" type="number" value="5" min="1" step="0.5"></label><button class="primary" type="submit">Send challenge</button></form>`);
+      modal(`<span class="eyebrow">NEW CHALLENGE</span><h2>Start a rivalry</h2><form class="activity-form" id="challenge-form"><label>Challenge a friend<select name="opponent_id">${chFriends.map(u => `<option value="${u.id}" ${Number(pageData.challengePreselect || 0) === u.id ? 'selected' : ''}>${escapeHtml(u.name)}</option>`).join('')}</select></label><label>Type<select name="challenge_type"><option value="running_distance">Running distance (km)</option><option value="gym_sessions">Gym sessions</option><option value="cycling_distance">Cycling distance (km)</option></select></label><label>Target value<input name="target_value" type="number" value="5" min="1" step="0.5"></label><button class="primary" type="submit">Send challenge</button></form>`);
       $('#challenge-form').onsubmit = async (e) => {
         e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
         try { await api('/api/challenges', { method: 'POST', body: JSON.stringify({ ...f, opponent_id: Number(f.opponent_id), target_value: Number(f.target_value) }) }); $('#modal').innerHTML = ''; await loadPageData('challenges'); state.page = 'challenges'; render(); toast('Challenge sent!'); }
@@ -2020,7 +2135,7 @@ async function action(a, btn) {
     case 'coachPrompt': api('/api/coach?q=' + encodeURIComponent(btn.dataset.q)).then(r => { pageData.coach = r.reply; render(); }).catch(e => toast(e.message)); return;
     case 'resolveReport': api(`/api/reports/${id}/resolve`, { method: 'POST', body: '{}' }).then(async () => { await loadPageData('admin'); render(); toast('Report resolved'); }).catch(e => toast(e.message)); return;
     case 'filters': toast('Filters: matching is automatic for now'); return;
-    case 'convMenu': toast(`Chat with #${id} — messages are stored in your SQLite database`); return;
+    case 'convMenu': await shareChatModal(id); return;
     case 'joinActivityById': api(`/api/activities/${id}/join`, { method: 'POST', body: '{}' }).then(async () => { $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render(); toast('You joined! See you there'); }).catch(e => toast(e.message)); return;
     case 'leaveActivity': api(`/api/activities/${id}/leave`, { method: 'POST', body: '{}' }).then(async () => { $('#modal').innerHTML = ''; await hydrate(); await loadPageData(state.page); render(); toast('You left the activity'); }).catch(e => toast(e.message)); return;
     case 'completeActivity': api(`/api/activities/${id}/complete`, { method: 'POST', body: '{}' }).then(async (d) => { $('#modal').innerHTML = ''; if (d.state) applyServerState(d.state); await hydrate(); await loadPageData(state.page); render(); toast(d.message || '+80 XP earned!'); }).catch(e => toast(e.message)); return;
@@ -2175,14 +2290,20 @@ async function action(a, btn) {
       <label>Duration (min)<select name="duration"><option>30</option><option selected>45</option><option>60</option><option>75</option></select></label>
       <label>Focus<select name="style"><option value="upper">Upper body</option><option value="lower">Lower body</option><option value="push">Push (chest/shoulders/arms)</option><option value="pull">Pull (back/arms)</option><option value="legs">Legs & glutes</option><option value="full">Full body</option></select></label>
       <label>Equipment<select name="equipment"><option>Full gym</option><option>Home dumbbells</option><option>Bodyweight</option></select></label>
+      <div class="wo-style-chips" style="margin:10px 0 4px"><button type="button" class="chip ${pageData.genStyle === 'cardio' ? 'active' : ''}" data-action="genStyle" data-style="cardio">🏃 Cardio</button><button type="button" class="chip ${pageData.genStyle === 'home' ? 'active' : ''}" data-action="genStyle" data-style="home">🏠 Home</button><button type="button" class="chip ${pageData.genStyle === 'yoga' ? 'active' : ''}" data-action="genStyle" data-style="yoga">🧘 Yoga</button><button type="button" class="chip ${pageData.genStyle === 'gentle' ? 'active' : ''}" data-action="genStyle" data-style="gentle">🪶 Gentle</button><button type="button" class="chip ${!pageData.genStyle ? 'active' : ''}" data-action="genStyle" data-style="">💪 Strength</button></div>
+      <p class="loading est-note">Cardio, Home and Yoga build gentle, low-impact sessions — ideal if you manage BP or sugar, or just want an easy day.</p>
       <button class="primary" type="submit">✦ Generate</button></form>`);
       bind();
       $('#gen-form').onsubmit = async (e) => {
         e.preventDefault();
         const f = Object.fromEntries(new FormData(e.currentTarget));
+        const style = pageData.genStyle || f.style || 'full';
         const styleMap = { upper: ['Chest', 'Back', 'Shoulders'], lower: ['Legs', 'Glutes', 'Core'], push: ['Chest', 'Shoulders', 'Arms'], pull: ['Back', 'Arms'], legs: ['Legs', 'Glutes'], full: ['Chest', 'Back', 'Legs', 'Core'] };
         try {
-          const { item: plan } = await api('/api/ai/workout', { method: 'POST', body: JSON.stringify({ goal: f.goal.toLowerCase(), duration: Number(f.duration), equipment: f.equipment, muscles: styleMap[f.style] }) });
+          const body = style === 'gentle'
+            ? { goal: f.goal.toLowerCase(), duration: Number(f.duration), equipment: f.equipment, muscles: styleMap[f.style], easy: true, fast: true }
+            : { goal: f.goal.toLowerCase(), duration: Number(f.duration), equipment: f.equipment, muscles: styleMap[f.style], style };
+          const { item: plan } = await api('/api/ai/workout', { method: 'POST', body: JSON.stringify(body) });
           if (!plan.items || !plan.items.length) return toast('Could not build that plan — try more equipment options');
           modal(`<span class="eyebrow">✦ GENERATED</span><h2>${escapeHtml(plan.title)}</h2><p class="loading">~${plan.est_kcal} kcal · ${plan.items.length} exercises</p>
           <div class="gen-plan">${plan.items.map((x, i) => `<div class="gen-row"><div><b>${i + 1}. ${escapeHtml(x.exercise)}</b><small>${x.sets} sets × ${x.reps} reps · rest ${x.rest_s}s · ${x.tempo} tempo</small><small class="dim">Alt: ${escapeHtml(x.alt)}</small></div><button class="more" data-action="replaceEx" data-i="${i}" title="Replace">⇄</button></div>`).join('')}</div>
@@ -2400,6 +2521,7 @@ async function action(a, btn) {
         const r = await api('/api/ai/companion', { method: 'POST', body: JSON.stringify({ message: q, conversationId: pageData.coachConvId }) });
         pageData.coachConvId = r.conversationId;
         pageData.coachChat.push({ role: 'coach', content: r.reply });
+        await loadPageData('coach');
       } catch (err) { pageData.coachChat.push({ role: 'coach', content: 'I hit a snag reaching the server — try again in a moment.' }); }
       render(); return;
     }
@@ -2479,6 +2601,124 @@ async function action(a, btn) {
     case 'cmdk': cmdk(); return;
     case 'close': $('#modal').innerHTML = ''; return;
     case 'goBack': goBack(); return;
+    case 'sampleTakeout': {
+      try {
+        const res = await fetch('sample_google_takeout.json');
+        const sample = await res.json();
+        // Same parser the real Takeout files go through — no shortcuts, no faked rows.
+        const { days } = await importTakeoutSample(sample);
+        const r = await api('/api/health/import/takeout', { method: 'POST', body: JSON.stringify({ days }) });
+        const st = $('#takeout-status');
+        if (st) st.textContent = `✅ Sample imported: ${r.days} days of steps + distance. Open AI Coach or Nutrition to see vitals-aware suggestions.`;
+        toast('Sample health data imported — AI can now train on it');
+      } catch (e) { toast(e.message); }
+      return;
+    }
+    case 'aiNewChat': pageData.coachConvId = 0; pageData.coachChat = []; state.page = 'coach'; render(); toast('New chat — send a message to start'); return;
+    case 'aiOpenConv': pageData.coachConvId = id; pageData.coachChat = null; await loadPageData('coach'); state.page = 'coach'; render(); return;
+    case 'aiDeleteChat': {
+      if (!confirm('Delete this chat? All its messages are removed for you.')) return;
+      try { await api(`/api/ai/coach/${id}`, { method: 'POST', body: JSON.stringify({ op: 'delete' }) }); if (Number(pageData.coachConvId) === Number(id)) { pageData.coachConvId = 0; pageData.coachChat = []; } await loadPageData('coach'); render(); toast('Chat deleted'); } catch (e) { toast(e.message); }
+      return;
+    }
+    case 'aiPinChat':
+      try { const r = await api(`/api/ai/coach/${id}`, { method: 'POST', body: JSON.stringify({ op: 'pin' }) }); await loadPageData('coach'); render(); toast(r.pinned ? '📌 Chat pinned to top' : 'Chat unpinned'); } catch (e) { toast(e.message); }
+      return;
+    case 'aiRenameChat': {
+      const cur = (pageData.aiConversations || []).find(c => String(c.id) === String(id));
+      modal(`<span class="eyebrow">SAVED CHATS</span><h2>Rename chat</h2><form class="activity-form" id="ai-ren-form"><label>Chat name<input name="title" required maxlength="80" value="${escapeHtml((cur && cur.title) || '')}"></label><button class="primary" type="submit">Save name</button></form>`);
+      bind();
+      $('#ai-ren-form').onsubmit = async (e) => {
+        e.preventDefault(); const t = new FormData(e.currentTarget).get('title');
+        try { await api(`/api/ai/coach/${id}`, { method: 'POST', body: JSON.stringify({ op: 'rename', title: t }) }); $('#modal').innerHTML = ''; await loadPageData('coach'); render(); toast('Chat renamed'); } catch (err) { toast(err.message); }
+      };
+      return;
+    }
+    case 'aiShareChat': {
+      const fid = Number(btn.dataset.fid || 0);
+      if (!fid) { await shareChatModal(id); return; }
+      try {
+        const d = await api(`/api/ai/coach?conversation_id=${Number(id)}`);
+        const items = (d.items || []).slice(-10);
+        const title = (d.conversations || []).find(c => String(c.id) === String(id))?.title || 'Coach chat';
+        const body = `💬 AI chat · ${title}\n` + items.map(m => `${m.role === 'user' ? 'You' : '✦ Coach'}: ${m.content}`).join('\n').slice(0, 950);
+        await api('/api/messages', { method: 'POST', body: JSON.stringify({ to_user_id: fid, body }) });
+        $('#modal').innerHTML = ''; toast('Chat shared in Messages ✉');
+      } catch (e) { toast(e.message); }
+      return;
+    }
+    case 'quickAction': {
+      const qa = btn.dataset.qa;
+      if (qa === 'workout') { state.page = 'workout'; await loadPageData('workout'); render(); window.scrollTo(0, 0); return; }
+      if (qa === 'meal') { state.page = 'nutrition'; await loadPageData('nutrition'); render(); window.scrollTo(0, 0); return; }
+      if (qa === 'health') { state.page = 'connectHealth'; await loadPageData('connectHealth'); render(); window.scrollTo(0, 0); return; }
+      if (qa === 'challenges') { state.page = 'challenges'; await loadPageData('challenges'); render(); window.scrollTo(0, 0); return; }
+      if (qa === 'dna') { state.page = 'intelligence'; await loadPageData('intelligence'); render(); window.scrollTo(0, 0); return; }
+      if (qa === 'easy') { pageData.genStyle = 'gentle'; action('generateWorkout', btn); return; }
+      return;
+    }
+    case 'gotoMetrics': { const el = document.getElementById('metrics-form'); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); const inp = el.querySelector('[name=blood_pressure]'); if (inp) setTimeout(() => inp.focus(), 450); } return; }
+    case 'challengeFriend': pageData.challengePreselect = id; action('challenge', btn); return;
+    case 'eventInvite': {
+      const fidEv = Number(btn.dataset.fid || 0);
+      if (fidEv) {
+        try {
+          await api('/api/messages', { method: 'POST', body: JSON.stringify({ to_user_id: fidEv, body: `🎟 Join me at "${btn.dataset.name || 'a FITVERSE event'}"! Book your spot from the Events panel — we'll train together. 🏃` }) });
+          $('#modal').innerHTML = ''; toast('Invite sent ✉');
+        } catch (e) { toast(e.message); }
+        return;
+      }
+      const ev = (pageData.events || []).find(e => e.id === Number(id));
+      const name = btn.dataset.name || (ev ? ev.name : 'the featured FITVERSE event');
+      const evFriends = await getFriends();
+      if (!evFriends.length) { toast('Add a friend first — events are better together'); return; }
+      modal(`<span class="eyebrow">✉ EVENT CREW</span><h2>Invite a friend</h2><p class="loading">They'll get the invite in Messages.</p><div class="pick-list">${evFriends.map(f => `<button data-action="eventInvite" data-id="${id}" data-fid="${f.id}" data-name="${escapeHtml(name)}">${escapeHtml(f.name)}</button>`).join('')}</div>`);
+      bind(); return;
+    }
+    case 'communityChallenge': {
+      let members = [];
+      if (pageData.detailData && pageData.detailData.id === Number(id)) members = pageData.detailData.members || [];
+      else { try { members = (await api(`/api/community?id=${Number(id)}`)).item?.members || []; } catch (_) {} }
+      if (!members.length) { toast('Open the community to challenge its members'); return; }
+      modal(`<span class="eyebrow">⚔️ COMMUNITY RIVALRY</span><h2>Challenge a member</h2><div class="pick-list">${members.filter(m => m.id !== (me().id || 0)).map(m => `<button data-action="challengeFriend" data-id="${m.id}">${escapeHtml(m.name)}</button>`).join('')}</div>`);
+      bind(); return;
+    }
+    case 'communityInvite': {
+      const fidC = Number(btn.dataset.fid || 0);
+      if (fidC) {
+        try {
+          await api('/api/messages', { method: 'POST', body: JSON.stringify({ to_user_id: fidC, body: `◌ Join "${btn.dataset.name || 'my community'}" on FITVERSE! Open Communities → tap Join — let's grow together. 💪` }) });
+          $('#modal').innerHTML = ''; toast('Invite sent ✉');
+        } catch (e) { toast(e.message); }
+        return;
+      }
+      const cFriends = await getFriends();
+      if (!cFriends.length) { toast('Add a friend first — then bring them into your crew'); return; }
+      let cname = (pageData.detailData && pageData.detailData.name) || '';
+      let cid = Number(id || 0) || (pageData.detailData && pageData.detailData.id) || 0;
+      if (!cid) { try { cid = ((pageData.myCommunities || [])[0] || {}).id || 0; cname = ((pageData.myCommunities || [])[0] || {}).name || ''; } catch (_) {} }
+      if (!cid) { toast('Join a community first, then invite friends'); return; }
+      modal(`<span class="eyebrow">◌ GROW YOUR CREW</span><h2>Invite to ${escapeHtml(cname || 'your community')}</h2><div class="pick-list">${cFriends.map(f => `<button data-action="communityInvite" data-id="${cid}" data-fid="${f.id}" data-name="${escapeHtml(cname)}">${escapeHtml(f.name)}</button>`).join('')}</div>`);
+      bind(); return;
+    }
+    case 'genStyle': pageData.genStyle = btn.dataset.style || ''; $$('.wo-style-chips .chip').forEach(c => c.classList.toggle('active', c === btn)); return;
+    case 'indianDiet': {
+      toast('🍛 Building your Indian plan from targets + vitals…');
+      try {
+        const d = await api('/api/ai/indian-diet', { method: 'POST', body: '{}' });
+        const plan = d.item || {};
+        const v = plan.vitals || {};
+        modal(`<span class="eyebrow">🇮🇳 NUTRITION AI</span><h2>${escapeHtml(plan.title || 'Indian plate plan')}</h2>
+        ${(plan.flags || []).map(f => `<span class="v-pill ${/SODIUM|GI/.test(f) ? 'warn' : 'good'}">${f}</span>`).join(' ')}
+        ${v.bp || v.sugar ? `<p class="loading est-note">Tuned to your 7-day vitals: ${v.bp ? 'BP ' + v.bp : ''}${v.bp && v.sugar ? ' · ' : ''}${v.sugar ? 'sugar ' + v.sugar + ' mg/dL' : ''}</p>` : ''}
+        ${plan.ai ? `<p class="as-ai" style="margin:10px 0">✦ ${mdLite(plan.ai)}</p>` : ''}
+        <div class="meal-plan-grid">${plan.items.map(it => `<div class="meal-plan-row"><span class="mp-ico">${it.meal === 'Breakfast' ? '🌅' : it.meal === 'Lunch' ? '🍛' : it.meal === 'Snacks' ? '🥜' : '🌙'}</span><div><b>${escapeHtml(it.meal)} · ~${it.kcal} kcal · ${it.protein_g}g protein</b><p>${escapeHtml(it.food)}</p></div></div>`).join('')}</div>
+        <p class="loading est-note">${escapeHtml(plan.note || '')}</p>
+        <div class="hero-actions"><button class="primary" data-action="close">Looks good</button></div>`);
+        bind();
+      } catch (e) { toast(e.message); }
+      return;
+    }
     default: toast('Coming soon in the demo'); return;
   }
 }
@@ -2543,7 +2783,7 @@ function runOnboarding() {
   state.onboardingActive = true;
   const steps = [
     { title: 'Welcome to FITVERSE 👋', body: `<p class="loading">Let's personalize your experience. A few quick questions — skip anything you'd rather not share.</p><label>Your age<input name="age" type="number" min="13" max="90" placeholder="21"></label><label>Sex (for calorie estimates)<select name="sex"><option value="male">Male</option><option value="female">Female</option></select></label>` },
-    { title: 'Your body stats', body: `<label>Height (cm)<input name="height_cm" type="number" min="120" max="230" placeholder="175"></label><label>Weight (kg)<input name="weight_kg" type="number" min="30" max="300" step="0.5" placeholder="70"></label>` },
+    { title: 'Your body stats', body: `<label>Height (cm)<input name="height_cm" type="number" min="120" max="230" placeholder="175"></label><label>Weight (kg)<input name="weight_kg" type="number" min="30" max="300" step="0.5" placeholder="70"></label><div id="ob-vitals"></div>` },
     { title: 'Your goal', body: `<label>Main goal<select name="goal"><option>Build muscle</option><option>Lose weight</option><option>Maintain</option><option>Endurance</option><option>General fitness</option></select></label><label>Experience<select name="experience"><option>Beginner</option><option selected>Intermediate</option><option>Advanced</option></select></label>` },
     { title: 'Training style', body: `<label>Days per week<select name="days_per_week"><option>2</option><option>3</option><option selected>4</option><option>5</option><option>6</option></select></label><label>Session length<select name="session_minutes"><option>30</option><option selected>45</option><option>60</option><option>90</option></select></label><label>Equipment<select name="equipment"><option>Full gym</option><option>Home dumbbells</option><option>Bodyweight only</option></select></label>` },
     { title: 'Lifestyle', body: `<label>Activity level (outside workouts)<select name="activity_level"><option value="low">Mostly sitting</option><option value="moderate" selected>Moderately active</option><option value="high">Very active</option></select></label><label>Diet preference<select name="diet_pref"><option>balanced</option><option>vegetarian</option><option>high-protein</option></select></label>` },
@@ -2564,6 +2804,8 @@ function runOnboarding() {
       for (const k of ['sex', 'goal', 'experience', 'equipment', 'diet_pref', 'activity_level']) if (answers[k]) payload[k] = answers[k];
       if (answers.days_per_week) payload.days_per_week = Number(answers.days_per_week);
       if (answers.session_minutes) payload.session_minutes = Number(answers.session_minutes);
+      if (answers.blood_pressure) payload.blood_pressure = Number(answers.blood_pressure);
+      if (answers.blood_sugar) payload.blood_sugar = Number(answers.blood_sugar);
       try {
         const r = await api('/api/onboarding', { method: 'POST', body: JSON.stringify(payload) });
         state.onboardingActive = false;
@@ -2579,6 +2821,16 @@ function runOnboarding() {
       } catch (err) { toast(err.message); }
     };
     const back = $('#ob-back'); if (back) back.onclick = () => { step--; draw(); };
+    // FITVERSE 6.0: 30+ users get BP + fasting sugar inputs (vitals mode)
+    const drawVitals = () => {
+      const v = $('#ob-vitals'); if (!v) return;
+      const a = Number($('#ob-form [name=age]')?.value || answers.age || 0);
+      if (a >= 30 && !v.innerHTML) {
+        v.innerHTML = `<p class="loading est-note">Age 30+ detected — tracking BP & sugar unlocks vitals-aware workouts and Indian diet plans.</p><label>-blood pressure, systolic (optional)<input name="blood_pressure" type="number" min="60" max="260" placeholder="e.g. 128"></label><label>-blood sugar, fasting mg/dL (optional)<input name="blood_sugar" type="number" min="30" max="600" placeholder="e.g. 110"></label>`;
+      } else if (a > 0 && a < 30) { v.innerHTML = ''; }
+    };
+    drawVitals();
+    $('#ob-form').addEventListener('input', drawVitals);
     $('#ob-skip').onclick = () => { api('/api/settings', { method: 'POST', body: JSON.stringify({ onboarded: 1 }) }).finally(() => { state.onboardingActive = false; $('#modal').innerHTML = ''; toast('Skipped — finish anytime from Profile → Setup'); }); };
   }
   drawOnboardingStep = draw;

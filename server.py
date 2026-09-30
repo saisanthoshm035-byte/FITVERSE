@@ -371,7 +371,9 @@ CREATE INDEX IF NOT EXISTS idx_health_activities_user ON health_activities(user_
 CREATE TABLE IF NOT EXISTS daily_metrics (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, day TEXT NOT NULL,
   steps INTEGER NOT NULL DEFAULT 0, sleep_min INTEGER NOT NULL DEFAULT 0, resting_hr INTEGER NOT NULL DEFAULT 0,
-  weight_kg REAL NOT NULL DEFAULT 0, hydration_ml INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'manual',
+  weight_kg REAL NOT NULL DEFAULT 0, hydration_ml INTEGER NOT NULL DEFAULT 0,
+  blood_pressure INTEGER NOT NULL DEFAULT 0, blood_sugar INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'manual',
   updated_at TEXT NOT NULL, PRIMARY KEY(user_id, day)
 );
 CREATE TABLE IF NOT EXISTS business_products (
@@ -422,6 +424,12 @@ def initialize_database() -> None:
         # GET /api/events request — on the remote DB those five UPDATEs ran per view.
         try: db.execute("ALTER TABLE events ADD COLUMN photo TEXT")
         except sqlite3.OperationalError: pass
+        # FITVERSE 6.0 vitals: BP (sys mmHg) + fasting blood sugar (mg/dL) on daily metrics
+        for _tbl, _col, _typ in (("daily_metrics", "blood_pressure", "INTEGER NOT NULL DEFAULT 0"),
+                                 ("daily_metrics", "blood_sugar", "INTEGER NOT NULL DEFAULT 0"),
+                                 ("ai_conversations", "pinned", "INTEGER NOT NULL DEFAULT 0")):
+            try: db.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_typ}")
+            except sqlite3.OperationalError: pass
         db.executemany("UPDATE events SET photo=? WHERE id=? AND (photo IS NULL OR photo='')", [
             ("cycling.jpg", 4), ("yoga.jpg", 5), ("gym.jpg", 6), ("running.jpg", 7), ("basketball.jpg", 8),
         ])
@@ -1674,14 +1682,30 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 entries=[dict(r) for r in db.execute("SELECT * FROM progress_entries WHERE user_id=? ORDER BY entry_date DESC LIMIT 50",(uid,))]
             return self.send_json(200,{"items":entries})
         if path == "/api/ai/coach":
+            """FITVERSE 6.0: conversation-aware. ?conversation_id= loads one thread;
+            without it, the newest (pinned first). Every thread belongs to one user."""
             uid=self.current_user()
+            q=urlparse(self.path).query
+            try: cid_req=int(q.split("conversation_id=")[-1].split("&")[0] or 0)
+            except ValueError: cid_req=0
             with connect() as db:
-                conv=db.execute("SELECT id FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT 1",(uid,)).fetchone()
-                if not conv:
-                    cur=db.execute("INSERT INTO ai_conversations (user_id,title,created_at) VALUES (?,?,?)",(uid,'Coach chat',now())); cid=cur.lastrowid
-                else: cid=conv['id']
+                convs=[dict(r) for r in db.execute("SELECT id,title,pinned,created_at FROM ai_conversations WHERE user_id=? ORDER BY pinned DESC,id DESC LIMIT 40",(uid,))]
+                if cid_req:
+                    conv=db.execute("SELECT id FROM ai_conversations WHERE id=? AND user_id=?",(cid_req,uid)).fetchone()
+                    cid=conv["id"] if conv else 0
+                if not cid_req or not cid:
+                    conv=db.execute("SELECT id FROM ai_conversations WHERE user_id=? ORDER BY pinned DESC,id DESC LIMIT 1",(uid,)).fetchone()
+                    if not conv:
+                        cur=db.execute("INSERT INTO ai_conversations (user_id,title,created_at) VALUES (?,?,?)",(uid,'Coach chat',now())); cid=cur.lastrowid
+                        convs=[{"id":cid,"title":"Coach chat","pinned":0,"created_at":now()}]
+                    else: cid=conv["id"]
                 msgs=[dict(r) for r in db.execute("SELECT role,content,created_at FROM ai_messages WHERE conversation_id=? ORDER BY id DESC LIMIT 40",(cid,))]
-            return self.send_json(200,{"conversationId":cid,"items":list(reversed(msgs))})
+                cur_conv=next((c for c in convs if c["id"]==cid),None)
+                if cur_conv is None:
+                    row=db.execute("SELECT id,title,pinned,created_at FROM ai_conversations WHERE id=?",(cid,)).fetchone()
+                    cur_conv=dict(row) if row else {"id":cid,"title":"Coach chat","pinned":0,"created_at":""}
+                convs=[cur_conv]+[c for c in convs if c["id"]!=cid]
+            return self.send_json(200,{"conversationId":cid,"items":list(reversed(msgs)),"conversations":convs})
         if path == "/api/ai/review":
             import ai_service
             return self.send_json(200,{"item":ai_service.weekly_review(self.current_user())})
@@ -2028,6 +2052,7 @@ class FitverseHandler(BaseHTTPRequestHandler):
                             stamp=now()
                             cid=db.execute("INSERT INTO conversations (kind,title,created_at) VALUES ('direct',?,?)",("",stamp)).lastrowid
                             db.executemany("INSERT INTO dm_participants (conversation_id,user_id,last_read) VALUES (?,?,0)",[(cid,uid),(cid,to_uid)])
+                        other_id=to_uid  # fresh thread: the recipient IS the other participant
                     else:
                         return self.send_json(400,{"error":"Recipient is required"})
                     # Notify only when the recipient isn't already caught up in this thread.
@@ -2161,6 +2186,14 @@ class FitverseHandler(BaseHTTPRequestHandler):
                     import ai_service
                     t=ai_service.targets_from_profile(vals)
                     vals["kcal_target"]=t["kcal_target"]; vals["protein_target"]=t["protein_target"]
+                    # FITVERSE 6.0: 30+ onboarding collects BP / fasting sugar as day-1 vitals.
+                    try:
+                        bp_v=int(data.get("blood_pressure") or 0); sg_v=int(data.get("blood_sugar") or 0)
+                    except (TypeError, ValueError):
+                        bp_v=sg_v=0
+                    if bp_v>0 or sg_v>0:
+                        db.execute("INSERT INTO daily_metrics (user_id,day,steps,sleep_min,resting_hr,weight_kg,hydration_ml,blood_pressure,blood_sugar,source,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,day) DO UPDATE SET blood_pressure=MAX(COALESCE(blood_pressure,0),excluded.blood_pressure),blood_sugar=MAX(COALESCE(blood_sugar,0),excluded.blood_sugar),updated_at=excluded.updated_at",
+                                   (uid, now()[:10], 0,0,0, float(vals.get("weight_kg") or 0), 0, max(0,min(260,bp_v)), max(0,min(600,sg_v)), "onboarding", now()))
                     cols=",".join(f"{k}=?" for k in vals)
                     # Row must exist BEFORE the UPDATE: a fresh user has no user_settings row,
                     # and a 0-row UPDATE silently dropped the whole plan (the flash-then-vanish bug).
@@ -2341,14 +2374,39 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 if not msg: return self.send_json(400,{"error":"Ask me something!"})
                 import ai_service
                 r=ai_service.ai_coach(uid,msg)
+                cid=int(data.get("conversationId",0) or 0)
                 with connect() as db:
-                    conv=db.execute("SELECT id FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT 1",(uid,)).fetchone()
+                    conv=db.execute("SELECT id FROM ai_conversations WHERE id=? AND user_id=?",(cid,uid)).fetchone() if cid else None
+                    if conv: useid=conv["id"]
+                    else:
+                        cur=db.execute("INSERT INTO ai_conversations (user_id,title,created_at) VALUES (?,?,?)",(uid,msg[:60] if msg else 'Coach chat',now())); useid=cur.lastrowid
+                    db.execute("INSERT INTO ai_messages (conversation_id,role,content,created_at) VALUES (?,?,?,?)",(useid,'user',msg,now()))
+                    db.execute("INSERT INTO ai_messages (conversation_id,role,content,created_at) VALUES (?,?,?,?)",(useid,'coach',r['reply'],now()))
+                return self.send_json(200,{"ok":True,"reply":r['reply'],"kind":r.get('kind','brief'),"conversationId":useid})
+            if path.startswith("/api/ai/coach/") and path.split("/")[-1].isdigit():
+                """Rename / pin / delete an AI conversation (owner-only).
+                NOTE: writes happen inside the with-block; responses are returned
+                AFTER it — returning from inside would roll the write back."""
+                uid=self.current_user(); conv_id=int(path.split("/")[-1]); op=str(data.get("op","") or ("delete" if data.get("delete") else ""))
+                resp=None
+                with connect() as db:
+                    conv=db.execute("SELECT id FROM ai_conversations WHERE id=? AND user_id=?",(conv_id,uid)).fetchone()
                     if not conv:
-                        cur=db.execute("INSERT INTO ai_conversations (user_id,title,created_at) VALUES (?,?,?)",(uid,'Coach chat',now())); cid=cur.lastrowid
-                    else: cid=conv['id']
-                    db.execute("INSERT INTO ai_messages (conversation_id,role,content,created_at) VALUES (?,?,?,?)",(cid,'user',msg,now()))
-                    db.execute("INSERT INTO ai_messages (conversation_id,role,content,created_at) VALUES (?,?,?,?)",(cid,'coach',r['reply'],now()))
-                return self.send_json(200,{"ok":True,"reply":r['reply'],"kind":r.get('kind','brief')})
+                        return self.send_json(404,{"error":"Conversation not found"})
+                    if op=="delete":
+                        db.execute("DELETE FROM ai_messages WHERE conversation_id=?",(conv_id,)); db.execute("DELETE FROM ai_conversations WHERE id=?",(conv_id,))
+                        resp={"ok":True,"deleted":conv_id}
+                    elif op=="rename":
+                        title=str(data.get("title","")).strip()[:80]
+                        if not title: return self.send_json(400,{"error":"Title required"})
+                        db.execute("UPDATE ai_conversations SET title=? WHERE id=?",(title,conv_id))
+                        resp={"ok":True,"title":title}
+                    elif op=="pin":
+                        db.execute("UPDATE ai_conversations SET pinned=CASE WHEN pinned=1 THEN 0 ELSE 1 END WHERE id=?",(conv_id,))
+                        row=db.execute("SELECT pinned FROM ai_conversations WHERE id=?",(conv_id,)).fetchone()
+                        resp={"ok":True,"pinned":row["pinned"]}
+                if resp is None: return self.send_json(400,{"error":"Unknown op"})
+                return self.send_json(200,resp)
             if path == "/api/health/suggest":
                 """AI training suggestion built from the user's imported health data."""
                 import platform_service
@@ -2371,6 +2429,10 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 import ai_service
                 r=ai_service.analyze_meal(str(data.get("desc","")),float(data.get("grams",250)))
                 return self.send_json(200,{"item":r})
+            if path == "/api/ai/indian-diet":
+                """FITVERSE 6.0: Indian diet plan built from targets + BP/sugar vitals."""
+                import ai_service
+                return self.send_json(200,{"item":ai_service.indian_diet_plan(self.current_user())})
             if path == "/api/ai/goal":
                 import ai_service
                 return self.send_json(200,{"item":ai_service.goal_plan(self.current_user(),str(data.get("goal","")))})
@@ -2529,13 +2591,16 @@ class FitverseHandler(BaseHTTPRequestHandler):
                           int(data["sleep_min"]) if data.get("sleep_min") not in (None,"") else 0,
                           int(data["resting_hr"]) if data.get("resting_hr") not in (None,"") else 0,
                           float(data["weight_kg"]) if data.get("weight_kg") not in (None,"") else 0,
-                          int(data["hydration_ml"]) if data.get("hydration_ml") not in (None,"") else 0)
+                          int(data["hydration_ml"]) if data.get("hydration_ml") not in (None,"") else 0,
+                          int(data["blood_pressure"]) if data.get("blood_pressure") not in (None,"") else 0,
+                          int(data["blood_sugar"]) if data.get("blood_sugar") not in (None,"") else 0)
                 except Exception: return self.send_json(400,{"error":"Invalid metric values"})
                 with connect() as db:
-                    db.execute("""INSERT INTO daily_metrics (user_id,day,steps,sleep_min,resting_hr,weight_kg,hydration_ml,source,updated_at)
-                                  VALUES (?,?,?,?,?,?,?,?,?)
+                    db.execute("""INSERT INTO daily_metrics (user_id,day,steps,sleep_min,resting_hr,weight_kg,hydration_ml,blood_pressure,blood_sugar,source,updated_at)
+                                  VALUES (?,?,?,?,?,?,?,?,?,?,?)
                                   ON CONFLICT(user_id,day) DO UPDATE SET steps=excluded.steps,sleep_min=excluded.sleep_min,
-                                    resting_hr=excluded.resting_hr,weight_kg=excluded.weight_kg,hydration_ml=excluded.hydration_ml,updated_at=excluded.updated_at""",
+                                    resting_hr=excluded.resting_hr,weight_kg=excluded.weight_kg,hydration_ml=excluded.hydration_ml,
+                                    blood_pressure=excluded.blood_pressure,blood_sugar=excluded.blood_sugar,updated_at=excluded.updated_at""",
                                (uid,day,*vals,"manual",now()))
                 return self.send_json(200,{"ok":True})
             if path == "/api/ai/companion":

@@ -321,11 +321,18 @@ def import_health_connect_records(uid: int, records: list, source_label: str = "
                 val = 0
             aliases = {"steps": "steps", "step_count": "steps", "sleep": "sleep_min", "sleep_minutes": "sleep_min", "sleep_min": "sleep_min",
                        "resting_hr": "resting_hr", "heart_rate": "resting_hr", "weight": "weight_kg", "weight_kg": "weight_kg",
-                       "hydration": "hydration_ml", "water": "hydration_ml", "hydration_ml": "hydration_ml"}
+                       "hydration": "hydration_ml", "water": "hydration_ml", "hydration_ml": "hydration_ml",
+                       "blood_pressure": "blood_pressure", "bp": "blood_pressure", "systolic": "blood_pressure",
+                       "blood_sugar": "blood_sugar", "glucose": "blood_sugar", "sugar": "blood_sugar", "fasting_sugar": "blood_sugar", "blood_glucose": "blood_sugar"}
             metric = aliases.get(rtype)
             if metric and day and len(day) == 10 and val > 0:
                 col = {"steps": "steps", "sleep_min": "sleep_min", "resting_hr": "resting_hr",
-                       "weight_kg": "weight_kg", "hydration_ml": "hydration_ml"}[metric]
+                       "weight_kg": "weight_kg", "hydration_ml": "hydration_ml",
+                       "blood_pressure": "blood_pressure", "blood_sugar": "blood_sugar"}[metric]
+                if metric in ("blood_pressure", "blood_sugar"):
+                    # Sanity windows: systolic 60-260, sugar 30-600 mg/dL. MAX() keeps the
+                    # worst reading of the day so a high BP always surfaces in the AI.
+                    val = min(260, max(60, val)) if metric == "blood_pressure" else min(600, max(30, val))
                 if metric == "sleep_min" and val < 24:
                     val = val * 60  # exports often use hours; <24h is unambiguous — convert to minutes
                 db.execute(
@@ -744,12 +751,12 @@ def chat_reply(uid: int, message: str, conversation_id: int | None = None) -> di
     ql = q.lower()
     ctx = _user_context(uid)
 
-    # conversation memory
+    # conversation memory. FITVERSE 6.0: conversation_id === 0 means "explicit blank
+    # new chat" — ALWAYS create a fresh thread; a truthy id continues that thread.
     with connect() as db:
+        conv = None
         if conversation_id:
             conv = db.execute("SELECT id FROM ai_conversations WHERE id=? AND user_id=?", (conversation_id, uid)).fetchone()
-        else:
-            conv = db.execute("SELECT id FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
         if not conv:
             cur = db.execute("INSERT INTO ai_conversations (user_id,title,created_at) VALUES (?,?,?)", (uid, q[:60] or "Coach chat", now()))
             cid = cur.lastrowid
@@ -987,20 +994,32 @@ def groq_health_insights(uid: int) -> dict:
 def training_suggestion(uid: int) -> dict:
     """AI (or smart-rule) training suggestion built from imported health data.
     Uses daily_metrics + health_activities + onboarding goal/equipment to decide
-    WHAT to train next and WHY, referencing the user's real numbers."""
+    WHAT to train next and WHY, referencing the user's real numbers.
+    FITVERSE 6.0: blood pressure + fasting sugar are first-class inputs —
+    high readings steer users toward easy cardio, breathwork and a vitals check."""
     import datetime as _dt
     today = datetime.now().strftime("%Y-%m-%d")
     with connect() as db:
         s = ai_service.get_settings(db, uid) if ai_service else {}
         goal = (s.get("goal") or "general fitness") if isinstance(s, dict) else "general fitness"
         equipment = (s.get("equipment") or "full gym") if isinstance(s, dict) else "full gym"
-        days = db.execute("SELECT day, steps, sleep_min, resting_hr FROM daily_metrics WHERE user_id=? ORDER BY day DESC LIMIT 7", (uid,)).fetchall()
+        age = int(s.get("age") or 0) if isinstance(s, dict) else 0
+        days = db.execute("SELECT day, steps, sleep_min, resting_hr, blood_pressure, blood_sugar FROM daily_metrics WHERE user_id=? ORDER BY day DESC LIMIT 7", (uid,)).fetchall()
         acts = db.execute("SELECT sport, name, distance_km, moving_s, kcal, started_at FROM health_activities WHERE user_id=? ORDER BY started_at DESC LIMIT 10", (uid,)).fetchall()
         last_ws = db.execute("SELECT title, created_at FROM workout_sessions WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
     d7 = [dict(r) for r in days]
     steps7 = [int(d["steps"]) for d in d7 if d["steps"]]
     sleep7 = [int(d["sleep_min"]) for d in d7 if d["sleep_min"]]
     hrs7 = [int(d["resting_hr"]) for d in d7 if d["resting_hr"]]
+    bps = [int(d["blood_pressure"]) for d in d7 if d.get("blood_pressure")]
+    sugars = [int(d["blood_sugar"]) for d in d7 if d.get("blood_sugar")]
+    bp_avg = round(sum(bps) / len(bps)) if bps else None
+    sugar_avg = round(sum(sugars) / len(sugars)) if sugars else None
+    bp_high = bp_avg is not None and bp_avg >= 140
+    bp_elev = bp_avg is not None and 130 <= bp_avg < 140
+    sugar_high = sugar_avg is not None and sugar_avg >= 126
+    sugar_elev = sugar_avg is not None and 110 <= sugar_avg < 126
+    vitals_flag = bp_high or sugar_high
     km_ran = round(sum(float(a["distance_km"] or 0) for a in acts if str(a["sport"] or "").lower() in ("running", "walk", "running walk hiking", "treadmill")), 1)
     rode = [a for a in acts if str(a["sport"] or "").lower() in ("cycling", "bike", "biking")]
     acts7 = len(acts)
@@ -1020,9 +1039,16 @@ def training_suggestion(uid: int) -> dict:
     if not steps7 and not acts and last_ws is None:
         return {"insufficient": True, "need": "Import your health data (Takeout / Health Connect) or log a few days below — then training suggestions appear here, tuned to YOUR numbers.", "days": 0}
 
-    # Rule engine (deterministic baseline — always works, no API needed)
-    if tired:
+    # Rule engine (deterministic baseline — always works, no API needed).
+    # Vitals outrank everything: elevated BP or sugar changes today's plan FIRST.
+    if bp_high:
+        title, why, focus = "Gentle cardio + breathing (BP day)", (f"Your averaged blood pressure is reading {bp_avg}/mmHg this week — skip heavy lifting today. 20-30 min of easy walking or cycling plus slow nasal breathing (4-7-8) is the BP-friendliest session."), "easy cardio + breathwork"
+    elif sugar_high:
+        title, why, focus = "Post-meal walk + light circuit (sugar day)", (f"Fasting sugar is averaging {sugar_avg} mg/dL this week — a 30-min brisk walk after meals lowers glucose best. Add light resistance work: muscles pull sugar out of the blood."), "walking + light resistance"
+    elif tired:
         title, why, focus = "Recovery day", f"Sleep is averaging {avg_sleep_h or '—'}h and resting HR {avg_hr or '—'} bpm — your body is asking for a lighter day.", "mobility + easy walk"
+    elif bp_elev or sugar_elev:
+        title, why, focus = "Zone-2 cardio · 30 min", (f"{'BP ' + str(bp_avg) if bp_elev else 'Fasting sugar ' + str(sugar_avg)} is creeping up this week — steady Zone-2 cardio is the proven lever. Keep it conversational-pace."), "easy-pace cardio"
     elif not enough_cardio and goal.lower() in ("lose weight", "endurance", "general fitness"):
         title, why, focus = f"Zone-2 cardio · {max(25, 45 if avg_steps > 8000 else 30)} min", f"Only {km_ran} km of cardio in your recent history and {avg_steps or 'low'} avg steps — your aerobic base needs work for {goal.lower()}.", "easy-pace cardio"
     elif not enough_sessions:
@@ -1030,18 +1056,26 @@ def training_suggestion(uid: int) -> dict:
     else:
         title, why, focus = "Push day (progressive overload)", f"You've hit {acts7} sessions and {km_ran} km cardio recently — add load on presses today.", "strength"
     suggestion = {"title": title, "why": why, "focus": focus, "duration": 45, "goal": goal, "equipment": equipment,
-                  "facts": {"avg_steps": avg_steps, "avg_sleep_h": avg_sleep_h, "avg_resting_hr": avg_hr, "km_cardio": km_ran, "sessions_recent": acts7, "last_workout": (last_ws["title"] if last_ws else None)}}
+                  "facts": {"avg_steps": avg_steps, "avg_sleep_h": avg_sleep_h, "avg_resting_hr": avg_hr, "km_cardio": km_ran, "sessions_recent": acts7, "last_workout": (last_ws["title"] if last_ws else None),
+                            "avg_bp": bp_avg, "avg_sugar": sugar_avg, "age": age or None}}
+    facts = suggestion["facts"]
 
-    # Groq refinement (natural wording, still grounded in facts)
+    # Groq refinement (natural wording, still grounded in facts — vitals-aware)
     ai_text = None
     try:
         import groq_ai
         if groq_ai.configured():
-            line = f"goal={goal} | equipment={equipment} | avg_steps_7d={avg_steps} | avg_sleep_h={avg_sleep_h} | resting_hr={avg_hr} | cardio_km={km_ran} | sessions_recent={acts7} | last_workout={suggestion['facts']['last_workout']} | tired_signal={'yes' if tired else 'no'}"
+            vital_bits = ""
+            if bp_avg: vital_bits += f" | avg_bp_systolic={bp_avg}"
+            if sugar_avg: vital_bits += f" | avg_fasting_sugar={sugar_avg}"
+            if age: vital_bits += f" | age={age}"
+            line = f"goal={goal} | equipment={equipment} | avg_steps_7d={avg_steps} | avg_sleep_h={avg_sleep_h} | resting_hr={avg_hr}{vital_bits} | cardio_km={km_ran} | sessions_recent={acts7} | last_workout={facts['last_workout']} | tired_signal={'yes' if tired else 'no'}"
             sys = ("You are the FITVERSE Health Brain training advisor. From the user's REAL imported "
                    "health data, decide what training they should do NEXT and why. One punchy headline, "
                    "2-3 sentences referencing their actual numbers, then 3 short bullet steps for today's "
-                   "session. No medical claims. Under 110 words.")
+                   "session. If blood pressure is >=140 or fasting sugar >=126, steer toward easy cardio, "
+                   "breathing and light resistance — never heavy maximal lifting — and remind them gently "
+                   "to keep their doctor in the loop. No medical claims or diagnosis. Under 110 words.")
             ai_text = groq_ai._chat([{"role": "system", "content": sys}, {"role": "user", "content": line}], max_tokens=500, temperature=0.55, timeout=12)
     except Exception:
         ai_text = None
