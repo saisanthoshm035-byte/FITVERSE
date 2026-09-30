@@ -324,6 +324,34 @@ async function loadDashboard() {
   if (state.page === 'home') render();
   startDashLive();
 }
+// FITVERSE 6.2: page-level loading state. Every panel sets pageData.__loading
+// while its data is in flight; pages render a consistent "syncing" strip so
+// the user always knows WHY a section is empty instead of seeing a glitch.
+function loadingStrip(label) {
+  return `<div class="fv-loading"><span class="spin">✦</span> ${escapeHtml(label || 'Loading')}…</div>`;
+}
+function bootBadge() {
+  // Top-right badge on the app shell: shows while the profile/identity loads.
+  return `<div class="boot-badge" id="boot-badge"><span class="spin">✦</span> loading your profile…</div>`;
+}
+// FITVERSE 6.2: form guidance for EVERY exercise/yoga pose — a YouTube search
+// deep-link (works for any movement, incl. AI-created ones) plus the exercise
+// photo tile. No invented URLs: the query is the exercise name itself.
+function ytSearch(name) {
+  return 'https://www.youtube.com/results?search_query=' + encodeURIComponent(String(name || '').replace(/[()]/g, '').trim() + ' proper form');
+}
+function formGuide(name, small) {
+  return `<a class="fg-link" href="${ytSearch(name)}" target="_blank" rel="noopener" title="Learn proper form for ${escapeHtml(String(name))}">▶ ${small ? 'form' : 'Watch proper form'}</a>`;
+}
+function exerciseImage(name) {
+  const n = String(name || '').toLowerCase();
+  const key = /yoga|pose|flow|stretch|dog|warrior|bridge|plank/i.test(n) ? 'yoga'
+    : /run|walk|jog|sprint|treadmill|cardio/i.test(n) ? 'running'
+    : /cycl|bike|spin/i.test(n) ? 'cycling'
+    : /curl|press|deadlift|squat|row|bench|lunge/i.test(n) ? 'gym'
+    : 'workout';
+  return PHOTOS[key];
+}
 // Home nutrition cards flash a LIVE tag + glow for 6s after any food/water log.
 function pulseHome() {
   if (state.page !== 'home') return;
@@ -362,6 +390,9 @@ function applyServerState(s) {
   });
 }
 async function loadPageData(page) {
+  // FITVERSE 6.2: visible "syncing" state for the whole data flight.
+  pageData.__loading = true; render();
+  const finish = () => { pageData.__loading = false; render(); };
   if (!apiEnabled) return;
   const tasks = [];
   const add = (p, fn) => tasks.push(fn.then(items => { pageData[p] = items; }).catch(() => {}));
@@ -384,7 +415,7 @@ async function loadPageData(page) {
     add('challengeBoard', chP.then(d => d.leaderboard || []));
   }
   if (page === 'communities') add('communities', api('/api/communities').then(d => d.items || []));
-  if (page === 'events') add('events', api('/api/events').then(d => d.items || []));
+  if (page === 'events') { add('events', api('/api/events').then(d => d.items || [])); if (sessionToken) add('bookings', api('/api/bookings').then(d => d.items || []).catch(() => [])); }
   if (page === 'messages') {
     add('conversations', api('/api/conversations').then(d => d.items || []));
     add('messages', api(`/api/conversations/${pageData.activeConversation}`).then(d => d.items || []));
@@ -439,7 +470,7 @@ async function loadPageData(page) {
   if (page === 'admin') { add('stats', api('/api/stats').then(d => d.items || {})); add('reports', api('/api/reports').then(d => d.items || [])); }
   if (page === 'home') { add('activities', api('/api/activities').then(d => d.items || [])); loadWeather(); loadQuote(); }
   await Promise.all(tasks);
-  if (tasks.length) render();
+  finish();  // clears pageData.__loading + repaints with the fresh data
 }
 async function loadMessages() {
   try { pageData.messages = (await api(`/api/conversations/${pageData.activeConversation}`)).items || []; }
@@ -451,7 +482,8 @@ function shell(content) {
   const u = unread();
   const dmUnread = (pageData.conversations || []).reduce((t, c) => t + (Number(c.unread) || 0), 0);
   return `<div class="app-shell">
-  <aside class="sidebar"><a class="brand" data-page="home"><i>F</i> FITVERSE</a><p class="eyebrow">PLAY TOGETHER</p><nav>${nav.map(([id, icon, label]) => `<button class="nav-item ${state.page === id ? 'active' : ''}" data-page="${id}"><span>${icon}</span>${label}${id === 'messages' && dmUnread ? `<b>${dmUnread}</b>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="mini-profile">${photoAvatar(me().name, 1)}<div><strong>${escapeHtml(me().name || 'Welcome')}</strong><small>${me().name ? `Level ${level()} · ${levelName()}` : 'Sign in to personalize'}</small></div></div><button class="create-btn" data-action="create">＋ Create</button></div></aside>
+  ${!me().name && sessionToken ? bootBadge() : ''}
+  <aside class="sidebar"><a class="brand" data-page="home"><i>F</i> FITVERSE</a><p class="eyebrow">PLAY TOGETHER</p><nav>${nav.map(([id, icon, label]) => `<button class="nav-item ${state.page === id ? 'active' : ''}" data-page="${id}"><span>${icon}</span>${label}${id === 'messages' && dmUnread ? `<b>${dmUnread}</b>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="mini-profile">${me().name ? photoAvatar(me().name, 1) : '<div class="avatar skeleton" style="border-radius:50%"></div>'}<div>${me().name ? `<strong>${escapeHtml(me().name)}</strong><small>Level ${level()} · ${levelName()}</small>` : (sessionToken ? '<strong class="skeleton" style="display:block;height:12px;width:70%"></strong><small class="skeleton" style="display:block;height:9px;width:55%;margin-top:6px"></small>' : '<strong>Welcome</strong><small>Sign in to personalize</small>')}</div></div><button class="create-btn" data-action="create">＋ Create</button></div></aside>
   <main>${content}</main><nav class="mobile-nav" aria-label="Primary">${mobileNav.map(([p, i]) => `<button data-page="${p}" class="${state.page === p ? 'active' : ''}" aria-label="${p}"><span aria-hidden="true">${i}</span><small>${p}</small></button>`).join('')}<button class="mobile-more-btn" data-action="moreMenu" aria-label="All pages" style="align-self:center">⊞</button></nav><div id="toast" role="status" aria-live="polite"></div><div id="modal"></div></div>`;
 }
 function pageHeader(title, sub = 'Your fitness world, in motion.') {
@@ -601,20 +633,29 @@ ${mine.length ? `<section class="section-head"><div><span class="eyebrow">✓ YO
 <div class="community-grid">${pageData.communities.map(communityCard).join('') || '<p class="loading">Loading communities…</p>'}</div>`);
 }
 function eventCard(e) {
-  return `<article class="event-card" data-event="${e.id}"><div class="event-img photo" style="background-image:url('img/${e.photo}')"><span>${escapeHtml(e.category.toUpperCase())}</span><b>${dayShort(e.starts_at)}</b></div><div><h3>${escapeHtml(e.name)}</h3>${socialChip('activities', e.id)}<p>⌖ ${escapeHtml(e.location_label)} · ${e.booked_count || 0} attending</p><strong>${inr(e.price_inr)}</strong><div style="display:flex;gap:6px"><button class="outline" data-action="bookEvent" data-id="${e.id}">${e.booked ? 'Booked ✓' : 'Book now'}</button><button class="more" data-action="eventDetail" data-id="${e.id}" title="Details">ℹ</button><button class="more" data-action="eventInvite" data-id="${e.id}" title="Invite a friend">✉</button></div></div></article>`;
+  return `<article class="event-card" data-event="${e.id}"><div class="event-img photo" style="background-image:url('img/${e.photo}')"><span>${escapeHtml(e.category.toUpperCase())}</span><b>${dayShort(e.starts_at)}</b></div><div><h3>${escapeHtml(e.name)}</h3>${socialChip('activities', e.id)}<p>⌖ ${escapeHtml(e.location_label)} · ${e.booked_count || 0} attending</p><strong>${e.price_inr > 0 ? inr(e.price_inr) : 'FREE'}</strong><div style="display:flex;gap:6px"><button class="outline" data-action="bookEvent" data-id="${e.id}">${e.booked ? 'Booked ✓' : e.price_inr > 0 ? `Book · ${inr(e.price_inr)}` : 'Book free'}</button><button class="more" data-action="eventDetail" data-id="${e.id}" title="Details">ℹ</button><button class="more" data-action="eventInvite" data-id="${e.id}" title="Invite a friend">✉</button></div></div></article>`;
 }
 function events() {
-  const hero = pageData.events.find(e => e.id === 1) || pageData.events[0];
-  const rest = pageData.events.filter(e => e !== hero);
+  const evs = pageData.events || [];
+  const hero = evs.find(e => e.id === 1) || evs[0];
+  const rest = evs.filter(e => e !== hero);
+  // FITVERSE 6.2: booked events live in their OWN section ("Your tickets"),
+  // so the browse grid only shows events you have NOT booked.
+  const mine = evs.filter(e => e.booked);
+  const browse = rest.filter(e => !e.booked);
+  const evLoading = pageData.__loading && !evs.length;
   return shell(`${pageHeader('Fitness events', 'Save your spot. Show up for the story.')}
-${hero ? `<div class="event-hero photo" style="background-image:linear-gradient(90deg, rgba(10,16,20,.94) 45%, rgba(10,16,20,.45) 100%), url('${sportPhoto(hero.category)}')"><div><span class="pill coral">FEATURED · ${dayShort(hero.starts_at).toUpperCase()}</span><h2>${escapeHtml(hero.name.split(' ').slice(0, -1).join(' '))} <em>${escapeHtml(hero.name.split(' ').slice(-1))}</em></h2><p>${escapeHtml(hero.description)}</p><div class="event-details"><span>◷ ${dayShort(hero.starts_at)} · ${timeShort(hero.starts_at)}</span><span>⌖ ${escapeHtml(hero.location_label)}</span></div><button class="primary" data-action="bookEvent" data-id="${hero.id}">${hero.booked ? 'Booked ✓' : `Book ${inr(hero.price_inr)}`} <b>→</b></button></div><div class="event-art"><div class="moon"></div><span>RUN<br/>THE<br/>NIGHT</span><small>${escapeHtml(hero.category.toUpperCase())}</small></div></div>` : '<p class="loading">Loading events…</p>'}
+${mine.length ? `<section class="section-head" style="margin-top:8px"><div><span class="eyebrow">🎟 YOUR BOOKINGS</span><h2>Events you're going to</h2></div><button class="link" data-page="bookings">All tickets <b>→</b></button></section><div class="event-grid">${mine.map(eventCard).join('')}</div>` : ''}
+${hero ? `<div class="event-hero photo" style="background-image:linear-gradient(90deg, rgba(10,16,20,.94) 45%, rgba(10,16,20,.45) 100%), url('${sportPhoto(hero.category)}')"><div><span class="pill coral">FEATURED · ${dayShort(hero.starts_at).toUpperCase()}</span><h2>${escapeHtml(hero.name.split(' ').slice(0, -1).join(' '))} <em>${escapeHtml(hero.name.split(' ').slice(-1))}</em></h2><p>${escapeHtml(hero.description)}</p><div class="event-details"><span>◷ ${dayShort(hero.starts_at)} · ${timeShort(hero.starts_at)}</span><span>⌖ ${escapeHtml(hero.location_label)}</span></div><button class="primary" data-action="bookEvent" data-id="${hero.id}">${hero.booked ? 'Booked ✓' : hero.price_inr > 0 ? `Book ${inr(hero.price_inr)}` : 'Book free'} <b>→</b></button></div><div class="event-art"><div class="moon"></div><span>RUN<br/>THE<br/>NIGHT</span><small>${escapeHtml(hero.category.toUpperCase())}</small></div></div>` : evLoading ? loadingStrip('Loading events') : '<p class="loading">No events scheduled right now.</p>'}
 <div class="ai-ideas"><div class="ai-idea-row" role="button" data-action="quickAction" data-qa="workout"><span>🏃</span><div><b>Train for the next event</b><p style="margin:2px 0 0;color:var(--fv-mut);font-size:11px">Build a cardio plan from your health data so you show up race-ready.</p></div><button class="primary small" tabindex="-1">Build</button></div><div class="ai-idea-row" role="button" data-action="eventInvite" data-id="1"><span>✉</span><div><b>Bring your crew</b><p style="margin:2px 0 0;color:var(--fv-mut);font-size:11px">Groups show up and finish — invite a friend to the featured event.</p></div><button class="primary small" tabindex="-1">Invite</button></div></div>
-<section class="section-head"><div><span class="eyebrow">UP NEXT</span><h2>More ways to show up</h2></div><button class="filter" data-action="eventFilter">All categories ⌄</button></section><div class="event-grid">${rest.map(eventCard).join('')}</div>`);
+<section class="section-head"><div><span class="eyebrow">UP NEXT</span><h2>More ways to show up</h2></div><button class="filter" data-action="eventFilter">All categories ⌄</button></section>${evLoading && !hero ? '' : `<div class="event-grid">${browse.map(eventCard).join('') || (evLoading ? loadingStrip('Loading events') : '<p class="loading">No more events — you have seen them all.</p>')}</div>`}`);
 }
 function messages() {
   const convs = pageData.conversations;
   if (!sessionToken) return shell(`${pageHeader('Messages', 'Private chats between real FITVERSE athletes.')}
 <section class="hero photo" style="background-image:linear-gradient(100deg, rgba(8,18,13,.94) 45%, rgba(8,18,13,.55) 100%), url('${PHOTOS.heroRun}')"><div><span class="pill lime">✉ REAL MESSAGES</span><h2>Chat with real athletes,<br/>not bots.</h2><p>Messages are private, stored in your account and delivered instantly. Sign in to open your inbox.</p><div class="hero-actions"><button class="primary" data-action="register">Create your account <b>→</b></button><button class="outline" data-action="account">Log in</button></div></div></section>`);
+  if (!convs.length && pageData.__loading) return shell(`${pageHeader('Messages', 'Private chats between real FITVERSE athletes.')}
+${loadingStrip('Syncing your inbox')}`);
   if (!convs.length) return shell(`${pageHeader('Messages', 'Private chats between real FITVERSE athletes.')}
 ${emptyState('✉', 'No conversations yet', 'Open any athlete’s profile and tap Message — your chat stays private between the two of you.', 'discover', 'Find athletes')}`);
   const active = convs.find(c => c.id === pageData.activeConversation) || convs[0];
@@ -634,6 +675,8 @@ ${(pageData.friendsData && (pageData.friendsData.items || []).length) ? `<div cl
 function profile() {
   const p = me();
   const unlocked = pageData.achievements.filter(a => a.unlocked_at).length;
+  if (!p.name && pageData.__loading) return shell(`${pageHeader('Your profile', 'Your progress tells a story.')}
+${loadingStrip('Loading your profile')}`);
   return shell(`${pageHeader('Your profile', 'Your progress tells a story.')}
 <section class="profile-hero"><div class="profile-cover photo" style="background-image:linear-gradient(110deg, rgba(22,79,62,.88), rgba(110,175,112,.6)), url('${PHOTOS.heroRun}')"></div><div class="profile-info">${avatar(p.name, 'mint')}<div><span class="pill lime">LEVEL ${level()} · ${levelName().toUpperCase()}</span><h2>${escapeHtml(p.name || 'Your profile')} <i>✓</i></h2><p>@${escapeHtml(p.username || 'you')} · ${escapeHtml(p.city || 'Your city')}</p><p class="bio">${escapeHtml(p.bio || '')}</p></div><div class="profile-actions"><button class="outline" data-action="edit">Edit profile</button><button class="text-btn" data-action="account">Account</button></div></div><div class="profile-stats"><span><b>${state.streak}</b> day streak</span><span><b>${state.xp.toLocaleString()}</b> XP</span><span><b>${state.activities}</b> activities</span><span><b>${pageData.friends.length}</b> friends</span></div></section>${pageData.intel && pageData.intel.dna ? `<a class="dna-mini" data-page="intelligence" role="button" style="cursor:pointer"><span class="mini-ring" style="--v:${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : 0}"><b>${pageData.intel.dna.scores ? pageData.intel.dna.scores.consistency : '—'}</b></span><span><b>🧬 ${escapeHtml(pageData.intel.dna.personality || 'The Explorer')}</b><small>Fitness DNA · tap to open your full profile</small></span></a>` : ''}<div class="profile-tools"><button class="outline" data-page="bookings">🎟 My bookings</button><button class="outline" data-page="coach">✦ AI Coach</button><button class="outline" data-page="business">▦ Business</button><button class="outline" data-page="admin">◫ Admin</button><button class="outline" data-action="indianDiet">🍛 Indian diet</button><button class="outline ob-btn" data-action="runOnboarding">🧭 Setup wizard${pageData.mySettings && !pageData.mySettings.onboarded ? ' · not finished' : ''}</button></div><div class="tabs" id="profile-tabs">${['Posts', 'Friends', 'Achievements'].map((t, i) => `<button class="${i === 0 ? 'active' : ''}" data-ptab="${t.toLowerCase()}">${t}</button>`).join('')}</div>
 <a class="pill lime" data-page="connectHealth" style="cursor:pointer;text-decoration:none;display:inline-block;margin:0 0 14px">🔌 Connect Health Data — import, track & AI insights →</a>
@@ -659,7 +702,11 @@ function workoutPage() {
   const sess = pageData.activeSession;
   const editor = sess ? `<section class="finish-session ${sess.finishing ? 'finishing' : ''}" id="finish-session">
   <div class="fs-head"><span class="pill lime">● SESSION IN PROGRESS</span><div><h3>${escapeHtml(sess.title)}</h3><small>Started ${timeShort(sess.startedAt)} · volume so far <b>${Math.round(sess.logs.reduce((a, x) => a + (x.weight * x.reps * x.sets || 0), 0)).toLocaleString()} kg</b></small></div></div>
-  <div class="fs-rows" id="fs-rows">${sess.logs.map((x, i) => `<div class="wo-row"><select data-i="${i}" data-k="exercise_id">${(exs.length ? exs : [{ id: 0, name: 'Exercise', muscle: '' }]).map(e => `<option value="${e.id}" ${e.id === x.exercise_id ? 'selected' : ''}>${escapeHtml(e.name)} ${e.muscle ? '(' + escapeHtml(e.muscle) + ')' : ''}</option>`).join('')}</select><input type="number" value="${x.sets}" min="1" max="20" data-i="${i}" data-k="sets" aria-label="Sets"/><input type="number" value="${x.reps}" min="1" max="100" data-i="${i}" data-k="reps" aria-label="Reps"/><input type="number" value="${x.weight}" min="0" step="0.5" data-i="${i}" data-k="weight" aria-label="Weight kg"/><button class="more" data-action="fsRemoveRow" data-i="${i}" aria-label="Remove" title="Remove exercise">×</button></div>`).join('')}</div>
+  <div class="fs-rows" id="fs-rows">${sess.logs.map((x, i) => {
+    const isNew = x.exercise_id === 'NEW' || !(exs.length ? exs : []).some(e => e.id === x.exercise_id);
+    const opts = `${(exs.length ? exs : [{ id: 0, name: 'Exercise', muscle: '' }]).map(e => `<option value="${e.id}" ${!isNew && e.id === x.exercise_id ? 'selected' : ''}>${escapeHtml(e.name)} ${e.muscle ? '(' + escapeHtml(e.muscle) + ')' : ''}</option>`).join('')}${isNew ? `<option value="NEW" selected>+ ${escapeHtml(x.name || x.ai_name || 'New exercise')} — add to library</option>` : ''}`;
+    return `<div class="wo-row"><select data-i="${i}" data-k="exercise_id">${opts}</select><input type="number" value="${x.sets}" min="1" max="20" data-i="${i}" data-k="sets" aria-label="Sets"/><input type="number" value="${x.reps}" min="1" max="100" data-i="${i}" data-k="reps" aria-label="Reps"/><input type="number" value="${x.weight}" min="0" step="0.5" data-i="${i}" data-k="weight" aria-label="Weight kg"/><button class="more" data-action="fsRemoveRow" data-i="${i}" aria-label="Remove" title="Remove exercise">×</button></div>`;
+  }).join('')}</div>
   <div class="fs-actions">
     <button class="outline small" data-action="fsAddRow">＋ Exercise</button>
     <button class="outline small" data-action="fsAiFill">✦ AI fill this session</button>
@@ -678,7 +725,7 @@ ${editor}
   return `<article class="session-card ${open ? 'open' : ''}" data-action="woToggle" data-id="${s.id}">
   <div class="session-date"><b>${dayShort(s.created_at)}</b><small>${timeShort(s.created_at)}</small></div>
   <div class="session-body"><h3>${escapeHtml(s.title)} <span class="wo-chev">${open ? '▴' : '⌄'}</span></h3>
-    ${open ? `<div class="wo-detail">${s.logs.map(l => `<div class="wo-line"><span class="wo-mus">${escapeHtml(l.muscle || '')}</span><span class="wo-ex">${escapeHtml(l.name)}</span><span class="wo-sets"><b>${l.sets}</b>×${l.reps}${l.weight > 0 ? ` @ ${l.weight}kg` : ' (bw)'}${l.is_pr ? ' <span class="pr-flag">🔥 PR</span>' : ''}</span></div>`).join('')}
+    ${open ? `<div class="wo-detail">${s.logs.map(l => `<div class="wo-line"><img class="wo-img" src="${exerciseImage(l.name)}" alt="" loading="lazy"/><span class="wo-mus">${escapeHtml(l.muscle || '')}</span><span class="wo-ex">${escapeHtml(l.name)}</span>${formGuide(l.name, true)}<span class="wo-sets"><b>${l.sets}</b>×${l.reps}${l.weight > 0 ? ` @ ${l.weight}kg` : ' (bw)'}${l.is_pr ? ' <span class="pr-flag">🔥 PR</span>' : ''}</span></div>`).join('')}
     <div class="wo-session-actions" data-stop>
       <button class="outline small" data-action="woAiTweak" data-id="${s.id}" data-k="easier">🪶 Make easier</button>
       <button class="outline small" data-action="woAiTweak" data-id="${s.id}" data-k="harder">🔥 Make harder</button>
@@ -704,6 +751,8 @@ function nutritionPage() {
   const tot = n.totals || { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   const meals = ['breakfast', 'lunch', 'dinner', 'snacks'];
   const water = pageData.water || {};
+  if (pageData.__loading && !n.items) return shell(`${pageHeader('Nutrition', 'Fuel the work. Log meals, hit your targets.')}
+${loadingStrip('Opening your food diary')}`);
   return shell(`${pageHeader('Nutrition', 'Fuel the work. Log meals, hit your targets.')}
 <div class="section-head" style="margin-top:6px"><div><span class="eyebrow">YOUR PLAN</span><h2>Daily targets</h2></div><button class="outline small" data-action="setTargets">⚙ Set Daily Targets</button></div>
 <div class="macro-hero"><div class="macro-main"><span class="eyebrow">CALORIES TODAY</span><div class="macro-big"><b>${(tot.kcal || 0).toLocaleString()}</b><em>/ ${(t.kcal_target || 2200).toLocaleString()} kcal</em></div><div class="bar kcal-bar ${kcalBarClass(tot.kcal || 0, t.kcal_target || 2200)}"><i style="width:${Math.min(100, (tot.kcal || 0) / Math.max(1, t.kcal_target || 2200) * 100)}%"></i></div><small class="est-note">${(tot.kcal || 0) > (t.kcal_target || 2200) ? `⚠ ${(tot.kcal - t.kcal_target).toLocaleString()} kcal over your daily target` : (t.estimate_note || '')}</small></div>
@@ -814,8 +863,9 @@ function libraryPage() {
 <div class="search">⌕ <input id="lib-search" placeholder="Search exercises..."/></div><button class="primary small" data-action="customExercise" style="margin:10px 0">＋ Add Custom Exercise</button>
 <div class="tabs" id="lib-tabs">${muscles.map((m, i) => `<button class="${i === 0 ? 'active' : ''}" data-muscle="${m}">${m}</button>`).join('')}</div>
 <div class="lib-grid">${ex.length ? ex.map(e => `<article class="lib-card" data-action="exerciseDetail" data-id="${e.id}">
-  <span class="lib-muscle">${escapeHtml(e.muscle)}</span><h3>${escapeHtml(e.name)}</h3>
+  <div class="lib-photo" style="background-image:url('${exerciseImage(e.name)}')"><span class="lib-muscle">${escapeHtml(e.muscle)}</span></div><h3>${escapeHtml(e.name)}</h3>
   <p>${escapeHtml(e.equipment)} · ${escapeHtml(e.difficulty)}</p>
+  ${formGuide(e.name, true)}
 </article>`).join('') : emptyState('🏋', 'No exercises found', 'Try a different muscle group or search.')}</div>`);
 }
 function coachPage() {
@@ -1253,6 +1303,8 @@ function render() {
   $('#app').innerHTML = (pages[state.page] || home)();
   bind();
   redrawOnboarding(); // keeps the setup wizard alive across re-renders (fixes pop-in-then-vanish glitch)
+  // FITVERSE 6.2: boot badge disappears once the profile has actually loaded.
+  const bb = $('#boot-badge'); if (bb && me().name) bb.remove();
   if (typing) {
     let el = typing.sel ? $(typing.sel) : null;
     if (!el && typing.name) el = $(`#app ${typing.tag.toLowerCase()}[name="${typing.name}"]`);
@@ -2094,14 +2146,45 @@ async function action(a, btn) {
         } catch (e) { toast(e.message); }
       })();
       return;
-    case 'bookEvent':
-      api(`/api/events/${id}/book`, { method: 'POST', body: JSON.stringify({ quantity: 1 }) })
+    // FITVERSE 6.2: paid events show a UPI checkout step BEFORE the ticket;
+    // free events book instantly. The booking POST carries the UPI reference.
+    case 'bookEvent': {
+      const ev = (pageData.events || []).find(e => e.id === Number(id));
+      const price = Number(ev?.price_inr || 0);
+      if (ev?.booked) { toast('Already booked ✓ — see My bookings'); return; }
+      if (price > 0) {
+        const evName = ev?.name || 'FITVERSE Event';
+        const upiId = 'fitverse@upi';
+        modal(`<span class="eyebrow">UPI CHECKOUT</span><h2>Pay ${inr(price)}</h2>
+        <div class="ticket"><div class="qr">▦<br/>▥</div><div><b>${escapeHtml(evName)}</b><small>${dayShort(ev?.starts_at)} · ${escapeHtml(ev?.location_label || '')}</small></div></div>
+        <div class="code" style="margin:12px 0;word-break:break-all">upi://pay?pa=${upiId}&pn=FITVERSE&am=${price}&cu=INR&tn=${encodeURIComponent('FITVERSE ' + evName)}</div>
+        <p class="loading">Scan with any UPI app (GPay · PhonePe · Paytm · BHIM), or pay to <b>${upiId}</b>. Then paste the 12-digit UTR / reference number from your payment app to confirm.</p>
+        <form class="activity-form" id="upi-form"><label>UPI reference / UTR number<input name="utr" required minlength="6" maxlength="30" placeholder="e.g. 415223456789"></label>
+        <button class="primary" type="submit">✓ I've paid — confirm booking</button></form>
+        <p class="loading est-note">Demo checkout: FITVERSE verifies the reference and issues your ticket instantly. Refunds land back on the same UPI ID.</p>`);
+        bind();
+        $('#upi-form').onsubmit = async (e2) => {
+          e2.preventDefault();
+          const utr = String(new FormData(e2.currentTarget).get('utr') || '').trim();
+          const btn2 = e2.currentTarget.querySelector('button[type=submit]');
+          if (btn2) { btn2.disabled = true; btn2.textContent = 'Verifying payment…'; }
+          try {
+            const d = await api(`/api/events/${id}/book`, { method: 'POST', body: JSON.stringify({ quantity: 1, payment_ref: utr, payment_method: 'upi' }) });
+            $('#modal').innerHTML = ''; await loadPageData('events'); render();
+            modal(`<span class="ticket-check">✓</span><span class="eyebrow">PAYMENT VERIFIED · BOOKING CONFIRMED</span><h2>You're in.</h2><div class="ticket"><div class="qr">▦<br/>▥</div><div><b>${escapeHtml(d.bookingCode)}</b><small>${dayShort(new Date().toISOString())} · Show at the gate</small></div></div><div class="hero-actions"><button class="primary" data-action="close">Done</button><button class="outline" data-action="downloadTicket" data-code="${escapeHtml(d.bookingCode)}" data-name="Event ticket">⬇ Download ticket</button></div>`);
+            bind(); toast('Payment received — ticket issued 🎟');
+          } catch (err) { if (btn2) { btn2.disabled = false; btn2.textContent = "✓ I've paid — confirm booking"; } toast(err.message); }
+        };
+        return;
+      }
+      api(`/api/events/${id}/book`, { method: 'POST', body: JSON.stringify({ quantity: 1, payment_method: 'free' }) })
         .then(async (d) => {
-          $('#modal').innerHTML = ''; await loadPageData(state.page); render();
-          modal(`<span class="ticket-check">✓</span><span class="eyebrow">BOOKING CONFIRMED</span><h2>You’re in.</h2><div class="ticket"><div class="qr">▦<br/>▥</div><div><b>${escapeHtml(d.bookingCode)}</b><small>${dayShort(new Date().toISOString())} · Show at the gate</small></div></div><div class="hero-actions"><button class="primary" data-action="close">Done</button><button class="outline" data-action="downloadTicket" data-code="${escapeHtml(d.bookingCode)}" data-name="Event ticket">⬇ Download ticket</button></div>`);
-          toast('Booking confirmed'); bind();
+          $('#modal').innerHTML = ''; await loadPageData('events'); render();
+          modal(`<span class="ticket-check">✓</span><span class="eyebrow">FREE ENTRY CONFIRMED</span><h2>You're in.</h2><div class="ticket"><div class="qr">▦<br/>▥</div><div><b>${escapeHtml(d.bookingCode)}</b><small>${dayShort(new Date().toISOString())} · Show at the gate</small></div></div><div class="hero-actions"><button class="primary" data-action="close">Done</button><button class="outline" data-action="downloadTicket" data-code="${escapeHtml(d.bookingCode)}" data-name="Event ticket">⬇ Download ticket</button></div>`);
+          toast('Booked — see you there'); bind();
         }).catch(e => toast(e.message));
       return;
+    }
     case 'downloadTicket': {
       const code = btn?.dataset?.code || 'FITVERSE-TICKET';
       const evName = btn?.dataset?.name || 'FITVERSE Event';
@@ -2305,6 +2388,24 @@ async function action(a, btn) {
       if (!s4.logs.length) { toast('Add at least one exercise with sets & reps'); return; }
       s4.finishing = true; render();
       try {
+        // FITVERSE 6.2: anything the AI generated but that is not in the library
+        // yet (or the user hand-picked "Add new exercise…") is auto-created
+        // server-side (created_by_ai) BEFORE the workout POST — nothing bounces.
+        const known = new Set((pageData.exercises || []).map(e => e.id));
+        const pendingNames = new Map();
+        for (const x of s4.logs) {
+          if (x.exercise_id === 'NEW' && x.name) pendingNames.set(x.name, x);
+          else if (x.exercise_id === 'NEW' && x.ai_name) pendingNames.set(x.ai_name, x);
+          else if (!known.has(Number(x.exercise_id)) && x.__pendingName) pendingNames.set(x.__pendingName, x);
+        }
+        for (const [nm, x] of pendingNames) {
+          try {
+            const r2 = await api('/api/exercises', { method: 'POST', body: JSON.stringify({ name: nm, muscle: x.muscle || 'Full Body', equipment: 'Mat / bodyweight', created_by_ai: true }) });
+            x.exercise_id = r2.exercise_id;
+            if (r2.exercise_id && !known.has(r2.exercise_id)) pageData.exercises.push({ id: r2.exercise_id, name: nm, muscle: x.muscle || 'Full Body' });
+          } catch (_) {}
+        }
+        if (s4.logs.some(x => !x.exercise_id || x.exercise_id === 'NEW')) { s4.finishing = false; render(); toast('Some exercises could not be saved — try again'); return; }
         const dur = Math.max(5, Math.round((Date.now() - new Date(s4.startedAt).getTime()) / 60000)) || 45;
         const res = await api('/api/workouts', { method: 'POST', body: JSON.stringify({ title: s4.title, duration_min: dur, logs: s4.logs.map(x => ({ exercise_id: Number(x.exercise_id), sets: Number(x.sets), reps: Number(x.reps), weight: Number(x.weight) })) }) });
         pageData.activeSession = null;
@@ -2316,11 +2417,13 @@ async function action(a, btn) {
         <p class="loading est-note">Saved to your history — your streak, weekly goal, PRs and AI coach now reflect this session.</p>
         <div class="hero-actions"><button class="primary" data-action="close">Done</button><button class="outline" data-action="weeklyReview">View recap</button></div>`);
         bind();
-        // FITVERSE 6.1: refresh data WITHOUT calling render() — render() would wipe
-        // this summary modal (it repaints #app but the modal lives outside it; the
-        // final state refresh used to erase the celebration screen instantly).
-        await hydrate(); await loadPageData('workout'); state.page = 'workout';
-        render.__skip = true; try { render(); } finally { render.__skip = false; }
+        // FITVERSE 6.1/6.2: the summary modal must SURVIVE the data refresh.
+        // #modal lives inside #app, so every render() (including the ones
+        // loadPageData fires internally) would wipe it — skip renders until
+        // the refresh is fully done, then repaint the page underneath.
+        render.__skip = true;
+        try { await hydrate(); await loadPageData('workout'); state.page = 'workout'; render(); }
+        finally { render.__skip = false; }
         toast(`Finished · ${(res.total_volume || 0).toLocaleString()} kg volume · +60 XP${res.pr_count ? ` · 🔥 ${res.pr_count} PR!` : ''}`);
       } catch (err) { s4.finishing = false; render(); toast(err.message); }
       return;
@@ -2602,11 +2705,11 @@ async function action(a, btn) {
       return;
     case 'exerciseDetail': {
       const e = pageData.exercises.find(x => x.id === id); if (!e) return;
-      modal(`<span class="eyebrow">${escapeHtml(e.muscle.toUpperCase())} · ${escapeHtml(e.equipment.toUpperCase())}</span><h2>${escapeHtml(e.name)}</h2>
-      <p>${escapeHtml(e.instructions)}</p>
-      <div class="mistake-box"><b>⚠ Common mistakes</b><p>${escapeHtml(e.mistakes)}</p></div>
+      modal(`<div class="ex-hero" style="background-image:url('${exerciseImage(e.name)}')"></div><span class="eyebrow">${escapeHtml(e.muscle.toUpperCase())} · ${escapeHtml(e.equipment.toUpperCase())}</span><h2>${escapeHtml(e.name)}</h2>
+      <p>${escapeHtml(e.instructions || 'Move with control; keep breathing steadily through every rep.')}</p>
+      <div class="mistake-box"><b>⚠ Common mistakes</b><p>${escapeHtml(e.mistakes || 'Rushing reps, locking joints, or holding the breath.')}</p></div>
       <p class="loading">${escapeHtml(e.difficulty)} · ${e.met} MET intensity</p>
-      <div class="hero-actions"><button class="primary" data-action="logWorkout">Log a session</button></div>`);
+      <div class="hero-actions"><a class="primary" style="text-decoration:none;display:inline-block" href="${ytSearch(e.name)}" target="_blank" rel="noopener">▶ Watch proper form</a><button class="outline" data-action="logWorkout">Log a session</button></div>`);
       bind(); return;
     }
     case 'weeklyReview':

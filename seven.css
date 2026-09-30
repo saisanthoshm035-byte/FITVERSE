@@ -845,4 +845,17 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
 .newchat-strip{border-top:1px solid var(--fv-line);margin-top:8px;padding-top:4px}
 .newchat-strip .conversation{opacity:.92}
 
+/* ==== patch v70: loading states, form guides, UPI checkout, event sections ==== */
+.fv-loading{display:flex;align-items:center;gap:10px;background:linear-gradient(92deg, rgba(0,229,255,.08), rgba(139,92,246,.12));border:1px solid var(--fv-line);border-radius:14px;padding:16px 18px;margin:14px 0;color:var(--fv-mut);font-size:12.5px}
+.fv-loading .spin{display:inline-block;animation:fv-spin 1.6s linear infinite;color:var(--fv-cyan)}
+.boot-badge{position:fixed;top:12px;right:14px;z-index:60;display:flex;align-items:center;gap:8px;background:rgba(10,15,34,.92);border:1px solid rgba(0,229,255,.4);border-radius:99px;padding:7px 14px;color:var(--fv-cyan);font-size:11px;font-weight:700;box-shadow:0 0 18px rgba(0,229,255,.25);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.boot-badge .spin{display:inline-block;animation:fv-spin 1.6s linear infinite}
+.fg-link{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:800;letter-spacing:.4px;color:var(--fv-cyan) !important;text-decoration:none;border:1px solid rgba(0,229,255,.35);border-radius:99px;padding:3px 9px;background:rgba(0,229,255,.08);transition:box-shadow .2s, border-color .2s}
+.fg-link:hover{box-shadow:0 0 12px rgba(0,229,255,.3);border-color:var(--fv-cyan)}
+.wo-img{flex:0 0 34px;width:34px;height:34px;border-radius:9px;object-fit:cover;border:1px solid var(--fv-line)}
+.lib-photo{position:relative;height:86px;border-radius:11px;background-size:cover;background-position:center;border:1px solid var(--fv-line);margin-bottom:9px}
+.lib-photo .lib-muscle{position:absolute;top:7px;left:7px}
+.ex-hero{height:120px;border-radius:13px;background-size:cover;background-position:center;border:1px solid var(--fv-line);margin-bottom:12px}
+.upi-note{color:var(--fv-lime)}
+
 

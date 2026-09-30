@@ -2305,12 +2305,27 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 return self.send_json(200,{"ok":True,"following":True})
             if path == "/api/exercises":
                 """Create a personal custom exercise. It appears only in YOUR library,
-                your workout logging, and your logs — never another user's."""
+                your workout logging, and your logs — never another user's.
+                FITVERSE 6.2: created_by_ai=1 rows come from generated yoga/cardio/
+                home plans; they are shared library items so the SAME plan logs
+                for everyone without a 409 race (two users generating the same
+                pose at once)."""
                 name=str(data.get("name","")).strip()[:80]
                 muscle=str(data.get("muscle","Other")).strip().capitalize()[:20]
                 if not name: return self.send_json(400,{"error":"Exercise name is required"})
                 uid=self.current_user()
+                from_ai=bool(data.get("created_by_ai") or data.get("from_ai"))
                 with connect() as db:
+                    existing=db.execute("SELECT id FROM exercises WHERE name=?",(name,)).fetchone()
+                    if existing:
+                        if from_ai: return self.send_json(200,{"ok":True,"exerciseId":existing["id"],"existed":True})
+                        return self.send_json(409,{"error":"An exercise with that name already exists"})
+                    if from_ai:
+                        try: db.execute("ALTER TABLE exercises ADD COLUMN created_by_ai INTEGER NOT NULL DEFAULT 0")
+                        except sqlite3.OperationalError: pass
+                        cur=db.execute("INSERT INTO exercises (name,muscle,equipment,difficulty,instructions,mistakes,met,owner_id,created_by_ai) VALUES (?,?,?,?,?,?,?,NULL,1)",
+                            (name,muscle,str(data.get("equipment","Mat / bodyweight")).strip().capitalize()[:30] or "Mat / bodyweight","Beginner",str(data.get("description","")).strip()[:500],"",5.0))
+                        return self.send_json(201,{"ok":True,"exerciseId":cur.lastrowid})
                     try:
                         cur=db.execute("INSERT INTO exercises (name,muscle,equipment,difficulty,instructions,mistakes,met,owner_id) VALUES (?,?,?,?,?,?,?,?)",
                             (name,muscle,str(data.get("equipment","Bodyweight")).strip().capitalize()[:30] or "Bodyweight",str(data.get("difficulty","Intermediate")).strip().capitalize()[:20],str(data.get("description","")).strip()[:500],"",5.0,uid))
