@@ -375,7 +375,9 @@ class RemoteConn:
         if tail.strip("; \n\t"):
             stmts.append(tail)
         if stmts:
-            self._pipeline(stmts)
+            # _pipeline expects (sql, params) pairs — bare strings would
+            # crash with 'too many values to unpack' at boot.
+            self._pipeline([(s, ()) for s in stmts])
         c = self.cursor()
         return c
 
