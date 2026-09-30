@@ -356,15 +356,28 @@ class RemoteConn:
         return cur
 
     def executescript(self, script):
-        stmts = []
-        for raw in script.split(";"):
-            s = raw.strip()
-            if s and not all(ln.strip().startswith("--") or not ln.strip() for ln in s.splitlines()):
-                stmts.append((s, ()))
+        # Split on ";" AFTER stripping -- comments, never inside them. The
+        # old split(";") chopped comments containing semicolons into broken
+        # SQL fragments (Turso: 'SQL string could not be parsed: near
+        # "serve_static"') and crashed boot on Render while local sqlite
+        # parsed the same script fine.
+        stmts, cur = [], []
+        for line in script.splitlines():
+            idx = line.find("--")
+            code = line[:idx] if idx >= 0 else line
+            cur.append(code)
+            if ";" in code:
+                stmt = "\n".join(cur).strip()
+                if stmt.strip("; \n\t"):
+                    stmts.append(stmt)
+                cur = []
+        tail = "\n".join(cur).strip()
+        if tail.strip("; \n\t"):
+            stmts.append(tail)
         if stmts:
             self._pipeline(stmts)
-        cur = self.cursor()
-        return cur
+        c = self.cursor()
+        return c
 
     def commit(self):
         return None  # every statement is committed by the server

@@ -407,8 +407,8 @@ CREATE INDEX IF NOT EXISTS idx_biz_posts ON business_posts(business_id);
 
 -- ===== durable uploads: cloud hosts wipe the uploads/ folder on every
 -- redeploy, so uploaded post photos vanished while the DB still referenced
--- them. Bytes now ALSO live in this table; serve_static falls back to it
--- whenever the disk file is missing. Local sqlite keeps both copies too.
+-- them. Bytes now ALSO live in this table and serve_static falls back to it
+-- whenever the disk file is missing (local sqlite keeps both copies too).
 CREATE TABLE IF NOT EXISTS uploads (
   filename TEXT PRIMARY KEY,
   content BLOB NOT NULL,
