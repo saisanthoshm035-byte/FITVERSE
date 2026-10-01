@@ -1,0 +1,61 @@
+FITVERSE v74 — DEPLOYED AND VERIFIED LIVE ✅ (2026-10-01)
+
+Serving seven.css?v=74 / app.js?v=74 on https://fitverse-omdx.onrender.com
+
+WHAT SHIPPED IN v74 (commit 96d3348):
+
+1. FOOD LOG IS FAST NOW (Breakfast / Lunch / Dinner / Snacks)
+   - Root cause: quick-add and "suggest" calls hit the AI meal parser,
+     which could hang 10-20s (2 x 10s Groq timeouts) and then showed
+     "something is wrong".
+   - Fix: the UI now caps the AI call at 2.5s. If AI is slow, the food is
+     logged INSTANTLY with a sensible offline estimate (~350 kcal typical
+     meal) and a toast says "(quick estimate)". Photo scan gets a 4s cap
+     and no longer crashes when AI returns nothing.
+   - The exact AI answer still arrives whenever AI is fast (~1.3s usual).
+
+2. AI COACH: FRESH CHAT EVERY LOGIN
+   - Every login / register / logout starts the coach on a blank new
+     chat. No more auto-scrolling to the bottom of your old conversation
+     on sign-in. Old chats are one click away under SAVED CHATS.
+
+3. SAVED CHATS SIDEBAR GLITCH FIXED
+   - Sidebar now sits BESIDE the chat (grid 1fr / 300px) with its own
+     internal scrollbar; scrolling it never moves the page. On mobile
+     (<960px) it stacks below the chat with a 44dvh max height.
+   - Removed the smooth-scroll on the chat box so opening a conversation
+     jumps to the bottom instantly (no visible glitch), and the welcome
+     card is centered on a fresh chat.
+
+VERIFIED LIVE: v74 assets served; coach grid "830px 300px"; chat and
+sidebar tops aligned; zero page overflow; chat pinned to bottom.
+
+============================================================
+
+FITVERSE v73 — DEPLOYED AND VERIFIED LIVE ✅ (2026-09-30)
+
+1. Nutrition — Breakfast / Lunch / Dinner / Snacks all visible (4 blocks,
+   FOOD DIARY header restored).
+2. Messages — bubbles scroll INSIDE the chat box (was flex-squishing),
+   auto-pinned to newest, optimistic send + live append verified, sender
+   names resolve on BOTH sides of a conversation.
+3. Dead scroll — root cause: the #fv3d ambient canvas sat unpositioned in
+   page flow, adding a full viewport of empty scroll to EVERY page. Now
+   position:fixed behind content.
+4. Post photos — uploads are now stored IN THE DATABASE and served from it
+   whenever the disk file is missing. A photo uploaded BEFORE a redeploy
+   still loads. Broken legacy images self-hide instead of showing a
+   broken frame.
+
+Commits shipped:
+  75aecca  v73: the four fixes
+  bf238b8  fix executescript splitting SQL inside -- comments (crash #1)
+  4ee2117  fix executescript passing bare strings to _pipeline (crash #2)
+
+Test accounts created during verification (harmless demo data):
+  fit73check / fit73check1   (user 12, "Deploy Check")
+  fit73check2 / fit73check2x (user 13, "Deploy Check Two")
+Feel free to delete them, or keep for future smoke tests.
+
+Auto-deploy: confirmed working again. If a future push doesn't appear in
+~5 min, use Manual Deploy.
