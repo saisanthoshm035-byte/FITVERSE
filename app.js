@@ -893,12 +893,15 @@ function coachPage() {
     : `<div class="ai-welcome"><span class="ai-ava big">✦</span><h3>Hey ${escapeHtml(String(me().name || 'there').split(' ')[0])} — I'm your FITVERSE coach.</h3><p>I know your training, nutrition, health data and goals. Ask me anything.</p></div>`;
   const convItem = c => `<div class="conv-item ${String(c.id) === String(pageData.coachConvId || '') ? 'sel' : ''}" data-action="aiOpenConv" data-id="${c.id}" role="button"><div class="ci-title">${escapeHtml(c.title || 'Coach chat')}${c.pinned ? '<span class="ci-pin"> 📌</span>' : ''}<small>${escapeHtml(String(c.created_at || '').slice(0, 10))}</small></div><div class="ci-ops"><button title="Pin / unpin" data-action="aiPinChat" data-id="${c.id}">📌</button><button title="Rename" data-action="aiRenameChat" data-id="${c.id}">✎</button><button title="Share with a friend" data-action="aiShareChat" data-id="${c.id}">↗</button><button class="ci-del" title="Delete chat" data-action="aiDeleteChat" data-id="${c.id}">🗑</button></div></div>`;
   const html = shell(`${pageHeader('FITVERSE AI', 'Your 24/7 coach — save, pin, rename and share chats with friends.')}
-<section class="ai-chat-full" id="ai-chat"><div class="ai-msgs" id="ai-msgs">${msgs}</div>
+<div class="coach-cols">
+<section class="ai-chat-full" id="ai-chat"><div class="ai-msgs ${(!chat.length && !pageData.coachTyping) ? 'new-chat' : ''}" id="ai-msgs">${msgs}</div>
 <div class="ai-chips"><button data-action="aiNewChat">＋ New chat</button><button data-action="coachAsk" data-q="What workout should I do today?">🏋 Today's workout</button><button data-action="coachAsk" data-q="Make me an indian diet plan">🍛 Indian diet plan</button><button data-action="coachAsk" data-q="How is my blood pressure and sugar?">🩺 BP & sugar</button><button data-action="generateWorkout">✦ Generate workout</button><button data-action="weeklyReview">📈 Weekly recap</button></div>
 <form class="ai-inputbar" id="coach-form"><input placeholder="Message FITVERSE AI…" maxlength="500" autocomplete="off" required/><button type="submit" aria-label="Send">➤</button></form></section>
-<aside class="conv-side"><div class="conv-side-head"><b>SAVED CHATS</b>${brain}<button class="outline small" data-action="aiNewChat">＋ New</button></div>${convs.length ? convs.map(convItem).join('') : '<p class="loading">No saved chats yet — send your first message and it lands here.</p>'}</aside>`);
-  // Land at the latest message like ChatGPT — never at the top of history.
-  requestAnimationFrame(() => { const m = $('#ai-msgs'); if (m) m.scrollTop = m.scrollHeight; });
+<aside class="conv-side"><div class="conv-side-head"><b>SAVED CHATS</b>${brain}<button class="outline small" data-action="aiNewChat">＋ New</button></div>${convs.length ? convs.map(convItem).join('') : '<p class="loading">No saved chats yet — send your first message and it lands here.</p>'}</aside>
+</div>`);
+  // Land at the latest message like ChatGPT — but INSTANTLY (smooth-scroll
+  // here read as the page "glitching" when reopening a long conversation).
+  requestAnimationFrame(() => { const m = $('#ai-msgs'); if (m && m.scrollHeight > m.clientHeight) { m.style.scrollBehavior = 'auto'; m.scrollTop = m.scrollHeight; m.style.scrollBehavior = ''; } });
   return html;
 }
 // Friends list helper with pageData cache (used by every invite/share picker).
@@ -1759,10 +1762,12 @@ async function action(a, btn) {
         try {
           const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: f.get('username'), password: f.get('password') }) });
           sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken); localStorage.setItem('fitverse-user', String(f.get('username') || '').toLowerCase()); localStorage.setItem('fitverse-pass', String(f.get('password') || ''));
+          // New session → FITVERSE AI opens a FRESH chat (never reopens the
+          // previous conversation auto-scrolled to its bottom).
+          pageData.coachConvId = 0; pageData.coachChat = []; pageData.aiConversations = [];
           evtSource?.close(); evtSource = null; startSSE();
           $('#modal').innerHTML = '';
           // Instant feedback: user is IN — heavy data loads in the background.
-          sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken); localStorage.setItem('fitverse-user', String(f.get('username') || '').toLowerCase()); localStorage.setItem('fitverse-pass', String(f.get('password') || ''));
           evtSource?.close(); evtSource = null; startSSE();
           render(); toast(`✅ Signed in as ${result.user.name}`);
           hydrate().then(() => { render(); loadPageData(state.page); toast(`Welcome back, ${result.user.name} 💪`); });
@@ -1787,6 +1792,7 @@ async function action(a, btn) {
         try {
           const result = await api('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, email, username, password: pass }) });
           sessionToken = result.token; localStorage.setItem('fitverse-session', sessionToken); localStorage.setItem('fitverse-user', username); localStorage.setItem('fitverse-pass', pass);
+          pageData.coachConvId = 0; pageData.coachChat = []; pageData.aiConversations = [];  // brand-new user → brand-new chat
           evtSource?.close(); evtSource = null; startSSE();
           $('#modal').innerHTML = '';
           render(); toast(`✅ Account created — you're in, ${name.split(' ')[0]}!`);
@@ -1795,7 +1801,7 @@ async function action(a, btn) {
       }; bind(); return;
     }
     case 'googleLogin': authWithGoogle(); return;
-    case 'logout': api('/api/auth/logout', { method: 'POST' }).catch(() => {}).finally(() => { document.cookie = 'fv_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT'; }); sessionToken = ''; localStorage.removeItem('fitverse-session'); localStorage.removeItem('fitverse-user'); localStorage.removeItem('fitverse-pass'); evtSource?.close(); evtSource = null; $('#modal').innerHTML = ''; hydrate().then(render); toast('Signed out — see you soon 💪'); return;
+    case 'logout': api('/api/auth/logout', { method: 'POST' }).catch(() => {}).finally(() => { document.cookie = 'fv_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT'; }); sessionToken = ''; localStorage.removeItem('fitverse-session'); localStorage.removeItem('fitverse-user'); localStorage.removeItem('fitverse-pass'); pageData.coachConvId = 0; pageData.coachChat = []; pageData.aiConversations = []; evtSource?.close(); evtSource = null; $('#modal').innerHTML = ''; hydrate().then(render); toast('Signed out — see you soon 💪'); return;
     case 'notifications': {
       modal(`<span class="eyebrow">NOTIFICATIONS</span><h2>Your fitness loop</h2>${pageData.notifications.length ? pageData.notifications.map(n => `<div class="notice" style="${n.is_read ? 'opacity:.5' : ''}"><b>${escapeHtml(n.title)}</b><p>${escapeHtml(n.body)}</p><small>${timeShort(n.created_at)}</small></div>`).join('') : '<p>No notifications.</p>'}<button class="outline" data-action="readNotifications">Mark all read</button>`);
       bind(); return;
@@ -2583,12 +2589,18 @@ async function action(a, btn) {
       const name = prompt(`Quick add to ${m} — what did you eat?`);
       if (!name?.trim()) return;
       try {
-        const r = await api('/api/ai/meal', { method: 'POST', body: JSON.stringify({ desc: name, grams: 350 }) });
-        const it = r.item || {};
+        // 2.5s cap on the AI estimate (was 10-20s): logging must feel instant.
+        // If Groq is slow, we fall back to the offline food matcher instead of
+        // making the user wait.
+        const est = await Promise.race([
+          api('/api/ai/meal', { method: 'POST', body: JSON.stringify({ desc: name, grams: 350 }) }),
+          new Promise(res => setTimeout(() => res(null), 2500))
+        ]);
+        const it = (est && est.item) || {};
         const t = it.totals || { kcal: 350, protein_g: 15, carbs_g: 30, fat_g: 10 };
         const rr = await api('/api/nutrition', { method: 'POST', body: JSON.stringify({ name: it.title || name.trim(), meal: m, kcal: t.kcal, protein_g: t.protein_g, carbs_g: t.carbs_g, fat_g: t.fat_g }) });
         if (rr?.totals) { pageData.nutrition = { ...(pageData.nutrition || {}), totals: rr.totals, items: rr.items, targets: pageData.nutrition?.targets || {} }; dispatchEvent(new CustomEvent('fv:data-updated', { detail: { nutrition: pageData.nutrition } })); }
-        await loadPageData('nutrition'); render(); toast(`Logged to ${m} · AI estimated ${t.kcal} kcal`);
+        await loadPageData('nutrition'); render(); toast(it.title ? `Logged to ${m} · AI estimated ${t.kcal} kcal` : `Logged to ${m} · ~${t.kcal} kcal (quick estimate)`);
       } catch (e) { toast(e.message); }
       return;
     }
@@ -2597,8 +2609,14 @@ async function action(a, btn) {
       const name = prompt(`What did you have for ${m}? AI will estimate the macros.`);
       if (!name?.trim()) return;
       try {
-        const r = await api('/api/ai/meal', { method: 'POST', body: JSON.stringify({ desc: name.trim(), grams: 400 }) });
-        const it = r.item || {};
+        toast('✦ Estimating…');
+        // 2.5s cap (was 10-20s when Groq was slow) — fall back to the offline
+        // food matcher so logging never hangs on the AI.
+        const r = await Promise.race([
+          api('/api/ai/meal', { method: 'POST', body: JSON.stringify({ desc: name.trim(), grams: 400 }) }),
+          new Promise(res => setTimeout(() => res(null), 2500))
+        ]);
+        const it = (r && r.item) || {};
         if (!it.matched && !it.totals) { toast(it.note || 'Could not estimate that — try Log food instead'); return; }
         const t = it.totals || { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
         modal(`<span class="eyebrow">✦ AI ESTIMATE</span><h2>${escapeHtml(it.title || name.trim())}</h2>
@@ -2628,7 +2646,12 @@ async function action(a, btn) {
         e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget));
         const sb = e.currentTarget.querySelector('button[type=submit]'); if (sb) { sb.disabled = true; sb.textContent = '✦ Analyzing…'; }
         try {
-          const { item: r } = await api('/api/ai/meal', { method: 'POST', body: JSON.stringify(f) });
+          // 4s cap for the deliberate scan flow; never crash on a null reply.
+          const resp = await Promise.race([
+            api('/api/ai/meal', { method: 'POST', body: JSON.stringify(f) }),
+            new Promise(res => setTimeout(() => res(null), 4000))
+          ]);
+          const r = (resp && resp.item) || { matched: false, note: 'AI is slow right now — try again in a moment, or use ＋ Log food to add it manually.' };
           if (!r.matched) { toast(r.note); return; }
           modal(`<span class="eyebrow">✦ ESTIMATED</span><h2>${escapeHtml(r.title)}</h2>
           <div class="scan-result"><div class="scan-big"><b>${r.totals.kcal}</b><em>kcal</em></div>
@@ -2812,7 +2835,7 @@ async function action(a, btn) {
       } catch (e) { toast(e.message); }
       return;
     }
-    case 'aiNewChat': pageData.coachConvId = 0; pageData.coachChat = []; state.page = 'coach'; render(); toast('New chat — send a message to start'); return;
+    case 'aiNewChat': pageData.coachConvId = 0; pageData.coachChat = []; state.page = 'coach'; render(); window.scrollTo(0, 0); toast('New chat — send a message to start'); return;
     case 'aiOpenConv': pageData.coachConvId = id; pageData.coachChat = null; await loadPageData('coach'); state.page = 'coach'; render(); return;
     case 'aiDeleteChat': {
       if (!confirm('Delete this chat? All its messages are removed for you.')) return;

@@ -706,7 +706,7 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
   box-shadow:0 20px 60px rgba(0,0,0,.55), 0 0 40px rgba(0,229,255,.06);
 }
 .ai-chat-full:before{content:'';position:absolute;inset:0;pointer-events:none;background:radial-gradient(600px 240px at 50% -60px, rgba(0,229,255,.09), transparent 65%)}
-.ai-msgs{flex:1;overflow-y:auto;padding:20px 22px;display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth;overscroll-behavior:contain}
+.ai-msgs{flex:1;overflow-y:auto;padding:20px 22px;display:flex;flex-direction:column;gap:14px;overscroll-behavior:contain}
 .ai-msg{display:flex;gap:11px;align-items:flex-start;max-width:82%}
 .ai-msg.coach{align-self:flex-start}
 .ai-msg.user{align-self:flex-end;flex-direction:row-reverse}
@@ -823,7 +823,7 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
 .ai-idea-row b{color:var(--fv-ink);font-size:12.5px}
 .ai-idea-row small{color:var(--fv-mut);font-size:11px;display:block}
 .ai-idea-row .primary{margin-left:auto;flex:0 0 auto}
-.conv-side{display:flex;flex-direction:column;min-width:0}
+.conv-side{display:flex;flex-direction:column;min-width:0;min-height:0}
 .conv-side-head{display:flex;gap:8px;align-items:center;padding:0 0 10px;border-bottom:1px solid var(--fv-line);margin-bottom:10px}
 .conv-side-head b{color:var(--fv-ink);font-size:12px;letter-spacing:1.2px;flex:1;text-transform:uppercase}
 .conv-item{display:flex;align-items:center;gap:8px;background:rgba(10,15,34,.55);border:1px solid transparent;border-radius:11px;padding:9px 10px;margin-bottom:6px;cursor:pointer;text-align:left;transition:border-color .2s, background .2s}
@@ -836,6 +836,19 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
 .conv-item .ci-ops button{background:none;border:0;color:var(--fv-mut);font-size:13px;padding:5px 6px;cursor:pointer;border-radius:7px}
 .conv-item .ci-ops button:hover{color:var(--fv-ink);background:rgba(0,229,255,.12)}
 .conv-item .ci-ops button.ci-del:hover{color:#ff5d7a;background:rgba(255,93,122,.12)}
+
+/* -- coach page: chat + saved-chats sit SIDE BY SIDE (the sidebar used to
+   render below the chat, so scrolling to it dragged the whole page down
+   and read as a scroll glitch). Each column scrolls only itself. -- */
+.coach-cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
+.coach-cols .conv-side{position:sticky;top:12px;max-height:calc(100dvh - 210px);overflow:hidden}
+.coach-cols .conv-side .conv-item{flex:0 0 auto}
+.coach-cols .conv-side{overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;padding-bottom:6px}
+.coach-cols .conv-side-head{position:sticky;top:0;background:var(--fv-panel,#0d1126);z-index:2}
+@media (max-width:960px){
+  .coach-cols{grid-template-columns:1fr}
+  .coach-cols .conv-side{position:static;max-height:44dvh}
+}
 
 /* ==== patch v69: AI typing indicator + messages "start new chat" strip ==== */
 .ai-msg p.ai-typing{color:var(--fv-mut) !important;font-style:italic}
@@ -892,5 +905,13 @@ main{padding-bottom:26px !important}
   .conversation-list{max-height:190px}
   .newchat-strip{max-height:150px;overflow-y:auto}
 }
+
+/* ==== patch v74: fast food logging, calm AI chat ================================ */
+.quicklog-btn:disabled{opacity:.55;cursor:progress}
+.ai-msgs.new-chat{justify-content:center}
+.ai-msgs.new-chat .ai-welcome{margin:auto}
+@media (prefers-reduced-motion:no-preference){ .ai-msg{animation:aiPop .18s ease-out} }
+@keyframes aiPop{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
 
 
