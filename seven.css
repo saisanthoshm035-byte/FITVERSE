@@ -732,6 +732,9 @@ button.notif-item:hover b{color:var(--fv-cyan) !important}
 
 /* -- feature slide: free, buttery scrolling (snap jail removed) -------------------- */
 .reels-wrap{scroll-snap-type:none !important}
+/* v75: overscroll containment — rubber-banding inside a chat/scroll panel must
+   never chain to the page (glitchy scroll-back feel on trackpads) */
+.bubbles,.conversation-list,.conv-side,.ai-msgs,.reels-wrap{overscroll-behavior:contain}
 .reel{scroll-snap-align:none !important}
 .reel-video, .reel-photo{touch-action:pan-y}
 .modal-card, .ai-msgs, .bubbles{-webkit-overflow-scrolling:touch}

@@ -1,3 +1,33 @@
+FITVERSE v75 — DEPLOYED AND VERIFIED LIVE ✅ (2026-10-01)
+
+WHAT SHIPPED IN v75:
+
+1. EVERY INTERNAL SCROLLBAR NOW STAYS WHERE YOU LEAVE IT (the
+   "scrolls itself back to the top" glitch — SAVED CHATS sidebar, AI chat,
+   DM chat list, message bubbles, reels, feeds). Root cause: background
+   refreshes (4s poll, live push, data syncs) repaint the whole page and
+   every scrollbar reset to 0. Now the app remembers each scrollbar's
+   position before the repaint and restores it right after. Verified:
+   scroll to 100 → refresh fires → still 100.
+
+2. CHAT AUTO-PIN IS NOW SMART. Sending a message or receiving a new one
+   pins the chat to the newest message (as before). Quiet background
+   refreshes no longer yank you to the bottom while you're reading an
+   older message (within ~140px of the bottom it still follows along).
+
+3. DUPLICATE DM THREADS FIXED. Sending two messages to the same new
+   person at the same moment used to create two separate threads (the
+   server checked-then-created without a lock). The find-or-create is now
+   serialized, and every existing duplicate pair in the database is merged
+   at boot (messages, read markers and unread notifications are kept and
+   re-pointed to the one surviving thread). Verified with 3 parallel API
+   sends → all landed in ONE thread.
+
+VERIFIED LIVE: v75 assets served; parallel-send race test returns a single
+conversation id; no duplicate direct-thread pairs in the database.
+
+============================================================
+
 FITVERSE v74 — DEPLOYED AND VERIFIED LIVE ✅ (2026-10-01)
 
 Serving seven.css?v=74 / app.js?v=74 on https://fitverse-omdx.onrender.com

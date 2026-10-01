@@ -1,5 +1,28 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+// v75 SCROLL STICKINESS — background refreshes (4s poll, SSE, data-sync events,
+// loadPageData) repaint #app.innerHTML, which resets EVERY internal scrollbar
+// (saved chats, chat list, bubbles, AI chat, feeds) back to the top — the
+// "scrolls itself back up while I read" glitch. Fix: remember each scroller's
+// position right before the swap and put it back right after.
+function rememberScrolls() {
+  const m = {};
+  $$('.conv-side, .ai-msgs, .bubbles, .conversation-list, .reels-wrap, #feed-foryou, #feed-trending', app).forEach(el => {
+    if (el.scrollHeight > el.clientHeight + 2) m[el.id ? '#' + el.id : '.' + [...el.classList].join('.')] = el.scrollTop;
+  });
+  return m;
+}
+function restoreScrolls(m) {
+  const pinChat = rememberScrolls.__pin;  // one-shot: a new user/coach message pins the AI chat to the bottom
+  rememberScrolls.__pin = false;
+  Object.entries(m || {}).forEach(([sel, v]) => {
+    if (pinChat && sel === '.ai-msgs') return;
+    const el = sel.startsWith('#') ? document.getElementById(sel.slice(1)) : $(sel, app);
+    if (el) el.scrollTop = v;
+  });
+  if (pinChat) { const mm = $('#ai-msgs'); if (mm) { mm.style.scrollBehavior = 'auto'; mm.scrollTop = mm.scrollHeight; mm.style.scrollBehavior = ''; } }
+}
+const app = $('#app');  // v75: cached app root — used by the scroll-stickiness helpers
 const apiEnabled = location.protocol === 'http:' || location.protocol === 'https:';
 // Curated local photos (no repeats, no template feel): sport imagery + avatar shots.
 const PHOTOS = {
@@ -392,7 +415,8 @@ function applyServerState(s) {
 async function loadPageData(page) {
   // FITVERSE 6.2: visible "syncing" state for the whole data flight.
   pageData.__loading = true; render();
-  const finish = () => { pageData.__loading = false; render(); };
+  const _in = rememberScrolls();  // first paint of a data flight — keep scrollbars pinned
+  const finish = () => { pageData.__loading = false; render(); restoreScrolls(_in); };
   if (!apiEnabled) return;
   const tasks = [];
   const add = (p, fn) => tasks.push(fn.then(items => { pageData[p] = items; }).catch(() => {}));
@@ -473,9 +497,11 @@ async function loadPageData(page) {
   finish();  // clears pageData.__loading + repaints with the fresh data
 }
 async function loadMessages() {
+  const _sv = rememberScrolls();  // v75: keep the chat + sidebar scrollbars where the user left them
   try { pageData.messages = (await api(`/api/conversations/${pageData.activeConversation}`)).items || []; }
   catch (e) { toast(e.message); }
   render();
+  restoreScrolls(_sv);
 }
 
 function shell(content) {
@@ -677,7 +703,7 @@ ${emptyState('✉', 'No conversations yet', 'Open any athlete’s profile and ta
     return `${showDay ? `<div class="day-divider"><span>${dayShort(m.created_at)}</span></div>` : ''}<div class="msg-row ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}">${!grouped ? photoAvatar(who, m.sender_id, 36, m.avatar_url) : '<span class="pavatar-spacer"></span>'}<p class="${mine ? 'sent' : 'received'}">${escapeHtml(m.body)}<time>${m.created_at?.includes('T') ? timeShort(m.created_at) : escapeHtml(m.created_at || 'now')}</time></p></div>`;
   }).join('') || '<p style="opacity:.6">Say hi 👋</p>';
   return shell(`${pageHeader('Messages', 'Real conversations, stored in your database.')}
-<div class="message-layout"><aside class="conversation-list"><div class="message-search">⌕ <input id="chat-search" placeholder="Search chats" style="border:0;background:none;outline:0;width:80%"/></div>${convs.map(c => `<button class="conversation ${c.id === pageData.activeConversation ? 'selected' : ''}" data-conv="${c.id}">${photoAvatar(c.title, c.other_id || c.id, 36, c.other_avatar_url)}<div><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml((c.last_message || 'Say hi').slice(0, 34))}</small></div><time>${c.last_at ? timeShort(c.last_at) : ''}</time></button>`).join('')}
+<div class="message-layout"><aside class="conversation-list" id="conv-list"><div class="message-search">⌕ <input id="chat-search" placeholder="Search chats" style="border:0;background:none;outline:0;width:80%"/></div>${convs.map(c => `<button class="conversation ${c.id === pageData.activeConversation ? 'selected' : ''}" data-conv="${c.id}">${photoAvatar(c.title, c.other_id || c.id, 36, c.other_avatar_url)}<div><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml((c.last_message || 'Say hi').slice(0, 34))}</small></div><time>${c.last_at ? timeShort(c.last_at) : ''}</time></button>`).join('')}
 ${(pageData.friendsData && (pageData.friendsData.items || []).length) ? `<div class="newchat-strip"><span class="eyebrow" style="padding:8px 8px 4px;display:block">START A NEW CHAT</span>${(pageData.friendsData.items || []).slice(0, 6).map(f => `<button class="conversation" data-action="newChatPick" data-fid="${f.id}">${photoAvatar(f.name, f.id, 36, f.avatar_url)}<div><strong>${escapeHtml(f.name)}</strong><small>Say hi 👋</small></div></button>`).join('')}</div>` : ''}</aside><section class="chat"><div class="chat-head">${photoAvatar(active.title, active.other_id || active.id, 36, active.other_avatar_url)}<div><strong>${escapeHtml(active.title)}</strong><small>${escapeHtml(active.kind)} · <span class="live-dot">●</span> live</small></div><button data-action="convMenu" data-id="${active.id}">•••</button></div><div class="bubbles" id="bubbles">${bubbles}</div><div class="typing" id="typing" style="display:none"><span></span><span></span><span></span></div><form class="composer" data-form="message" data-conv="${active.id}"><input id="composer-input" placeholder="Message ${escapeHtml(String(active.title).split(' ')[0])}..." maxlength="1000" required/><button aria-label="Send message">➤</button></form></section></div>`);
 }
 function profile() {
@@ -897,11 +923,10 @@ function coachPage() {
 <section class="ai-chat-full" id="ai-chat"><div class="ai-msgs ${(!chat.length && !pageData.coachTyping) ? 'new-chat' : ''}" id="ai-msgs">${msgs}</div>
 <div class="ai-chips"><button data-action="aiNewChat">＋ New chat</button><button data-action="coachAsk" data-q="What workout should I do today?">🏋 Today's workout</button><button data-action="coachAsk" data-q="Make me an indian diet plan">🍛 Indian diet plan</button><button data-action="coachAsk" data-q="How is my blood pressure and sugar?">🩺 BP & sugar</button><button data-action="generateWorkout">✦ Generate workout</button><button data-action="weeklyReview">📈 Weekly recap</button></div>
 <form class="ai-inputbar" id="coach-form"><input placeholder="Message FITVERSE AI…" maxlength="500" autocomplete="off" required/><button type="submit" aria-label="Send">➤</button></form></section>
-<aside class="conv-side"><div class="conv-side-head"><b>SAVED CHATS</b>${brain}<button class="outline small" data-action="aiNewChat">＋ New</button></div>${convs.length ? convs.map(convItem).join('') : '<p class="loading">No saved chats yet — send your first message and it lands here.</p>'}</aside>
+<aside class="conv-side" id="conv-side"><div class="conv-side-head"><b>SAVED CHATS</b>${brain}<button class="outline small" data-action="aiNewChat">＋ New</button></div>${convs.length ? convs.map(convItem).join('') : '<p class="loading">No saved chats yet — send your first message and it lands here.</p>'}</aside>
 </div>`);
   // Land at the latest message like ChatGPT — but INSTANTLY (smooth-scroll
   // here read as the page "glitching" when reopening a long conversation).
-  requestAnimationFrame(() => { const m = $('#ai-msgs'); if (m && m.scrollHeight > m.clientHeight) { m.style.scrollBehavior = 'auto'; m.scrollTop = m.scrollHeight; m.style.scrollBehavior = ''; } });
   return html;
 }
 // Friends list helper with pageData cache (used by every invite/share picker).
@@ -1307,6 +1332,7 @@ function athleteProfile() {
 function render() {
   if (render.__skip) return;  // data-refresh pass that must not disturb a live modal
   const pages = { home, discover, posts: reels, reels, challenges, communities, events, messages, profile, bookings, business, admin, businesses, communityDetail, athleteProfile, workout: workoutPage, nutrition: nutritionPage, progress: progressPage, friends: friendsPage, library: libraryPage, coach: coachPage, weeklyReview: weeklyReviewPage, intelligence: intelligencePage, connectHealth, businessChannel };
+  const _scrolls = rememberScrolls();  // v75: keep every internal scrollbar exactly where the user left it
   // FITVERSE 6.1: repaint freely, then RESTORE any active typing session.
   // Background renders used to wipe the user's half-typed text/focus (the
   // Discover/Messages glitch). Now: capture value+caret before, refocus after.
@@ -1315,6 +1341,7 @@ function render() {
     ? { sel: ae.id ? '#' + CSS.escape(ae.id) : null, tag: ae.tagName, name: ae.name || null, val: ae.value, s: ae.selectionStart, e: ae.selectionEnd } : null;
   $('#app').innerHTML = (pages[state.page] || home)();
   bind();
+  restoreScrolls(_scrolls);
   redrawOnboarding(); // keeps the setup wizard alive across re-renders (fixes pop-in-then-vanish glitch)
   // FITVERSE 6.2: boot badge disappears once the profile has actually loaded.
   const bb = $('#boot-badge'); if (bb && me().name) bb.remove();
@@ -1477,7 +1504,9 @@ function shareCard(kind) {
   a.click();
   toast('Card downloaded — share it anywhere 📲');
 }
-function scrollBubbles() { const b = $('#bubbles'); if (b) b.scrollTop = b.scrollHeight; }
+// v75: pin to the bottom ONLY on demand (send / new message). Background
+// refreshes call scrollBubbles(false) — a mid-chat scroll stays put.
+function scrollBubbles(force) { const b = $('#bubbles'); if (b && (force || b.scrollHeight - b.scrollTop - b.clientHeight < 140)) b.scrollTop = b.scrollHeight; }
 // Live updates: poll notifications + active conversation so chats and badges stay fresh.
 let lastMsgId = 0, pollTimer = null, lastOwnType = 0;
 function startPolling() {
@@ -1503,7 +1532,7 @@ function startPolling() {
       if (state.page === 'messages') {
         const fresh = (await api(`/api/conversations/${pageData.activeConversation}`)).items || [];
         const newest = fresh[fresh.length - 1]?.id || 0;
-        if (newest > lastMsgId) { lastMsgId = newest; pageData.messages = fresh; render(); scrollBubbles(); }
+        if (newest > lastMsgId) { lastMsgId = newest; pageData.messages = fresh; render(); scrollBubbles(false); }
         const convs = (await api('/api/conversations')).items || [];
         if (convs.length) pageData.conversations = convs;
       }
@@ -1611,6 +1640,7 @@ function bind() {
     input.value = ''; input.focus();
     pageData.coachChat = pageData.coachChat || [];
     pageData.coachChat.push({ role: 'user', content: msg });
+    rememberScrolls.__pin = true;  // v75: one-shot — new messages pin the AI chat to the bottom
     pageData.coachTyping = true; render();  // typing indicator shows immediately
     try {
       const r = await api('/api/ai/companion', { method: 'POST', body: JSON.stringify({ message: msg, conversationId: pageData.coachConvId }) });
@@ -1698,7 +1728,7 @@ function bind() {
       // Optimistic send: show instantly, then sync with the server (which may auto-reply).
       // v6.3: carry id=0 + avatar so the pending bubble renders identically.
       pageData.messages.push({ id: 0, sender_id: me().id || 1, name: me().name || 'You', body: message, created_at: new Date().toISOString(), avatar_url: me().avatar_url || '' });
-      render(); scrollBubbles();
+      render(); scrollBubbles(true);
       await api('/api/messages', { method: 'POST', body: JSON.stringify({ body: message, conversation_id: f.dataset.conv || 1 }) });
       const fresh = (await api(`/api/conversations/${f.dataset.conv || 1}`)).items || [];
       if (f.dataset.conv == pageData.activeConversation && state.page === 'messages') { pageData.messages = fresh; render(); }
@@ -1724,7 +1754,7 @@ function bind() {
     $$('.conversation').forEach(c => { c.style.display = c.textContent.toLowerCase().includes(term) ? '' : 'none'; });
   };
   if (state.page === 'messages') {
-    setTimeout(() => { scrollBubbles(); const ci = $('#composer-input'); if (ci && document.activeElement !== ci && !document.querySelector('.modal-card')) ci.focus(); }, 60);
+    setTimeout(() => { scrollBubbles(false); const ci = $('#composer-input'); if (ci && document.activeElement !== ci && !document.querySelector('.modal-card')) ci.focus(); }, 60);
   }
 }
 function customExerciseModal(onSaved) {
@@ -2676,6 +2706,7 @@ async function action(a, btn) {
       const q = btn.dataset.q;
       pageData.coachChat = pageData.coachChat || [];
       pageData.coachChat.push({ role: 'user', content: q });
+      rememberScrolls.__pin = true;  // v75: one-shot pin (see rememberScrolls)
       pageData.coachTyping = true; render();
       try {
         const r = await api('/api/ai/companion', { method: 'POST', body: JSON.stringify({ message: q, conversationId: pageData.coachConvId }) });
@@ -2952,12 +2983,13 @@ function startSSE() {
     evtSource.addEventListener('message', (e) => {
       const m = JSON.parse(e.data);
       if (state.page === 'messages' && Number(m.conversation_id) === Number(pageData.activeConversation)) {
-        if (!pageData.messages.some(x => x.id === m.id)) { pageData.messages.push(m); render(); scrollBubbles(); }
+        if (!pageData.messages.some(x => x.id === m.id)) { pageData.messages.push(m); render(); scrollBubbles(false); }
       }
       // PERF: refresh the conversation list at most every 5s, not on every message.
       if (!startSSE._lastConvSync || Date.now() - startSSE._lastConvSync > 5000) {
         startSSE._lastConvSync = Date.now();
-        api('/api/conversations').then(d => { pageData.conversations = d.items || []; syncAvatars(); if (state.page === 'messages') render(); }).catch(() => {});
+        const _sv = rememberScrolls();  // v75: sidebar refresh must not scroll-jump the chat
+        api('/api/conversations').then(d => { pageData.conversations = d.items || []; syncAvatars(); if (state.page === 'messages') { render(); restoreScrolls(_sv); } }).catch(() => {});
       }
     });
     evtSource.addEventListener('notification', (e) => {
@@ -2981,7 +3013,8 @@ function startSSE() {
         api('/api/feed').then(d => {
           const fresh = d.items || [];
           const sig = (a) => a.slice(0, 5).map(x => x.id).join(',');
-          if (fresh.length && pageData.feed && sig(fresh) !== sig(pageData.feed)) { pageData.feed = fresh; render(); }
+          const _fv = rememberScrolls();  // v75: silent feed refresh keeps the user's scroll spot
+          if (fresh.length && pageData.feed && sig(fresh) !== sig(pageData.feed)) { pageData.feed = fresh; render(); restoreScrolls(_fv); }
         }).catch(() => {}).finally(() => { startSSE._feedBusy = false; });
       }, 20000);
     };

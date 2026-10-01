@@ -51,6 +51,7 @@ import store  # persistent storage layer: database-backed sessions + optional re
 
 OAUTH_STATES: dict[str, float] = {}
 TYPING: dict[int, tuple] = {}  # conversation_id -> (last typing timestamp, user_id)
+DM_LOCK = threading.Lock()  # v75: serializes DM find-or-create — parallel sends to the same new person must not create duplicate threads
 DEMO_USER_ID = 1
 _SNAP_CACHE: dict = {"at": 0.0, "msg_max": 0, "dm": {}}  # SSE helpers, refreshed ~30s
 
@@ -457,6 +458,30 @@ def initialize_database() -> None:
         for col, typ in [("dna_cache", "TEXT"), ("target_week", "INTEGER")]:
             try: db.execute(f"ALTER TABLE user_settings ADD COLUMN {col} {typ}")
             except sqlite3.OperationalError: pass
+        # v75 DM hygiene: older builds could create DUPLICATE direct threads when
+        # two messages to the same new person raced (SELECT before INSERT, no lock).
+        # Collapse every user-pair to ONE thread (the oldest), re-pointing its
+        # messages, last_read markers and unread notifications. Idempotent per boot.
+        try:
+            _parts: dict[int, list[int]] = {}
+            for _r in db.execute("SELECT conversation_id cid, user_id uid FROM dm_participants").fetchall():
+                _parts.setdefault(int(_r["cid"]), []).append(int(_r["uid"]))
+            _groups: dict[tuple, list[int]] = {}
+            for _cid, _members in _parts.items():
+                if len(_members) == 2: _groups.setdefault(tuple(sorted(_members)), []).append(_cid)
+            for _pair, _cids in _groups.items():
+                if len(_cids) < 2: continue
+                _keep = min(_cids)
+                for _dup in _cids:
+                    if _dup == _keep: continue
+                    db.execute("UPDATE messages SET conversation_id=? WHERE conversation_id=?", (_keep, _dup))
+                    db.execute("UPDATE dm_participants SET last_read=(SELECT MAX(lr.last_read) FROM dm_participants lr WHERE lr.conversation_id=? AND lr.user_id=dm_participants.user_id) WHERE conversation_id=? AND user_id IN (?,?)", (_keep, _dup, _pair[0], _pair[1]))
+                    db.execute("UPDATE notifications SET link_url=? WHERE link_url=? AND is_read=0", (f"conversation:{_keep}", f"conversation:{_dup}"))
+                    db.execute("DELETE FROM dm_participants WHERE conversation_id=?", (_dup,))
+                    db.execute("DELETE FROM conversations WHERE id=?", (_dup,))
+                print(f"[fitverse] merged {len(_cids) - 1} duplicate DM thread(s) for users {_pair[0]}+{_pair[1]}")
+        except Exception as _e:  # never let hygiene block boot (Render lesson)
+            print(f"[fitverse] DM thread hygiene skipped: {_e}")
         stamp = now()
         db.executemany("INSERT OR IGNORE INTO achievements (id,code,name,description,icon) VALUES (?,?,?,?,?)", [
             (1,"first_activity","First Activity","Complete your first activity.","⚡"),
@@ -2071,13 +2096,16 @@ class FitverseHandler(BaseHTTPRequestHandler):
                         other_id=other["user_id"]
                     elif to_uid:
                         if not db.execute("SELECT 1 FROM users WHERE id=?",(to_uid,)).fetchone(): return self.send_json(404,{"error":"Athlete not found"})
-                        row=db.execute("""SELECT dp.conversation_id id FROM dm_participants dp JOIN conversations c ON c.id=dp.conversation_id
-                          WHERE c.kind='direct' AND dp.user_id IN (?,?) GROUP BY dp.conversation_id HAVING count(*)=2""",(uid,to_uid)).fetchone()
-                        if row: cid=row["id"]
-                        else:
-                            stamp=now()
-                            cid=db.execute("INSERT INTO conversations (kind,title,created_at) VALUES ('direct',?,?)",("",stamp)).lastrowid
-                            db.executemany("INSERT INTO dm_participants (conversation_id,user_id,last_read) VALUES (?,?,0)",[(cid,uid),(cid,to_uid)])
+                        # v75: SERIALIZE the find-or-create. The old SELECT-then-INSERT
+                        # raced: two parallel sends both saw "no thread" and built two.
+                        with DM_LOCK:
+                            row=db.execute("""SELECT dp.conversation_id id FROM dm_participants dp JOIN conversations c ON c.id=dp.conversation_id
+                              WHERE c.kind='direct' AND dp.user_id IN (?,?) GROUP BY dp.conversation_id HAVING count(*)=2""",(uid,to_uid)).fetchone()
+                            if row: cid=row["id"]
+                            else:
+                                stamp=now()
+                                cid=db.execute("INSERT INTO conversations (kind,title,created_at) VALUES ('direct',?,?)",("",stamp)).lastrowid
+                                db.executemany("INSERT INTO dm_participants (conversation_id,user_id,last_read) VALUES (?,?,0)",[(cid,uid),(cid,to_uid)])
                         other_id=to_uid  # fresh thread: the recipient IS the other participant
                     else:
                         return self.send_json(400,{"error":"Recipient is required"})
@@ -2099,13 +2127,15 @@ class FitverseHandler(BaseHTTPRequestHandler):
                 if not to_uid or to_uid==uid: return self.send_json(400,{"error":"Pick another athlete to message"})
                 with connect() as db:
                     if not db.execute("SELECT 1 FROM users WHERE id=?",(to_uid,)).fetchone(): return self.send_json(404,{"error":"Athlete not found"})
-                    row=db.execute("""SELECT dp.conversation_id id FROM dm_participants dp JOIN conversations c ON c.id=dp.conversation_id
-                      WHERE c.kind='direct' AND dp.user_id IN (?,?) GROUP BY dp.conversation_id HAVING count(*)=2""",(uid,to_uid)).fetchone()
-                    if row: cid=row["id"]
-                    else:
-                        stamp=now()
-                        cid=db.execute("INSERT INTO conversations (kind,title,created_at) VALUES ('direct',?,?)",("",stamp)).lastrowid
-                        db.executemany("INSERT INTO dm_participants (conversation_id,user_id,last_read) VALUES (?,?,0)",[(cid,uid),(cid,to_uid)])
+                    # v75: same race-guard as /api/messages — serialize find-or-create.
+                    with DM_LOCK:
+                        row=db.execute("""SELECT dp.conversation_id id FROM dm_participants dp JOIN conversations c ON c.id=dp.conversation_id
+                          WHERE c.kind='direct' AND dp.user_id IN (?,?) GROUP BY dp.conversation_id HAVING count(*)=2""",(uid,to_uid)).fetchone()
+                        if row: cid=row["id"]
+                        else:
+                            stamp=now()
+                            cid=db.execute("INSERT INTO conversations (kind,title,created_at) VALUES ('direct',?,?)",("",stamp)).lastrowid
+                            db.executemany("INSERT INTO dm_participants (conversation_id,user_id,last_read) VALUES (?,?,0)",[(cid,uid),(cid,to_uid)])
                 return self.send_json(200,{"conversation_id":cid})
             if path == "/api/typing":
                 TYPING[int(data.get("conversation_id",1))] = (time.time(), self.current_user())
